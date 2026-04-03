@@ -116,10 +116,10 @@ def add_indicators(df):
     df["Consec_Low_above_50"] = _consec(df["Low_above_50"])
     df["Consec_Low_above_200"] = _consec(df["Low_above_200"])
 
-    # MA held = Low touched MA but Close > previous close (support bounce)
-    df["EMA21_held"] = (df["Low"] <= df["EMA21"] * 1.002) & (df["Close"] > df["Close"].shift(1))
-    df["SMA50_held"] = (df["Low"] <= df["SMA50"] * 1.002) & (df["Close"] > df["Close"].shift(1))
-    df["SMA200_held"] = (df["Low"] <= df["SMA200"] * 1.002) & (df["Close"] > df["Close"].shift(1))
+    # MA held = Close above MA (price stays above the line)
+    df["EMA21_held"] = df["Close"] > df["EMA21"]
+    df["SMA50_held"] = df["Close"] > df["SMA50"]
+    df["SMA200_held"] = df["Close"] > df["SMA200"]
 
     return df
 
@@ -438,9 +438,9 @@ def main():
         render_check("Tagestief über 21-EMA",
                      _e21_ok and _l > _e21,
                      f"Low {_l:,.0f} vs 21-EMA {_e21:,.0f}" if _e21_ok else "")
-        render_check("21-EMA wird gehalten (Schluss im Plus)",
+        render_check("21-EMA wird gehalten",
                      bool(L.get("EMA21_held", False)),
-                     "Low nahe 21-EMA, aber Close im Plus" if bool(L.get("EMA21_held", False)) else "Kein Bounce-Tag")
+                     "Schlusskurs über 21-EMA" if bool(L.get("EMA21_held", False)) else "Schlusskurs unter 21-EMA")
         consec_21 = int(L.get("Consec_Low_above_21", 0))
         render_check("3 Tage mit Tief über 21-EMA",
                      consec_21 >= 3,
@@ -453,9 +453,9 @@ def main():
         render_check("Tagestief über 50-SMA",
                      _s50_ok and _l > _s50,
                      f"Low {_l:,.0f} vs 50-SMA {_s50:,.0f}" if _s50_ok else "")
-        render_check("50-SMA wird gehalten (Schluss im Plus)",
+        render_check("50-SMA wird gehalten",
                      bool(L.get("SMA50_held", False)),
-                     "Low nahe 50-SMA, aber Close im Plus" if bool(L.get("SMA50_held", False)) else "Kein Bounce-Tag")
+                     "Schlusskurs über 50-SMA" if bool(L.get("SMA50_held", False)) else "Schlusskurs unter 50-SMA")
         consec_50 = int(L.get("Consec_Low_above_50", 0))
         render_check("3 Tage mit Tief über 50-SMA",
                      consec_50 >= 3,
@@ -468,9 +468,9 @@ def main():
         render_check("Tagestief über 200-SMA",
                      _s200_ok and _l > _s200,
                      f"Low {_l:,.0f} vs 200-SMA {_s200:,.0f}" if _s200_ok else "")
-        render_check("200-SMA wird gehalten (Schluss im Plus)",
+        render_check("200-SMA wird gehalten",
                      bool(L.get("SMA200_held", False)),
-                     "Low nahe 200-SMA, aber Close im Plus" if bool(L.get("SMA200_held", False)) else "Kein Bounce-Tag")
+                     "Schlusskurs über 200-SMA" if bool(L.get("SMA200_held", False)) else "Schlusskurs unter 200-SMA")
         consec_200 = int(L.get("Consec_Low_above_200", 0))
         render_check("3 Tage mit Tief über 200-SMA",
                      consec_200 >= 3,
