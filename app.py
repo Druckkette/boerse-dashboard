@@ -96,6 +96,31 @@ def add_indicators(df):
     df["High_52w"] = df["High"].rolling(window=252, min_periods=1).max()
     df["Dist_52w_pct"] = (df["Close"] - df["High_52w"]) / df["High_52w"] * 100
     df["MA_Order"] = (df["EMA21"] > df["SMA50"]) & (df["SMA50"] > df["SMA200"])
+
+    # Consecutive days with Low above each MA (for Aufwärtstrend-Prüfung)
+    df["Low_above_21"] = df["Low"] > df["EMA21"]
+    df["Low_above_50"] = df["Low"] > df["SMA50"]
+    df["Low_above_200"] = df["Low"] > df["SMA200"]
+
+    def _consec(series):
+        """Count consecutive True values ending at each row."""
+        out = np.zeros(len(series), dtype=int)
+        for i in range(len(series)):
+            if series.iloc[i]:
+                out[i] = out[i - 1] + 1 if i > 0 else 1
+            else:
+                out[i] = 0
+        return pd.Series(out, index=series.index)
+
+    df["Consec_Low_above_21"] = _consec(df["Low_above_21"])
+    df["Consec_Low_above_50"] = _consec(df["Low_above_50"])
+    df["Consec_Low_above_200"] = _consec(df["Low_above_200"])
+
+    # MA held = Low touched MA but Close > previous close (support bounce)
+    df["EMA21_held"] = (df["Low"] <= df["EMA21"] * 1.002) & (df["Close"] > df["Close"].shift(1))
+    df["SMA50_held"] = (df["Low"] <= df["SMA50"] * 1.002) & (df["Close"] > df["Close"].shift(1))
+    df["SMA200_held"] = (df["Low"] <= df["SMA200"] * 1.002) & (df["Close"] > df["Close"].shift(1))
+
     return df
 
 def detect_distribution_days(df):
@@ -109,22 +134,45 @@ def detect_distribution_days(df):
     df["Dist_Count_25"] = df["Is_Distribution"].rolling(window=25, min_periods=1).sum().astype(int)
     return df
 
-# ── TRENDWENDE-AMPEL (FIXED) ──
+# ── TRENDWENDE-AMPEL (v3 — mit Lebenszyklus) ──
 def compute_ampel(df):
     """
-    Ankertag = erster Tag mit POSITIVEM Schluss (Close > Prev Close)
-               ODER ein Erholungstag bei dem Close > Open UND Closing Range >= 0.5.
-               Ein Tag mit negativem Schluss, bei dem die Kerze zufällig in der
-               oberen Hälfte liegt, zählt NICHT.
-    Bodenmarke = min(Low Ankertag, Low Vortag). Darf intraday nicht unterschritten werden.
-    Startschuss = frühestens Tag 5 nach Ankertag: >=1% Gewinn, Vol > Vortag, Boden gehalten.
-    Grün = Schlusskurs bleibt über Tief des Startschuss-Tages.
+    Phasen-Lebenszyklus:
+
+    NEUTRAL → Der Markt läuft normal, kein Ampel-System aktiv.
+              Übergang zu ROT wenn:
+              - Drawdown vom 60-Tage-Hoch > 8%
+              - ODER Kurs unter SMA50 UND ≥ 4 Distributionstage in 25 Tagen
+
+    ROT → Substanzielle Korrektur läuft. Nicht kaufen.
+          Suche den Ankertag:
+          - Erster Tag mit positivem Schluss (Close > Prev Close)
+          - ODER Erholungstag (Close > Open UND Closing Range ≥ 0.5)
+          Bodenmarke = min(Low Ankertag, Low Vortag)
+          Wird Bodenmarke intraday unterschritten → Ankertag reset.
+
+    GELB → Startschuss: frühestens 5. Tag nach Ankertag,
+           ≥ 1% Gewinn, Volumen > Vortag, Bodenmarke gehalten.
+           Fällt Close unter Startschuss-Tief → zurück zu ROT.
+
+    GRÜN → Startschuss hält. Erholung bestätigt.
+           Fällt Close unter Startschuss-Tief → zurück zu ROT.
+
+    AUFWÄRTSTREND → Grün graduiert zu Aufwärtstrend wenn:
+           - Kurs über 200-SMA UND
+           - 21-EMA > 50-SMA (korrekte Ordnung) UND
+           - Mindestens 10 Tage in Grün verbracht
+           Alle Ampel-Daten (Ankertag, Bodenmarke etc.) werden gelöscht.
+           Übergang zurück zu ROT bei erneuter Korrektur.
+
+    AUFWÄRTSTREND → ROT bei erneuter Korrektur (gleiche Kriterien wie NEUTRAL → ROT)
     """
     df = df.copy()
     n = len(df)
     phase = "neutral"
     anchor_idx = None; floor_mark = None
     startschuss_idx = None; startschuss_low = None
+    gruen_since = None  # index when we entered grün
 
     phases = ["neutral"] * n
     anchor_dates = [None] * n
@@ -135,28 +183,44 @@ def compute_ampel(df):
     highs = df["High"].values; lows = df["Low"].values
     volumes = df["Volume"].values; pct_ch = df["Pct_Change"].values
     cr = df["Closing_Range"].values; dc = df["Dist_Count_25"].values
-    sma50 = df["SMA50"].values
+    sma50 = df["SMA50"].values; sma200 = df["SMA200"].values
+    ema21 = df["EMA21"].values
+
+    def _clear_ampel():
+        nonlocal anchor_idx, floor_mark, startschuss_idx, startschuss_low, gruen_since
+        anchor_idx = None; floor_mark = None
+        startschuss_idx = None; startschuss_low = None
+        gruen_since = None
+
+    def _correction_signal(i):
+        """Check if a new correction is starting."""
+        lb = max(0, i - 60)
+        rh = np.nanmax(highs[lb:i+1])
+        dd = (closes[i] - rh) / rh * 100 if rh > 0 else 0
+        under50 = not np.isnan(sma50[i]) and closes[i] < sma50[i]
+        has_dist = dc[i] >= 4
+        return dd < -8 or (under50 and has_dist)
 
     for i in range(1, n):
         pct_i = pct_ch[i] if not np.isnan(pct_ch[i]) else 0.0
         cr_i = cr[i] if not np.isnan(cr[i]) else 0.5
 
-        # Drawdown from 60-day high
-        lb = max(0, i - 60)
-        rh = np.nanmax(highs[lb:i+1])
-        dd = (closes[i] - rh) / rh * 100 if rh > 0 else 0
+        # ── NEUTRAL / AUFWÄRTSTREND → ROT ──
+        if phase in ("neutral", "aufwaertstrend"):
+            if _correction_signal(i):
+                phase = "rot"
+                _clear_ampel()
+            # Additional trigger for Aufwärtstrend: 21-EMA falls below 50-SMA
+            elif phase == "aufwaertstrend":
+                ema_below_sma = (not np.isnan(ema21[i]) and not np.isnan(sma50[i])
+                                 and ema21[i] < sma50[i])
+                if ema_below_sma:
+                    phase = "rot"
+                    _clear_ampel()
 
-        under50 = not np.isnan(sma50[i]) and closes[i] < sma50[i]
-        has_dist = dc[i] >= 4
-
-        # Enter ROT
-        if phase in ("neutral", "reset"):
-            if dd < -8 or (under50 and has_dist):
-                phase = "rot"; anchor_idx = None; floor_mark = None
-                startschuss_idx = None; startschuss_low = None
-
-        if phase == "rot":
-            # Check floor breach (after anchor day)
+        # ── ROT ──
+        elif phase == "rot":
+            # Check floor breach (days after anchor)
             if anchor_idx is not None and i > anchor_idx:
                 if lows[i] < floor_mark:
                     anchor_idx = None; floor_mark = None
@@ -164,7 +228,6 @@ def compute_ampel(df):
             # Look for Ankertag
             if anchor_idx is None:
                 positive_close = pct_i > 0.0
-                # Recovery candle: close > open AND upper half of range
                 recovery = closes[i] > opens[i] and cr_i >= 0.5
                 if positive_close or recovery:
                     anchor_idx = i
@@ -173,24 +236,44 @@ def compute_ampel(df):
             # Check Startschuss (>= 5 days after anchor)
             if anchor_idx is not None and i >= anchor_idx + 5:
                 if pct_i >= 1.0 and volumes[i] > volumes[i-1] and lows[i] >= floor_mark:
-                    phase = "gelb"; startschuss_idx = i; startschuss_low = lows[i]
+                    phase = "gelb"
+                    startschuss_idx = i
+                    startschuss_low = lows[i]
 
-        if phase == "gelb":
+        # ── GELB ──
+        elif phase == "gelb":
             if startschuss_low is not None and closes[i] < startschuss_low:
-                phase = "rot"; anchor_idx = None; floor_mark = None
-                startschuss_idx = None; startschuss_low = None
+                phase = "rot"
+                _clear_ampel()
             elif startschuss_idx is not None and i > startschuss_idx + 2:
                 phase = "gruen"
+                gruen_since = i
 
-        if phase == "gruen":
+        # ── GRÜN ──
+        elif phase == "gruen":
+            # Fail: close below Startschuss low
             if startschuss_low is not None and closes[i] < startschuss_low:
-                phase = "rot"; anchor_idx = None; floor_mark = None
-                startschuss_idx = None; startschuss_low = None
+                phase = "rot"
+                _clear_ampel()
+            else:
+                # Graduate to Aufwärtstrend when MA order is established
+                above_200 = not np.isnan(sma200[i]) and closes[i] > sma200[i]
+                ema_above_sma = (not np.isnan(ema21[i]) and not np.isnan(sma50[i])
+                                 and ema21[i] > sma50[i])
+                days_in_gruen = i - gruen_since if gruen_since is not None else 0
 
+                if above_200 and ema_above_sma and days_in_gruen >= 10:
+                    phase = "aufwaertstrend"
+                    _clear_ampel()
+
+        # Store results
         phases[i] = phase
-        if anchor_idx is not None: anchor_dates[i] = df.index[anchor_idx].strftime("%Y-%m-%d")
-        if floor_mark is not None: floor_marks[i] = round(floor_mark, 2)
-        if startschuss_low is not None: startschuss_lows[i] = round(startschuss_low, 2)
+        if anchor_idx is not None:
+            anchor_dates[i] = df.index[anchor_idx].strftime("%Y-%m-%d")
+        if floor_mark is not None:
+            floor_marks[i] = round(floor_mark, 2)
+        if startschuss_low is not None:
+            startschuss_lows[i] = round(startschuss_low, 2)
 
     df["Ampel_Phase"] = phases
     df["Anchor_Date"] = anchor_dates
@@ -215,10 +298,11 @@ def analyze_vix(df_vix):
 
 # ── RENDER HELPERS ──
 def render_ampel(phase):
-    c = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","neutral":"#64748b"}.get(phase,"#64748b")
+    c = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
     lbl, desc = {"rot":("ROT — Abwarten","Substanzielle Korrektur. Nicht kaufen. Ankertag beobachten."),
         "gelb":("GELB — Startschuss","Einstiegssignal! Erste Position(en) eröffnen (10–30% Kapital)."),
-        "gruen":("GRÜN — Bestätigung","Startschuss hält. Aufwärtstrend-Steuerung aktiv."),
+        "gruen":("GRÜN — Bestätigung","Startschuss hält. Frühe Bestätigungsphase. Vorsichtig aufbauen."),
+        "aufwaertstrend":("AUFWÄRTSTREND ↑","MA-Ordnung bestätigt. Offensiv handeln, Exponierung erhöhen."),
         "neutral":("NEUTRAL","Keine substanzielle Korrektur erkannt. Normale Marktbeobachtung.")}.get(phase,("NEUTRAL",""))
     st.markdown(f'<div class="ampel-box" style="background:{c}15;border:1px solid {c}40;"><div class="ampel-dot" style="background:{c};box-shadow:0 0 24px {c}80,0 0 48px {c}40;"></div><div><div style="font-size:1.1rem;font-weight:700;color:{c};letter-spacing:0.05em;">{lbl}</div><div style="font-size:0.8rem;color:#94a3b8;margin-top:2px;">{desc}</div></div></div>', unsafe_allow_html=True)
 
@@ -339,24 +423,87 @@ def main():
 
     cl, cr_ = st.columns(2)
     with cl:
-        st.markdown('<div class="info-card"><div class="card-label">AUFWÄRTSTREND-PRÜFUNG</div>', unsafe_allow_html=True)
-        a200 = not np.isnan(L["SMA200"]) and L["Close"]>L["SMA200"]
-        a50 = not np.isnan(L["SMA50"]) and L["Close"]>L["SMA50"]
-        a21 = not np.isnan(L["EMA21"]) and L["Close"]>L["EMA21"]
-        mao = bool(L["MA_Order"]) if not pd.isna(L["MA_Order"]) else False
-        render_check("Kurs über 200-SMA", a200, f"{L['Close']:.0f} vs {L['SMA200']:.0f}" if not np.isnan(L["SMA200"]) else "")
-        render_check("Kurs über 50-SMA", a50, f"{L['Close']:.0f} vs {L['SMA50']:.0f}" if not np.isnan(L["SMA50"]) else "")
-        render_check("Kurs über 21-EMA", a21, f"{L['Close']:.0f} vs {L['EMA21']:.0f}" if not np.isnan(L["EMA21"]) else "")
-        render_check("21>50>200 (richtige Ordnung)", mao, "Durchschnitte korrekt gestaffelt")
-        render_check("Distributionstage ≤ 3", dc<=3, f"{dc} im 25T-Fenster")
+        st.markdown('<div class="info-card"><div class="card-label">AUFWÄRTSTREND-PRÜFUNG — KURS VS. DURCHSCHNITTE</div>', unsafe_allow_html=True)
+
+        # Precompute all values
+        _c = L["Close"]; _l = L["Low"]
+        _e21 = L["EMA21"]; _s50 = L["SMA50"]; _s200 = L["SMA200"]
+        _e21_ok = not np.isnan(_e21); _s50_ok = not np.isnan(_s50); _s200_ok = not np.isnan(_s200)
+        _pct_pos = pct > 0
+
+        # ── 21-EMA block ──
+        render_check("Tagesschluss über 21-EMA",
+                     _e21_ok and _c > _e21,
+                     f"Close {_c:,.0f} vs 21-EMA {_e21:,.0f}" if _e21_ok else "")
+        render_check("Tagestief über 21-EMA",
+                     _e21_ok and _l > _e21,
+                     f"Low {_l:,.0f} vs 21-EMA {_e21:,.0f}" if _e21_ok else "")
+        render_check("21-EMA wird gehalten (Schluss im Plus)",
+                     bool(L.get("EMA21_held", False)),
+                     "Low nahe 21-EMA, aber Close im Plus" if bool(L.get("EMA21_held", False)) else "Kein Bounce-Tag")
+        consec_21 = int(L.get("Consec_Low_above_21", 0))
+        render_check("3 Tage mit Tief über 21-EMA",
+                     consec_21 >= 3,
+                     f"{consec_21} aufeinanderfolgende Tage")
+
+        # ── 50-SMA block ──
+        render_check("Tagesschluss über 50-SMA",
+                     _s50_ok and _c > _s50,
+                     f"Close {_c:,.0f} vs 50-SMA {_s50:,.0f}" if _s50_ok else "")
+        render_check("Tagestief über 50-SMA",
+                     _s50_ok and _l > _s50,
+                     f"Low {_l:,.0f} vs 50-SMA {_s50:,.0f}" if _s50_ok else "")
+        render_check("50-SMA wird gehalten (Schluss im Plus)",
+                     bool(L.get("SMA50_held", False)),
+                     "Low nahe 50-SMA, aber Close im Plus" if bool(L.get("SMA50_held", False)) else "Kein Bounce-Tag")
+        consec_50 = int(L.get("Consec_Low_above_50", 0))
+        render_check("3 Tage mit Tief über 50-SMA",
+                     consec_50 >= 3,
+                     f"{consec_50} aufeinanderfolgende Tage")
+
+        # ── 200-SMA block ──
+        render_check("Tagesschluss über 200-SMA",
+                     _s200_ok and _c > _s200,
+                     f"Close {_c:,.0f} vs 200-SMA {_s200:,.0f}" if _s200_ok else "")
+        render_check("Tagestief über 200-SMA",
+                     _s200_ok and _l > _s200,
+                     f"Low {_l:,.0f} vs 200-SMA {_s200:,.0f}" if _s200_ok else "")
+        render_check("200-SMA wird gehalten (Schluss im Plus)",
+                     bool(L.get("SMA200_held", False)),
+                     "Low nahe 200-SMA, aber Close im Plus" if bool(L.get("SMA200_held", False)) else "Kein Bounce-Tag")
+        consec_200 = int(L.get("Consec_Low_above_200", 0))
+        render_check("3 Tage mit Tief über 200-SMA",
+                     consec_200 >= 3,
+                     f"{consec_200} aufeinanderfolgende Tage")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # ── MA ORDER & DISTRIBUTION ──
+        st.markdown('<div class="info-card"><div class="card-label">ORDNUNG DER DURCHSCHNITTE</div>', unsafe_allow_html=True)
+        ema21_above_sma50 = _e21_ok and _s50_ok and _e21 > _s50
+        ema21_above_sma200 = _e21_ok and _s200_ok and _e21 > _s200
+        sma50_above_sma200 = _s50_ok and _s200_ok and _s50 > _s200
+        mao = ema21_above_sma50 and sma50_above_sma200
+
+        render_check("21-EMA über 50-SMA", ema21_above_sma50,
+                     f"21-EMA {_e21:,.0f} vs 50-SMA {_s50:,.0f}" if _e21_ok and _s50_ok else "")
+        render_check("21-EMA über 200-SMA", ema21_above_sma200,
+                     f"21-EMA {_e21:,.0f} vs 200-SMA {_s200:,.0f}" if _e21_ok and _s200_ok else "")
+        render_check("50-SMA über 200-SMA", sma50_above_sma200,
+                     f"50-SMA {_s50:,.0f} vs 200-SMA {_s200:,.0f}" if _s50_ok and _s200_ok else "")
+        render_check("Distributionstage ≤ 3", dc <= 3, f"{dc} im 25T-Fenster")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with cr_:
         st.markdown('<div class="info-card"><div class="card-label">TRENDWENDE-AMPEL DETAILS</div>', unsafe_allow_html=True)
-        rows = {"Aktuelle Phase": L["Ampel_Phase"].upper(), "Ankertag": L["Anchor_Date"] or "—",
-                "Bodenmarke": f"{L['Floor_Mark']:.2f}" if L["Floor_Mark"] else "—",
-                "Startschuss-Tief": f"{L['Startschuss_Low']:.2f}" if L["Startschuss_Low"] else "—",
-                "MA-Ordnung": "Korrekt ✓" if mao else "Gestört ✗"}
+        _e21v = L["EMA21"]; _s50v = L["SMA50"]; _s200v = L["SMA200"]
+        _mao = (not np.isnan(_e21v) and not np.isnan(_s50v) and not np.isnan(_s200v)
+                and _e21v > _s50v and _s50v > _s200v)
+        rows = {"Aktuelle Phase": L["Ampel_Phase"].upper().replace("AUFWAERTSTREND","AUFWÄRTSTREND"),
+                "Ankertag": L["Anchor_Date"] or "— (kein aktiver Zyklus)",
+                "Bodenmarke": f"{L['Floor_Mark']:.2f}" if L["Floor_Mark"] else "— (kein aktiver Zyklus)",
+                "Startschuss-Tief": f"{L['Startschuss_Low']:.2f}" if L["Startschuss_Low"] else "— (kein aktiver Zyklus)",
+                "MA-Ordnung": "Korrekt ✓" if _mao else "Gestört ✗"}
         st.dataframe(pd.DataFrame({"Kennzahl":rows.keys(),"Wert":rows.values()}).set_index("Kennzahl"), use_container_width=True, height=220)
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -405,8 +552,8 @@ def main():
     st.markdown('<div class="info-card"><div class="card-label">TÄGLICHE CHECKLISTE</div>', unsafe_allow_html=True)
     ddv = float(L["Dist_52w_pct"]) if not np.isnan(L["Dist_52w_pct"]) else 0
     render_check("Substanzielle Korrektur?", ddv < -8, f"Drawdown: {ddv:.1f}%")
-    render_check("Stabilisierung erkannt?", L["Ampel_Phase"]!="rot" or L["Anchor_Date"] is not None, f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Noch keine")
-    render_check("Startschuss (Phase ≥ Gelb)?", L["Ampel_Phase"] in ("gelb","gruen"), f"Phase: {L['Ampel_Phase'].upper()}")
+    render_check("Stabilisierung erkannt?", L["Ampel_Phase"] not in ("rot",) or L["Anchor_Date"] is not None, f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein aktiver Ampel-Zyklus" if L["Ampel_Phase"] in ("neutral","aufwaertstrend") else "Noch keine")
+    render_check("Startschuss (Phase ≥ Gelb)?", L["Ampel_Phase"] in ("gelb","gruen","aufwaertstrend"), f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND','AUFWÄRTSTREND')}")
     if ep in data:
         dfe = compute_breadth_mode(data[ep].copy()); bm = dfe.iloc[-1]["Breadth_Mode"]
         render_check("Marktbreite unterstützend?", bm!="schutz", f"Modus: {bm.capitalize()}")
