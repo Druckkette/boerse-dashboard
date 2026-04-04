@@ -44,20 +44,55 @@ h1{font-size:1.6rem!important;font-weight:800!important;background:linear-gradie
 </style>""", unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════
-# TOP 100 S&P 500 COMPONENTS (for breadth calculation)
 # ═══════════════════════════════════════════════════════
-SP100 = [
-    'AAPL','MSFT','AMZN','NVDA','GOOGL','META','BRK-B','LLY','AVGO','JPM',
-    'TSLA','UNH','XOM','V','MA','PG','COST','JNJ','HD','ABBV',
-    'WMT','NFLX','BAC','KO','MRK','CRM','CVX','ORCL','AMD','PEP',
-    'TMO','LIN','ACN','MCD','CSCO','ABT','ADBE','WFC','GE','PM',
-    'DHR','IBM','NOW','QCOM','TXN','INTU','CAT','ISRG','AMGN','GS',
-    'AXP','BKNG','SPGI','BLK','VRTX','MS','PFE','RTX','GILD','SYK',
-    'LOW','HON','T','MDLZ','NEE','UNP','ELV','PLD','BA','SCHW',
-    'AMAT','DE','CB','BX','ADI','MMC','LMT','ADP','SHW','REGN',
-    'CI','FI','PYPL','KLAC','SNPS','SO','DUK','CME','MO','CDNS',
-    'ICE','ZTS','PGR','USB','CL','TJX','MCO','BSX','WM','BMY',
-]
+# S&P 500 COMPONENTS (full list for breadth calculation)
+# ═══════════════════════════════════════════════════════
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_sp500_tickers():
+    """Try to load current S&P 500 tickers from Wikipedia, fall back to hardcoded list."""
+    try:
+        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        symbols = tables[0]["Symbol"].tolist()
+        return [s.replace(".", "-") for s in symbols]
+    except Exception:
+        pass
+    # Hardcoded fallback (503 tickers, as of early 2025)
+    return [
+        'AAPL','ABBV','ABT','ACN','ADBE','ADI','ADM','ADP','ADSK','AEE','AEP','AES','AFL','AIG','AIZ',
+        'AJG','AKAM','ALB','ALGN','ALK','ALL','ALLE','AMAT','AMCR','AMD','AME','AMGN','AMP','AMT','AMZN',
+        'ANET','ANSS','AON','AOS','APA','APD','APH','APTV','ARE','ATO','ATVI','AVB','AVGO','AVY','AWK',
+        'AXP','AZO','BA','BAC','BAX','BBWI','BBY','BDX','BEN','BF-B','BIO','BK','BKNG','BKR','BLK',
+        'BMY','BR','BRK-B','BRO','BSX','BWA','BX','BXP','C','CAG','CAH','CARR','CAT','CB','CBOE',
+        'CBRE','CCI','CCL','CDNS','CDW','CE','CEG','CF','CFG','CHD','CHRW','CHTR','CI','CINF','CL',
+        'CLX','CMA','CMCSA','CME','CMG','CMI','CMS','CNC','CNP','COF','COO','COP','COST','CPB','CPRT',
+        'CPT','CRL','CRM','CSCO','CSGP','CSX','CTAS','CTLT','CTRA','CTSH','CTVA','CVS','CVX','CZR',
+        'D','DAL','DD','DE','DFS','DG','DGX','DHI','DHR','DIS','DISH','DLR','DLTR','DOV','DOW',
+        'DPZ','DRI','DTE','DUK','DVA','DVN','DXC','DXCM','EA','EBAY','ECL','ED','EFX','EIX','EL',
+        'EMN','EMR','ENPH','EOG','EPAM','EQIX','EQR','EQT','ES','ESS','ETN','ETR','ETSY','EVRG','EW',
+        'EXC','EXPD','EXPE','EXR','F','FANG','FAST','FBHS','FCX','FDS','FDX','FE','FFIV','FI','FICO',
+        'FIS','FISV','FITB','FLT','FMC','FOX','FOXA','FRC','FRT','FTNT','FTV','GD','GE','GEHC','GEN',
+        'GILD','GIS','GL','GLW','GM','GNRC','GOOG','GOOGL','GPC','GPN','GRMN','GS','GWW','HAL','HAS',
+        'HBAN','HCA','HD','HOLX','HON','HPE','HPQ','HRL','HSIC','HST','HSY','HUM','HWM','IBM','ICE',
+        'IDXX','IEX','IFF','ILMN','INCY','INTC','INTU','INVH','IP','IPG','IQV','IR','IRM','ISRG','IT',
+        'ITW','IVZ','J','JBHT','JCI','JKHY','JNJ','JNPR','JPM','K','KDP','KEY','KEYS','KHC','KIM',
+        'KLAC','KMB','KMI','KMX','KO','KR','L','LDOS','LEN','LH','LHX','LIN','LKQ','LLY','LMT',
+        'LNC','LNT','LOW','LRCX','LUMN','LUV','LVS','LW','LYB','LYV','MA','MAA','MAR','MAS','MCD',
+        'MCHP','MCK','MCO','MDLZ','MDT','MET','META','MGM','MHK','MKC','MKTX','MLM','MMC','MMM','MNST',
+        'MO','MOH','MOS','MPC','MPWR','MRK','MRNA','MRO','MS','MSCI','MSFT','MSI','MTB','MTCH','MTD',
+        'MU','NCLH','NDAQ','NDSN','NEE','NEM','NFLX','NI','NKE','NOC','NOW','NRG','NSC','NTAP','NTRS',
+        'NUE','NVDA','NVR','NWL','NWS','NWSA','NXPI','O','ODFL','OGN','OKE','OMC','ON','ORCL','ORLY',
+        'OTIS','OXY','PARA','PAYC','PAYX','PCAR','PCG','PEAK','PEG','PEP','PFE','PFG','PG','PGR','PH',
+        'PHM','PKG','PKI','PLD','PM','PNC','PNR','PNW','PODD','POOL','PPG','PPL','PRU','PSA','PSX',
+        'PTC','PVH','PWR','PXD','PYPL','QCOM','QRVO','RCL','RE','REG','REGN','RF','RHI','RJF','RL',
+        'RMD','ROK','ROL','ROP','ROST','RSG','RTX','RVTY','SBAC','SBNY','SBUX','SCHW','SEE','SHW',
+        'SIVB','SJM','SLB','SNA','SNPS','SO','SPG','SPGI','SRE','STE','STT','STX','STZ','SWK','SWKS',
+        'SYF','SYK','SYY','T','TAP','TDG','TDY','TECH','TEL','TER','TFC','TFX','TGT','TJX','TMO',
+        'TMUS','TPR','TRGP','TRMB','TROW','TRV','TSCO','TSLA','TSN','TT','TTWO','TXN','TXT','TYL',
+        'UAL','UDR','UHS','ULTA','UNH','UNP','UPS','URI','USB','V','VFC','VICI','VLO','VMC','VRSK',
+        'VRSN','VRTX','VTR','VTRS','VZ','WAB','WAT','WBA','WBD','WDC','WEC','WELL','WFC','WHR','WM',
+        'WMB','WMT','WRB','WRK','WST','WTW','WY','WYNN','XEL','XOM','XRAY','XYL','YUM','ZBH','ZBRA',
+        'ZION','ZTS',
+    ]
 
 # ═══════════════════════════════════════════════════════
 # DATA LOADING
@@ -90,17 +125,16 @@ def load_market_data(lookback_days=400):
     return data
 
 # ═══════════════════════════════════════════════════════
-# DEEP ANALYSIS: S&P 100 breadth + FRED
+# DEEP ANALYSIS: S&P 500 breadth + FRED
 # ═══════════════════════════════════════════════════════
 @st.cache_data(ttl=900, show_spinner=False)
-@st.cache_data(ttl=900, show_spinner=False)
-def load_sp100_data(lookback_days=550):
-    """Download close prices for top 100 S&P 500 stocks."""
+def load_sp500_breadth_data(lookback_days=550):
+    """Download close prices for all S&P 500 stocks."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
+    tickers = get_sp500_tickers()
     try:
-        df = yf.download(SP100, start=start, end=end, progress=False, auto_adjust=True)
+        df = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=True, threads=True)
         if df is None or len(df) == 0: return None
-        # Extract Close prices — handle MultiIndex
         if isinstance(df.columns, pd.MultiIndex):
             closes = df["Close"].copy()
         else:
@@ -108,9 +142,12 @@ def load_sp100_data(lookback_days=550):
         closes = closes.apply(pd.to_numeric, errors="coerce")
         closes.index = pd.to_datetime(closes.index)
         closes = closes.sort_index()
+        # Drop columns (stocks) that are mostly NaN (delisted, etc.)
+        thresh = len(closes) * 0.5  # need at least 50% of days
+        closes = closes.dropna(axis=1, thresh=int(thresh))
         return closes
     except Exception as e:
-        st.warning(f"Fehler beim Laden der S&P 100 Daten: {e}")
+        st.warning(f"Fehler beim Laden der S&P 500 Daten: {e}")
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -552,7 +589,7 @@ def main():
     # ══════════════════════════════════════════════════
     st.markdown("---")
     st.markdown("### 🔬 Tiefenanalyse — Marktbreite & Makro")
-    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs aus den Top 100 S&P 500 Aktien. Optional: Fed Funds Rate über FRED API.")
+    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs, Deemer Ratio aus allen S&P 500 Aktien. Optional: Fed Funds Rate über FRED API.")
 
     # FRED key: try secrets first, then environment, then manual input
     fred_key = ""
@@ -563,23 +600,37 @@ def main():
     if not fred_key:
         fred_key = os.environ.get("FRED_API_KEY", "")
     if not fred_key:
-        fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
+        fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfeed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
 
     if st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True):
-        with st.spinner("Lade Top 100 S&P 500 Aktien … (ca. 30 Sek.)"):
-            closes = load_sp100_data()
+        with st.spinner("Lade S&P 500 Aktien … (kann 1–2 Min. dauern)"):
+            closes = load_sp500_breadth_data()
 
         if closes is not None and len(closes) > 50:
             br = compute_breadth_from_components(closes)
             if br is not None and len(br) > 20:
-                st.success(f"✓ {len(closes.columns)} Aktien geladen, {len(br)} Handelstage berechnet")
+                # Determine last valid trading day (last row with actual data)
+                last_trading_date = br.index[-1].strftime("%d.%m.%Y")
+                today_str = datetime.now().strftime("%d.%m.%Y")
+                is_today = last_trading_date == today_str
+                date_note = f"Stand: {last_trading_date}" + ("" if is_today else " (letzter Handelstag)")
+
+                st.success(f"✓ {len(closes.columns)} Aktien geladen, {len(br)} Handelstage · {date_note}")
 
                 # ── Breadth Charts ──
                 st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
 
-                # ── Latest values ──
-                bL = br.iloc[-1]
-                st.markdown('<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN (Top 100 S&P 500)</div>', unsafe_allow_html=True)
+                # ── Latest values (use last VALID row, not today) ──
+                # Drop rows where most indicators are NaN (non-trading days)
+                br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
+                if len(br_valid) == 0:
+                    st.warning("Keine gültigen Handelstage gefunden.")
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    return
+                bL = br_valid.iloc[-1]
+                bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
+
+                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — S&P 500 ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
 
                 kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                 with kb1:
@@ -588,8 +639,10 @@ def main():
                               "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "")
                 with kb2:
                     nhr = bL["NH_NL_Ratio"]
-                    st.metric("NH/NL Ratio", f"{nhr:.1f}" if not np.isnan(nhr) else "—",
-                              "Breite Rally" if (not np.isnan(nhr) and nhr > 3) else "Bärisch" if (not np.isnan(nhr) and nhr < 0.5) else "")
+                    nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0
+                    nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
+                    st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}",
+                              f"{nh_val} Hochs / {nl_val} Tiefs")
                 with kb3:
                     p50 = bL["Pct_Above_50SMA"]
                     st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—",
@@ -629,7 +682,7 @@ def main():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte S&P 100 Daten nicht laden.")
+            st.error("Konnte S&P 500 Daten nicht laden. Bitte erneut versuchen.")
 
         # ── Fed Funds Rate ──
         if fred_key:
