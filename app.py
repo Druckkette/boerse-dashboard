@@ -159,10 +159,13 @@ def compute_breadth_from_components(closes):
     results["McClellan"] = results["McC_19"] - results["McC_39"]
 
     # New 52-week Highs / Lows
-    high_252 = closes.rolling(252, min_periods=50).max()
-    low_252 = closes.rolling(252, min_periods=50).min()
-    results["New_Highs"] = (closes >= high_252 * 0.998).sum(axis=1)  # within 0.2%
-    results["New_Lows"] = (closes <= low_252 * 1.002).sum(axis=1)
+    # Use SHIFTED rolling window so today's close is compared to the PREVIOUS 252 days
+    # (not including today itself — otherwise a stock is always at its own high)
+    high_252_prev = closes.shift(1).rolling(252, min_periods=20).max()
+    low_252_prev = closes.shift(1).rolling(252, min_periods=20).min()
+    # A stock is at a new high if today's close exceeds the previous 252-day high
+    results["New_Highs"] = (closes >= high_252_prev).sum(axis=1)
+    results["New_Lows"] = (closes <= low_252_prev).sum(axis=1)
     results["NH_NL_Ratio"] = results["New_Highs"] / results["New_Lows"].replace(0, np.nan)
 
     # % of stocks above 50-SMA and 200-SMA
@@ -373,9 +376,11 @@ def plot_vix(dv,sd=90):
     return fig
 
 def plot_breadth_deep(br,sd=90):
-    """4 subplots: A/D Line, McClellan, NH/NL, % above MAs."""
+    """5 subplots: A/D Line, McClellan, NH/NL, % above MAs, Deemer Ratio."""
     d=br.tail(sd);x=_x(d.index)
-    fig=make_subplots(rows=4,cols=1,shared_xaxes=True,vertical_spacing=0.04,subplot_titles=("A/D-Linie (kumulativ)","McClellan Oscillator","Neue Hochs vs. Neue Tiefs","% über gleitenden Durchschnitten"),row_heights=[0.25,0.25,0.25,0.25])
+    fig=make_subplots(rows=5,cols=1,shared_xaxes=True,vertical_spacing=0.035,
+        subplot_titles=("A/D-Linie (kumulativ)","McClellan Oscillator","Neue Hochs vs. Neue Tiefs","% über gleitenden Durchschnitten","Deemer Ratio (Breitenschub)"),
+        row_heights=[0.2,0.2,0.2,0.2,0.2])
     # A/D Line
     fig.add_trace(go.Scatter(x=x,y=_y(d["AD_Line"]),name="A/D-Linie",line=dict(color="#06b6d4",width=1.5)),row=1,col=1)
     fig.add_trace(go.Scatter(x=x,y=_y(d["AD_Line_SMA21"]),name="21-SMA",line=dict(color="#64748b",width=1,dash="dot")),row=1,col=1)
@@ -391,10 +396,13 @@ def plot_breadth_deep(br,sd=90):
     fig.add_trace(go.Scatter(x=x,y=_y(d["Pct_Above_50SMA"]),name="% > 50-SMA",line=dict(color="#f97316",width=1.5)),row=4,col=1)
     fig.add_trace(go.Scatter(x=x,y=_y(d["Pct_Above_200SMA"]),name="% > 200-SMA",line=dict(color="#a855f7",width=1.5)),row=4,col=1)
     fig.add_hline(y=70,line_dash="dot",line_color="#f59e0b",line_width=0.5,row=4,col=1)
+    # Deemer Ratio
+    fig.add_trace(go.Scatter(x=x,y=_y(d["Deemer_Ratio"]),name="Deemer Ratio",line=dict(color="#06b6d4",width=1.5)),row=5,col=1)
+    fig.add_hline(y=1.97,line_dash="dash",line_color="#22c55e",line_width=1,annotation_text="1.97 (Thrust)",annotation_font_color="#22c55e",annotation_font_size=9,row=5,col=1)
+    fig.add_hline(y=1.0,line_dash="dot",line_color="#64748b",line_width=0.5,row=5,col=1)
 
-    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=600,showlegend=False)
-    for i in range(1,5): fig.update_xaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
-    # Make subplot titles lighter
+    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=750,showlegend=False)
+    for i in range(1,6): fig.update_xaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
     for ann in fig.layout.annotations: ann.font.size=10;ann.font.color="#94a3b8"
     return fig
 
@@ -566,7 +574,7 @@ def main():
                 bL = br.iloc[-1]
                 st.markdown('<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN (Top 100 S&P 500)</div>', unsafe_allow_html=True)
 
-                kb1, kb2, kb3, kb4 = st.columns(4)
+                kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                 with kb1:
                     mc = bL["McClellan"]
                     st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—",
@@ -574,7 +582,7 @@ def main():
                 with kb2:
                     nhr = bL["NH_NL_Ratio"]
                     st.metric("NH/NL Ratio", f"{nhr:.1f}" if not np.isnan(nhr) else "—",
-                              "Breite Rally" if nhr > 3 else "Bärisch" if nhr < 0.5 else "")
+                              "Breite Rally" if (not np.isnan(nhr) and nhr > 3) else "Bärisch" if (not np.isnan(nhr) and nhr < 0.5) else "")
                 with kb3:
                     p50 = bL["Pct_Above_50SMA"]
                     st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—",
@@ -582,6 +590,10 @@ def main():
                 with kb4:
                     p200 = bL["Pct_Above_200SMA"]
                     st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
+                with kb5:
+                    dr = bL["Deemer_Ratio"]
+                    st.metric("Deemer Ratio", f"{dr:.2f}" if not np.isnan(dr) else "—",
+                              "🚀 THRUST!" if (not np.isnan(dr) and dr > 1.97) else "")
 
                 # Breadth Thrust check
                 recent_thrust = br["Breadth_Thrust"].tail(20).any()
@@ -605,6 +617,8 @@ def main():
                 render_check("Keine Divergenz Index vs. A/D-Linie",
                              not (spx_at_high and not ad_at_high) if "S&P 500" in data else True,
                              "A/D-Linie bestätigt" if "S&P 500" in data else "")
+                render_check("Deemer Ratio (Breitenschub)", not np.isnan(dr) and dr > 1.0,
+                             f"Ratio: {dr:.2f}" + (" — 🚀 THRUST >1.97!" if dr > 1.97 else "") if not np.isnan(dr) else "—")
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
