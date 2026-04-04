@@ -125,6 +125,92 @@ def load_market_data(lookback_days=400):
     return data
 
 # ═══════════════════════════════════════════════════════
+# SECTOR ANALYSIS DATA
+# ═══════════════════════════════════════════════════════
+SECTOR_ETFS = {
+    "XLK": "Technology",
+    "XLV": "Health Care",
+    "XLF": "Financials",
+    "XLI": "Industrials",
+    "XLP": "Consumer Staples",
+    "XLY": "Consumer Discretionary",
+    "XLE": "Energy",
+    "XLB": "Materials",
+    "XLC": "Communication Services",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+}
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_sector_data(lookback_days=200):
+    """Load daily close prices for all sector ETFs."""
+    end = datetime.now(); start = end - timedelta(days=lookback_days)
+    symbols = list(SECTOR_ETFS.keys())
+    try:
+        df = yf.download(symbols, start=start, end=end, progress=False, auto_adjust=True, threads=True)
+        if df is None or len(df) == 0: return None
+        if isinstance(df.columns, pd.MultiIndex):
+            closes = df["Close"].copy()
+        else:
+            closes = df[["Close"]].copy()
+        closes = closes.apply(pd.to_numeric, errors="coerce")
+        closes.index = pd.to_datetime(closes.index)
+        closes = closes.sort_index()
+        return closes
+    except Exception as e:
+        return None
+
+def build_sector_table(closes, mode="daily", n_periods=20):
+    """Build the ranked sector performance table.
+    mode: 'daily' = each column is a trading day
+          'weekly' = each column is a trading week (Friday close)
+    Returns a styled DataFrame ready for display.
+    """
+    if closes is None or len(closes) < 5: return None, None
+
+    if mode == "weekly":
+        # Resample to weekly (Friday close)
+        weekly = closes.resample("W-FRI").last().dropna(how="all")
+        pct = weekly.pct_change() * 100
+        pct = pct.dropna(how="all")
+        display_data = pct.tail(n_periods + 1)  # +1 because we show the latest + history
+    else:
+        pct = closes.pct_change() * 100
+        pct = pct.dropna(how="all")
+        display_data = pct.tail(n_periods + 1)
+
+    if len(display_data) < 2: return None, None
+
+    # Latest period for ranking
+    latest = display_data.iloc[-1].dropna()
+
+    # Rename columns: ETF ticker → "Sektor (ETF)"
+    col_rename = {etf: f"{name} ({etf})" for etf, name in SECTOR_ETFS.items()}
+
+    # Build the transposed table: rows = sectors, columns = dates
+    result = display_data.T.copy()
+    result.index = [col_rename.get(idx, idx) for idx in result.index]
+
+    # Format date columns
+    if mode == "weekly":
+        result.columns = [d.strftime("KW%V %d.%m") for d in result.columns]
+    else:
+        result.columns = [d.strftime("%d.%m") for d in result.columns]
+
+    # Sort rows by the latest column (best performer first)
+    last_col = result.columns[-1]
+    result = result.sort_values(by=last_col, ascending=False)
+
+    # Round to 2 decimals
+    result = result.round(2)
+
+    # Also return the latest values for the ranking summary
+    latest_ranked = latest.sort_values(ascending=False)
+    latest_ranked.index = [col_rename.get(idx, idx) for idx in latest_ranked.index]
+
+    return result, latest_ranked
+
+# ═══════════════════════════════════════════════════════
 # DEEP ANALYSIS: S&P 500 breadth + FRED
 # ═══════════════════════════════════════════════════════
 @st.cache_data(ttl=900, show_spinner=False)
@@ -595,7 +681,145 @@ def plot_fed_rate(fed_df,sd=200):
 # ═══════════════════════════════════════════════════════
 def main():
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
-    st.caption("Modul 1 — Markt-Dashboard & Trendwende-Ampel v3.0")
+
+    tab1, tab2, tab3 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung"])
+
+    # ═══════════════════════════════════════════════════════
+    # TAB 1: MARKTANALYSE (existing content)
+    # ═══════════════════════════════════════════════════════
+    with tab1:
+        _tab_marktanalyse()
+
+    # ═══════════════════════════════════════════════════════
+    # TAB 2: SEKTORANALYSE
+    # ═══════════════════════════════════════════════════════
+    with tab2:
+        _tab_sektoranalyse()
+
+    # ═══════════════════════════════════════════════════════
+    # TAB 3: AKTIENBEWERTUNG (placeholder)
+    # ═══════════════════════════════════════════════════════
+    with tab3:
+        st.info("🚧 Modul 2 — Aktienbewertung (Watchlist, Checkliste, positive/negative Zeichen) wird in einer zukünftigen Version ergänzt.")
+
+
+def _tab_sektoranalyse():
+    """Tab 2: Sector performance ranking table."""
+    st.markdown("### 🏭 Sektoranalyse — Performance-Ranking")
+    st.caption("S&P 500 Sektor-ETFs gerankt nach Performance. Bester Sektor steht oben.")
+
+    with st.spinner("Lade Sektor-Daten …"):
+        sector_closes = load_sector_data()
+
+    if sector_closes is None or len(sector_closes) < 5:
+        st.error("Sektor-Daten konnten nicht geladen werden.")
+        return
+
+    # View mode selector
+    sc1, sc2 = st.columns([2, 1])
+    with sc1:
+        mode = st.radio("Ansicht", ["Tagesansicht", "Wochenansicht"], horizontal=True, label_visibility="collapsed")
+    with sc2:
+        n_periods = st.selectbox("Historie", [10, 20, 30], index=1, format_func=lambda x: f"{x} {'Tage' if mode == 'Tagesansicht' else 'Wochen'}")
+
+    is_daily = mode == "Tagesansicht"
+    table, latest_ranked = build_sector_table(sector_closes, mode="daily" if is_daily else "weekly", n_periods=n_periods)
+
+    if table is None or latest_ranked is None:
+        st.warning("Nicht genug Daten für die Auswertung.")
+        return
+
+    # Determine the last trading date from the data
+    last_date = sector_closes.index[-1].strftime("%d.%m.%Y")
+    today = datetime.now().strftime("%d.%m.%Y")
+    date_note = f"Stand: {last_date}" + ("" if last_date == today else " (letzter Handelstag)")
+    st.caption(date_note)
+
+    # ── TOP 3 / BOTTOM 3 summary ──
+    top3 = latest_ranked.head(3)
+    bot3 = latest_ranked.tail(3)
+
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        st.markdown('<div class="card-label">🏆 TOP 3 SEKTOREN</div>', unsafe_allow_html=True)
+        for i, (name, val) in enumerate(top3.items()):
+            medal = ["🥇", "🥈", "🥉"][i]
+            c = "#22c55e" if val > 0 else "#ef4444"
+            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e293b;">'
+                        f'<span style="font-size:.85rem;color:#e2e8f0;">{medal} {name}</span>'
+                        f'<span style="font-size:.85rem;font-weight:700;color:{c};">{val:+.2f}%</span></div>',
+                        unsafe_allow_html=True)
+    with tc2:
+        st.markdown('<div class="card-label">📉 BOTTOM 3 SEKTOREN</div>', unsafe_allow_html=True)
+        for name, val in bot3.items():
+            c = "#22c55e" if val > 0 else "#ef4444"
+            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e293b;">'
+                        f'<span style="font-size:.85rem;color:#e2e8f0;">{name}</span>'
+                        f'<span style="font-size:.85rem;font-weight:700;color:{c};">{val:+.2f}%</span></div>',
+                        unsafe_allow_html=True)
+
+    st.markdown("")
+
+    # ── FULL TABLE with color coding ──
+    st.markdown(f'<div class="card-label">PERFORMANCE-TABELLE ({mode.upper()} · letzte {n_periods} {"Tage" if is_daily else "Wochen"} · sortiert nach jüngstem {"Tag" if is_daily else "Woche"})</div>', unsafe_allow_html=True)
+
+    # Style the table: green for positive, red for negative
+    def _color_cell(val):
+        if pd.isna(val): return ""
+        if val > 1.5: return "background-color: #22c55e30; color: #22c55e; font-weight: 600"
+        if val > 0: return "background-color: #22c55e15; color: #22c55e"
+        if val < -1.5: return "background-color: #ef444430; color: #ef4444; font-weight: 600"
+        if val < 0: return "background-color: #ef444415; color: #ef4444"
+        return "color: #94a3b8"
+
+    styled = table.style.applymap(_color_cell).format("{:+.2f}%", na_rep="—")
+
+    st.dataframe(styled, use_container_width=True, height=min(500, 40 + len(table) * 38))
+
+    # ── RANKING POSITION HISTORY ──
+    st.markdown("")
+    st.markdown(f'<div class="card-label">RANKING-VERLAUF (Position 1 = bester Sektor)</div>', unsafe_allow_html=True)
+
+    # Build ranking history
+    if is_daily:
+        pct_all = sector_closes.pct_change() * 100
+    else:
+        pct_all = sector_closes.resample("W-FRI").last().pct_change() * 100
+    pct_all = pct_all.dropna(how="all").tail(n_periods)
+
+    # For each period, rank the sectors (1 = best)
+    rankings = pct_all.rank(axis=1, ascending=False, method="min").astype(int)
+
+    # Rename columns
+    col_rename = {etf: f"{name} ({etf})" for etf, name in SECTOR_ETFS.items()}
+    rankings.columns = [col_rename.get(c, c) for c in rankings.columns]
+
+    # Plot ranking lines
+    fig = go.Figure()
+    colors_cycle = ["#06b6d4", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#f97316",
+                    "#3b82f6", "#ec4899", "#84cc16", "#64748b", "#14b8a6"]
+    for i, col in enumerate(rankings.columns):
+        fig.add_trace(go.Scatter(
+            x=_x(rankings.index), y=_y(rankings[col]),
+            name=col.split(" (")[0],  # short name
+            line=dict(color=colors_cycle[i % len(colors_cycle)], width=1.5),
+            mode="lines+markers", marker=dict(size=4),
+        ))
+    fig.update_layout(
+        template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827",
+        margin=dict(l=0, r=0, t=10, b=0), height=350,
+        yaxis=dict(autorange="reversed", gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"),
+                   title="Rang", title_font=dict(size=9, color="#64748b"), dtick=1),
+        xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
+                    font=dict(size=8, color="#94a3b8")),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _tab_marktanalyse():
+    """Tab 1: Full market analysis (original dashboard content)."""
 
     with st.spinner("Lade Marktdaten …"): data=load_market_data()
     if not data: st.error("Keine Marktdaten.");return
