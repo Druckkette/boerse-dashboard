@@ -367,14 +367,139 @@ def detect_failing_rally(df):
 # ═══════════════════════════════════════════════════════
 # RENDER HELPERS
 # ═══════════════════════════════════════════════════════
-def render_ampel(phase):
-    c={"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
-    lbl,desc={"rot":("ROT — Abwarten","Substanzielle Korrektur. Nicht kaufen. Ankertag beobachten."),
-        "gelb":("GELB — Startschuss","Einstiegssignal! Erste Position(en) eröffnen (10–30% Kapital)."),
-        "gruen":("GRÜN — Bestätigung","Startschuss hält. Frühe Bestätigungsphase."),
-        "aufwaertstrend":("AUFWÄRTSTREND ↑","MA-Ordnung bestätigt. Offensiv handeln."),
-        "neutral":("NEUTRAL","Keine substanzielle Korrektur erkannt.")}.get(phase,("NEUTRAL",""))
-    st.markdown(f'<div class="ampel-box" style="background:{c}15;border:1px solid {c}40;"><div class="ampel-dot" style="background:{c};box-shadow:0 0 24px {c}80;"></div><div><div style="font-size:1.1rem;font-weight:700;color:{c};">{lbl}</div><div style="font-size:.8rem;color:#94a3b8;">{desc}</div></div></div>',unsafe_allow_html=True)
+def render_ampel_section(L):
+    """Render the full Trendwende-Ampel section with 3 lights, status, and Startschuss."""
+    phase = L["Ampel_Phase"]
+    anchor = L["Anchor_Date"]
+    floor = L["Floor_Mark"]
+    ss_low = L["Startschuss_Low"]
+
+    # Determine which light is active and why
+    phase_info = {
+        "rot": {
+            "active": 0, "label": "ROT — Abwarten",
+            "reason": "Substanzielle Korrektur läuft." + (
+                f" Ankertag: {anchor}. Bodenmarke: {floor:.0f}." if anchor and floor else
+                " Warte auf Ankertag (erster positiver Schluss)."
+            ),
+            "action": "Nicht kaufen. Beobachte den Markt auf Stabilisierung.",
+        },
+        "gelb": {
+            "active": 1, "label": "GELB — Startschuss",
+            "reason": f"Startschuss erkannt! Ankertag: {anchor}. Validierungslinie (Startschuss-Tief): {ss_low:.0f}." if anchor and ss_low else "Startschuss aktiv.",
+            "action": "Erste Position(en) eröffnen (10–30% Kapital). Nur mit klarem Setup.",
+        },
+        "gruen": {
+            "active": 2, "label": "GRÜN — Bestätigung",
+            "reason": f"Startschuss hält. Kurs über Startschuss-Tief ({ss_low:.0f})." if ss_low else "Startschuss bestätigt.",
+            "action": "Frühe Bestätigungsphase. Vorsichtig Exponierung aufbauen.",
+        },
+        "aufwaertstrend": {
+            "active": 2, "label": "AUFWÄRTSTREND ↑",
+            "reason": "MA-Ordnung bestätigt (21-EMA > 50-SMA > 200-SMA). Ampel-Zyklus abgeschlossen.",
+            "action": "Offensiv handeln. Gießkannenmodus: viele kleine Positionen, beste Läufer aufstocken.",
+        },
+        "neutral": {
+            "active": -1, "label": "NEUTRAL",
+            "reason": "Keine substanzielle Korrektur erkannt. Trendwende-Ampel ist nicht aktiv.",
+            "action": "Normale Marktbeobachtung. Ampel greift erst bei Drawdown > 8%.",
+        },
+    }
+    info = phase_info.get(phase, phase_info["neutral"])
+
+    # Colors for the 3 lights
+    colors_off = ["#3b1111", "#3b2d11", "#112b11"]  # dimmed versions
+    colors_on = ["#ef4444", "#f59e0b", "#22c55e"]
+    labels = ["ROT", "GELB", "GRÜN"]
+    glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440",
+               "0 0 20px #f59e0b80, 0 0 40px #f59e0b40",
+               "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
+
+    # Build the 3 lights
+    lights_html = ""
+    for i in range(3):
+        is_active = i == info["active"]
+        # For Aufwärtstrend, the green light gets a blue glow
+        if phase == "aufwaertstrend" and i == 2:
+            bg = "#3b82f6"
+            glow = "0 0 20px #3b82f680, 0 0 40px #3b82f640"
+            is_active = True
+        else:
+            bg = colors_on[i] if is_active else colors_off[i]
+            glow = glow_on[i] if is_active else "none"
+
+        border = f"2px solid {colors_on[i]}40" if is_active else "2px solid #1e293b"
+        lights_html += f'''
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+            <div style="width:42px;height:42px;border-radius:50%;background:{bg};
+                        box-shadow:{glow};border:{border};transition:all 0.3s;"></div>
+            <div style="font-size:.6rem;color:{'#e2e8f0' if is_active else '#4a5568'};
+                        font-weight:{'700' if is_active else '400'};letter-spacing:.05em;">{labels[i]}</div>
+        </div>'''
+
+    # Startschuss pistol icon
+    startschuss_html = ""
+    if phase in ("gelb", "gruen"):
+        startschuss_html = f'''
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;
+                    background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">
+            <span style="font-size:1.4rem;">🔫</span>
+            <div>
+                <div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div>
+                <div style="font-size:.7rem;color:#94a3b8;">
+                    Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}
+                </div>
+            </div>
+        </div>''' if ss_low and anchor else ""
+
+    # Active phase label color
+    active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
+
+    st.markdown(f'''
+    <div class="info-card" style="padding:20px;">
+        <div class="card-label">TRENDWENDE-AMPEL</div>
+        <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:6px;
+                        background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">
+                <div style="display:flex;gap:12px;">{lights_html}</div>
+            </div>
+            <div style="flex:1;min-width:200px;">
+                <div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">
+                    {info["label"]}
+                </div>
+                <div style="font-size:.8rem;color:#e2e8f0;line-height:1.5;margin-bottom:6px;">
+                    {info["reason"]}
+                </div>
+                <div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;
+                            background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">
+                    → {info["action"]}
+                </div>
+                {startschuss_html}
+            </div>
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
+
+    # Ampel details table below
+    _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
+    eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
+    _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
+
+    details = {
+        "Ankertag": anchor if anchor else "— (kein aktiver Zyklus)" if phase in ("neutral","aufwaertstrend") else "Warte auf Ankertag",
+        "Bodenmarke": f"{floor:,.2f}" if floor else "—",
+        "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low else "—",
+        "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
+    }
+
+    cols = st.columns(4)
+    for i, (k, v) in enumerate(details.items()):
+        with cols[i]:
+            st.markdown(f'''
+            <div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;">
+                <div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div>
+                <div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div>
+            </div>''', unsafe_allow_html=True)
 
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
@@ -475,8 +600,10 @@ def main():
     df=add_indicators(data[selected].copy());df=detect_distribution_days(df);df=compute_ampel(df)
     L=df.iloc[-1];pct=L["Pct_Change"] if not np.isnan(L["Pct_Change"]) else 0.0
 
-    # ── AMPEL ──
-    st.markdown("---");render_ampel(L["Ampel_Phase"]);st.markdown("")
+    # ── TRENDWENDE-AMPEL (eigene Kategorie) ──
+    st.markdown("---")
+    render_ampel_section(L)
+    st.markdown("")
 
     # ── METRICS ──
     m1,m2,m3,m4,m5=st.columns(5);dc=int(L["Dist_Count_25"])
@@ -545,11 +672,17 @@ def main():
         render_check("Distributionstage ≤ 3",dc<=3,f"{dc}")
         st.markdown("</div>",unsafe_allow_html=True)
     with cr_:
-        st.markdown('<div class="info-card"><div class="card-label">TRENDWENDE-AMPEL</div>',unsafe_allow_html=True)
-        _mao=eo and so and s2o and _e>_s5 and _s5>_s2
-        rows={"Phase":L["Ampel_Phase"].upper().replace("AUFWAERTSTREND","AUFWÄRTSTREND"),"Ankertag":L["Anchor_Date"] or "—","Bodenmarke":f"{L['Floor_Mark']:.2f}" if L["Floor_Mark"] else "—","Startschuss-Tief":f"{L['Startschuss_Low']:.2f}" if L["Startschuss_Low"] else "—","MA-Ordnung":"✓" if _mao else "✗"}
-        st.dataframe(pd.DataFrame({"Kennzahl":rows.keys(),"Wert":rows.values()}).set_index("Kennzahl"),use_container_width=True,height=220)
-        st.markdown("</div>",unsafe_allow_html=True)
+        # Sector rotation detail (if available)
+        rot,sd2,sp=detect_sector_rotation(data)
+        if rot is not None and sd2:
+            st.markdown('<div class="info-card"><div class="card-label">SEKTORROTATION (10T)</div>',unsafe_allow_html=True)
+            for group,items in sd2.items():
+                st.markdown(f"**{group}:**")
+                for name,perf in items:
+                    if perf is not None:
+                        c="#22c55e" if perf>0 else "#ef4444"
+                        st.markdown(f'<span style="color:{c};font-size:.85rem;">{name}: {perf:+.1f}%</span>',unsafe_allow_html=True)
+            st.markdown("</div>",unsafe_allow_html=True)
 
     # ── MARKTBREITE (Equal-Weight) ──
     st.markdown("---")
