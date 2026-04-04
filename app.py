@@ -94,7 +94,7 @@ def load_market_data(lookback_days=400):
 # ═══════════════════════════════════════════════════════
 @st.cache_data(ttl=900, show_spinner=False)
 @st.cache_data(ttl=900, show_spinner=False)
-def load_sp100_data(lookback_days=300):
+def load_sp100_data(lookback_days=550):
     """Download close prices for top 100 S&P 500 stocks."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     try:
@@ -159,13 +159,20 @@ def compute_breadth_from_components(closes):
     results["McClellan"] = results["McC_19"] - results["McC_39"]
 
     # New 52-week Highs / Lows
-    # Use SHIFTED rolling window so today's close is compared to the PREVIOUS 252 days
-    # (not including today itself — otherwise a stock is always at its own high)
-    high_252_prev = closes.shift(1).rolling(252, min_periods=20).max()
-    low_252_prev = closes.shift(1).rolling(252, min_periods=20).min()
-    # A stock is at a new high if today's close exceeds the previous 252-day high
-    results["New_Highs"] = (closes >= high_252_prev).sum(axis=1)
-    results["New_Lows"] = (closes <= low_252_prev).sum(axis=1)
+    # For each stock: is today's close above the highest close of the PRIOR trading days?
+    # Use min(252, available_days - 2) so it works even with less than a year of data
+    avail = len(closes)
+    nh_window = min(252, avail - 2) if avail > 22 else 20
+
+    # Build the reference: for each day, the max/min of the PREVIOUS nh_window days
+    # (excluding today). We do this by computing rolling on the shifted series.
+    prev_closes = closes.shift(1)
+    high_ref = prev_closes.rolling(nh_window, min_periods=20).max()
+    low_ref = prev_closes.rolling(nh_window, min_periods=20).min()
+
+    # A stock is at a new high if today's close > highest close of the prior window
+    results["New_Highs"] = (closes > high_ref).sum(axis=1)
+    results["New_Lows"] = (closes < low_ref).sum(axis=1)
     results["NH_NL_Ratio"] = results["New_Highs"] / results["New_Lows"].replace(0, np.nan)
 
     # % of stocks above 50-SMA and 200-SMA
