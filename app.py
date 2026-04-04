@@ -772,7 +772,7 @@ def _tab_sektoranalyse():
         if val < 0: return "background-color: #ef444415; color: #ef4444"
         return "color: #94a3b8"
 
-    styled = table.style.applymap(_color_cell).format("{:+.2f}%", na_rep="—")
+    styled = table.style.map(_color_cell).format("{:+.2f}%", na_rep="—")
 
     st.dataframe(styled, use_container_width=True, height=min(500, 40 + len(table) * 38))
 
