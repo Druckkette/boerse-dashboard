@@ -419,66 +419,59 @@ def render_ampel_section(L):
     lights_html = ""
     for i in range(3):
         is_active = i == info["active"]
-        # For Aufwärtstrend, the green light gets a blue glow
         if phase == "aufwaertstrend" and i == 2:
-            bg = "#3b82f6"
-            glow = "0 0 20px #3b82f680, 0 0 40px #3b82f640"
-            is_active = True
+            bg = "#3b82f6"; glow = "0 0 20px #3b82f680, 0 0 40px #3b82f640"; is_active = True
         else:
             bg = colors_on[i] if is_active else colors_off[i]
             glow = glow_on[i] if is_active else "none"
-
         border = f"2px solid {colors_on[i]}40" if is_active else "2px solid #1e293b"
-        lights_html += f'''
-        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
-            <div style="width:42px;height:42px;border-radius:50%;background:{bg};
-                        box-shadow:{glow};border:{border};transition:all 0.3s;"></div>
-            <div style="font-size:.6rem;color:{'#e2e8f0' if is_active else '#4a5568'};
-                        font-weight:{'700' if is_active else '400'};letter-spacing:.05em;">{labels[i]}</div>
-        </div>'''
+        lbl_c = "#e2e8f0" if is_active else "#4a5568"
+        fw = "700" if is_active else "400"
+        lights_html += (
+            f'<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">'
+            f'<div style="width:42px;height:42px;border-radius:50%;background:{bg};box-shadow:{glow};border:{border};"></div>'
+            f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
+            f'</div>'
+        )
 
-    # Startschuss pistol icon
+    # Startschuss pistol icon (only in gelb/gruen)
     startschuss_html = ""
-    if phase in ("gelb", "gruen"):
-        startschuss_html = f'''
-        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;
-                    background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">
-            <span style="font-size:1.4rem;">🔫</span>
-            <div>
-                <div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div>
-                <div style="font-size:.7rem;color:#94a3b8;">
-                    Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}
-                </div>
-            </div>
-        </div>''' if ss_low and anchor else ""
+    if phase in ("gelb", "gruen") and ss_low and anchor:
+        startschuss_html = (
+            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;'
+            f'background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
+            f'<span style="font-size:1.4rem;">🔫</span>'
+            f'<div>'
+            f'<div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div>'
+            f'<div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div>'
+            f'</div></div>'
+        )
 
     # Active phase label color
     active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
 
-    st.markdown(f'''
-    <div class="info-card" style="padding:20px;">
-        <div class="card-label">TRENDWENDE-AMPEL</div>
-        <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">
-            <div style="display:flex;flex-direction:column;align-items:center;gap:6px;
-                        background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">
-                <div style="display:flex;gap:12px;">{lights_html}</div>
-            </div>
-            <div style="flex:1;min-width:200px;">
-                <div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">
-                    {info["label"]}
-                </div>
-                <div style="font-size:.8rem;color:#e2e8f0;line-height:1.5;margin-bottom:6px;">
-                    {info["reason"]}
-                </div>
-                <div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;
-                            background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">
-                    → {info["action"]}
-                </div>
-                {startschuss_html}
-            </div>
-        </div>
-    </div>
-    ''', unsafe_allow_html=True)
+    # Build the complete HTML as a single string (no f-string indentation issues)
+    html = (
+        '<div class="info-card" style="padding:20px;">'
+        '<div class="card-label">TRENDWENDE-AMPEL</div>'
+        '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;'
+        'background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">'
+        f'<div style="display:flex;gap:12px;">{lights_html}</div>'
+        '</div>'
+        '<div style="flex:1;min-width:200px;">'
+        f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">'
+        f'{info["label"]}</div>'
+        f'<div style="font-size:.8rem;color:#e2e8f0;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
+        f'<div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;'
+        f'background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">'
+        f'→ {info["action"]}</div>'
+        f'{startschuss_html}'
+        '</div>'
+        '</div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
     # Ampel details table below
     _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
@@ -495,11 +488,11 @@ def render_ampel_section(L):
     cols = st.columns(4)
     for i, (k, v) in enumerate(details.items()):
         with cols[i]:
-            st.markdown(f'''
-            <div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;">
-                <div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div>
-                <div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div>
-            </div>''', unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;">'
+                f'<div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div>'
+                f'<div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div>'
+                f'</div>', unsafe_allow_html=True)
 
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
