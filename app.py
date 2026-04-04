@@ -434,8 +434,7 @@ def render_ampel_section(L):
             f'</div>'
         )
 
-    # Startschuss pistol icon (only in gelb/gruen)
-    startschuss_html = ""
+    # Startschuss pistol icon — always visible, greyed out when not triggered
     if phase in ("gelb", "gruen") and ss_low and anchor:
         startschuss_html = (
             f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;'
@@ -444,6 +443,23 @@ def render_ampel_section(L):
             f'<div>'
             f'<div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div>'
             f'<div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div>'
+            f'</div></div>'
+        )
+    else:
+        # Greyed out, with line-through
+        if phase == "rot" and anchor:
+            ss_detail = f"Ankertag: {anchor} · Warte auf Tag ≥5 mit ≥1% Gewinn + Vol. &gt; Vortag"
+        elif phase == "rot":
+            ss_detail = "Warte auf Ankertag, dann frühestens am 5. Tag möglich"
+        else:
+            ss_detail = "Kein aktiver Ampel-Zyklus"
+        startschuss_html = (
+            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;'
+            f'background:#1e293b40;border:1px solid #1e293b;border-radius:8px;opacity:0.5;">'
+            f'<span style="font-size:1.4rem;filter:grayscale(1);">🔫</span>'
+            f'<div>'
+            f'<div style="font-size:.8rem;font-weight:700;color:#64748b;text-decoration:line-through;">Startschuss</div>'
+            f'<div style="font-size:.7rem;color:#4a5568;">{ss_detail}</div>'
             f'</div></div>'
         )
 
@@ -625,8 +641,8 @@ def main():
     lc=int(L.get("Low_CR_5d",0));w=lc>=3;_w("Closing Range Häufung (5T)",lc<3,f"{lc}/5 Tage Schluss im unteren 25%",w)
     w=dc>=4;_w("Distributionstage",dc<=3,f"{dc} im 25T-Fenster",w)
     st10=int(df["Is_Stall"].tail(10).sum());w=st10>=3;_w("Stau-Tage (10T)",st10<3,f"{st10} Stau-Tage",w)
-    if not np.isnan(d50): w=d50>t50;_w(f"50-SMA Abstand (<{t50:.0f}%)",not w,f"{d50:+.1f}%",w)
-    if not np.isnan(d21): w=d21>3.0;_w("21-EMA Abstand (<3 ATR)",not w,f"{d21:.1f} ATR",w)
+    if not np.isnan(d50): w=d50>t50 or d50<0;_w(f"50-SMA Abstand",not w,f"{d50:+.1f}% ({'über' if d50>0 else 'unter'} 50-SMA, Schwelle: {t50:.0f}%)",w)
+    if not np.isnan(d21): w=d21>3.0 or d21<0;_w("21-EMA Abstand",not w,f"{d21:.1f} ATR ({'über' if d21>0 else 'unter'} 21-EMA, Schwelle: 3.0 ATR)",w)
     u200=not np.isnan(L["SMA200"]) and L["Close"]<L["SMA200"];u50=not np.isnan(L["SMA50"]) and L["Close"]<L["SMA50"]
     if u200: wc+=1
     if u50: wc+=1
@@ -778,8 +794,13 @@ def main():
                     st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
                 with kb5:
                     dr = bL["Deemer_Ratio"]
-                    st.metric("Deemer Ratio", f"{dr:.2f}" if not np.isnan(dr) else "—",
-                              "🚀 THRUST!" if (not np.isnan(dr) and dr > 1.97) else "")
+                    if not np.isnan(dr):
+                        if dr >= 1.97: dr_label = "🚀 Sehr gut"; dr_delta = "Breakaway Momentum!"
+                        elif dr >= 1.50: dr_label = f"{dr:.2f}"; dr_delta = "Gut — konstruktiv"
+                        elif dr >= 1.00: dr_label = f"{dr:.2f}"; dr_delta = "Neutral"
+                        else: dr_label = f"{dr:.2f}"; dr_delta = "Schlecht — schwache Breite"
+                    else: dr_label = "—"; dr_delta = ""
+                    st.metric("Deemer Ratio", dr_label, dr_delta)
 
                 # Breadth Thrust check
                 recent_thrust = br["Breadth_Thrust"].tail(20).any()
@@ -803,8 +824,15 @@ def main():
                 render_check("Keine Divergenz Index vs. A/D-Linie",
                              not (spx_at_high and not ad_at_high) if "S&P 500" in data else True,
                              "A/D-Linie bestätigt" if "S&P 500" in data else "")
-                render_check("Deemer Ratio (Breitenschub)", not np.isnan(dr) and dr > 1.0,
-                             f"Ratio: {dr:.2f}" + (" — 🚀 THRUST >1.97!" if dr > 1.97 else "") if not np.isnan(dr) else "—")
+                # Deemer with 4-level rating
+                if not np.isnan(dr):
+                    if dr >= 1.97: dr_status = "Sehr gut (≥1.97) — 🚀 Breakaway Momentum!"
+                    elif dr >= 1.50: dr_status = "Gut (1.50–1.96) — konstruktive Breite"
+                    elif dr >= 1.00: dr_status = "Neutral (1.00–1.49) — leicht positiv"
+                    else: dr_status = "Schlecht (<1.00) — mehr Decliners als Advancers"
+                    render_check("Deemer Ratio (Breitenschub)", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
+                else:
+                    render_check("Deemer Ratio (Breitenschub)", False, "Nicht verfügbar")
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
@@ -831,7 +859,9 @@ def main():
     st.markdown("---")
     st.markdown('<div class="info-card"><div class="card-label">TÄGLICHE CHECKLISTE</div>',unsafe_allow_html=True)
     ddv=float(L["Dist_52w_pct"]) if not np.isnan(L["Dist_52w_pct"]) else 0
-    render_check("Substanzielle Korrektur?",ddv<-8,f"Drawdown: {ddv:.1f}%")
+    no_correction = ddv > -8  # True = no substantial correction = normal market
+    render_check("Kein substanzieller Drawdown (> -8%)", no_correction,
+                 f"Drawdown: {ddv:.1f}%" + (" — Korrektur läuft, Ampel aktiv" if not no_correction else " — Markt im Normalbereich"))
     render_check("Stabilisierung?",L["Ampel_Phase"] not in ("rot",) or L["Anchor_Date"] is not None,
                  f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein Zyklus" if L["Ampel_Phase"] in ("neutral","aufwaertstrend") else "Noch keine")
     render_check("Startschuss (≥Gelb)?",L["Ampel_Phase"] in ("gelb","gruen","aufwaertstrend"),f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND','AUFWÄRTSTREND')}")
