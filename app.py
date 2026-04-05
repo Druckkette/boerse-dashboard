@@ -682,7 +682,7 @@ def plot_fed_rate(fed_df,sd=200):
 def main():
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
 
-    tab1, tab2, tab3 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf"])
 
     # ═══════════════════════════════════════════════════════
     # TAB 1: MARKTANALYSE (existing content)
@@ -697,10 +697,16 @@ def main():
         _tab_sektoranalyse()
 
     # ═══════════════════════════════════════════════════════
-    # TAB 3: AKTIENBEWERTUNG (placeholder)
+    # TAB 3: AKTIENBEWERTUNG
     # ═══════════════════════════════════════════════════════
     with tab3:
         _tab_aktienbewertung()
+
+    # ═══════════════════════════════════════════════════════
+    # TAB 4: NACH DEM KAUF
+    # ═══════════════════════════════════════════════════════
+    with tab4:
+        _tab_nach_kauf()
 
 
 # ═══════════════════════════════════════════════════════
@@ -1342,10 +1348,13 @@ def _tab_aktienbewertung():
     fig_stock.add_trace(go.Scatter(x=x, y=_vol_sma50, name="Vol 50-SMA",
         line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
 
+    # Default view: last 6 months
+    six_months_ago = df.index[-1] - pd.Timedelta(days=180)
     fig_stock.update_layout(
         template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
         height=420, margin=dict(l=10, r=10, t=30, b=10),
         xaxis_rangeslider_visible=False,
+        xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#1e293b"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
         yaxis=dict(title="", gridcolor="#1e293b"),
         yaxis2=dict(title="", gridcolor="#1e293b"),
@@ -1409,225 +1418,233 @@ def _tab_aktienbewertung():
         f'<div style="font-size:.75rem;color:#94a3b8;">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score: {score:+d}</div></div>',
         unsafe_allow_html=True)
 
-    # ═══════════════════════════════════════════════════
-    # NACH KAUF — Post-Buy Analysis (Ch 5.2 + 5.3)
-    # ═══════════════════════════════════════════════════
-    st.markdown("---")
-    st.markdown('<div class="card-label">NACH DEM KAUF — HALTE- UND WARNSIGNALE (Kap. 5.2 / 5.3)</div>', unsafe_allow_html=True)
-    st.caption("Kaufkurs und Kaufdatum eingeben um zu prüfen ob die Aktie sich seit dem Kauf gesund verhält.")
 
+# ═══════════════════════════════════════════════════════
+# TAB 4: NACH DEM KAUF (Book Ch.5.2 + 5.3)
+# ═══════════════════════════════════════════════════════
+def _tab_nach_kauf():
+    """Tab 4: Post-buy analysis — positive signs and warning signals."""
+    st.markdown("### 🎯 Nach dem Kauf — Halte- und Warnsignale")
+    st.caption("Prüfe ob sich deine Aktie nach dem Kauf gesund verhält (Kap. 5.2 / 5.3).")
+
+    ticker = st.text_input("Ticker eingeben", value="", placeholder="NVDA", key="nachkauf_ticker").upper().strip()
+    if not ticker: return
+
+    with st.spinner(f"Lade {ticker} …"):
+        df_raw = yf.Ticker(ticker).history(start=datetime.now()-timedelta(days=500), end=datetime.now(), auto_adjust=True)
+    if df_raw is None or len(df_raw) < 20:
+        st.error(f"Keine Daten für '{ticker}'."); return
+    df = df_raw.copy()
+    df.index = pd.to_datetime(df.index); df = df.sort_index()
+    for col in ["Open","High","Low","Close","Volume"]:
+        if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    L = df.iloc[-1]; price = L["Close"]
+    info = yf.Ticker(ticker).info or {}
+    name = info.get("shortName", ticker)
+
+    prev_c = df["Close"].iloc[-2]; chg_col = "#22c55e" if price >= prev_c else "#ef4444"
+    st.markdown(f'<div style="font-size:1.2rem;font-weight:700;color:#e2e8f0;">{name} ({ticker})</div>'
+                f'<div style="font-size:1rem;color:{chg_col};font-weight:600;">'
+                f'${price:,.2f}</div>', unsafe_allow_html=True)
+
+    # ── Inputs: Kaufkurs, Kaufdatum, Währung ──
     bc1, bc2, bc3 = st.columns([2, 2, 1])
     with bc2:
         default_date = df.index[-10].date() if len(df) >= 10 else df.index[0].date()
-        buy_date = st.date_input("Kaufdatum", value=default_date, min_value=df.index[0].date(), max_value=df.index[-1].date())
+        buy_date = st.date_input("Kaufdatum", value=default_date, min_value=df.index[0].date(),
+                                 max_value=df.index[-1].date(), key="nk_date")
     with bc3:
-        currency = st.selectbox("Währung", ["USD", "EUR"], index=0)
+        currency = st.selectbox("Währung", ["USD", "EUR"], index=0, key="nk_curr")
     with bc1:
         lbl = "Kaufkurs ($)" if currency == "USD" else "Kaufkurs (€)"
-        buy_price_input = st.number_input(lbl, min_value=0.01, value=round(float(price * 0.95), 2), step=0.01)
+        buy_price_input = st.number_input(lbl, min_value=0.01, value=round(float(price * 0.95), 2),
+                                          step=0.01, key="nk_price")
 
-    if buy_price_input and buy_price_input > 0 and buy_date:
-        # ── Convert EUR to USD if needed ──
-        buy_price = buy_price_input
-        eur_usd_rate = None
-        if currency == "EUR":
-            try:
-                fx = yf.Ticker("EURUSD=X").history(start=buy_date - timedelta(days=5),
-                                                    end=buy_date + timedelta(days=3))
-                if fx is not None and len(fx) > 0:
-                    eur_usd_rate = float(fx["Close"].iloc[-1])
-                    buy_price = buy_price_input * eur_usd_rate
-            except: pass
-            if eur_usd_rate is None:
-                eur_usd_rate = 1.08  # fallback
+    if not (buy_price_input and buy_price_input > 0 and buy_date): return
+
+    # ── EUR → USD conversion ──
+    buy_price = buy_price_input
+    eur_usd_rate = None
+    if currency == "EUR":
+        try:
+            fx = yf.Ticker("EURUSD=X").history(start=buy_date - timedelta(days=5),
+                                                end=buy_date + timedelta(days=3))
+            if fx is not None and len(fx) > 0:
+                eur_usd_rate = float(fx["Close"].iloc[-1])
                 buy_price = buy_price_input * eur_usd_rate
+        except: pass
+        if eur_usd_rate is None:
+            eur_usd_rate = 1.08
+            buy_price = buy_price_input * eur_usd_rate
 
-        # ── Timezone-aware slicing ──
-        buy_ts = pd.Timestamp(buy_date)
-        if df.index.tz is not None:
-            buy_ts = buy_ts.tz_localize(df.index.tz)
+    # ── Timezone-safe slicing ──
+    buy_ts = pd.Timestamp(buy_date)
+    if df.index.tz is not None:
+        buy_ts = buy_ts.tz_localize(df.index.tz)
+    mask = df.index >= buy_ts
+    if not mask.any():
+        st.warning("Kaufdatum liegt nach den verfügbaren Daten."); return
 
-        # Find the first trading day on or after buy_date
-        mask = df.index >= buy_ts
-        if not mask.any():
-            st.warning("Kaufdatum liegt nach den verfügbaren Daten.")
+    df_since = df.loc[mask]
+    days_held = len(df_since)
+    window = min(20, days_held)
+    df_window = df_since.tail(window)
+    pnl_pct = (price / buy_price - 1) * 100
+
+    eur_note = ""
+    if currency == "EUR" and eur_usd_rate:
+        eur_note = f' · €{buy_price_input:,.2f} × {eur_usd_rate:.4f} = ${buy_price:,.2f}'
+
+    st.markdown(
+        f'<div style="text-align:center;padding:10px;margin:8px 0;background:#111827;border:1px solid #1e293b;border-radius:8px;">'
+        f'<span style="color:{"#22c55e" if pnl_pct>=0 else "#ef4444"};font-size:1.2rem;font-weight:700;">'
+        f'{"+" if pnl_pct>=0 else ""}{pnl_pct:.1f}% seit Kauf</span>'
+        f'<span style="color:#64748b;font-size:.8rem;margin-left:12px;">'
+        f'Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note} → Aktuell: ${price:,.2f} · '
+        f'{days_held} Handelstage · Fenster: {window}T</span></div>',
+        unsafe_allow_html=True)
+
+    # ── Compute metrics on the rolling window ──
+    c = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
+    pct_chg = c.pct_change()
+    vol_avg = v.rolling(50).mean()
+    ema21 = c.ewm(span=21).mean(); sma50 = c.rolling(50).mean()
+    rng_d = h - l
+    cr_series = pd.Series(np.where(rng_d > 0, (c - l) / rng_d, 0.5), index=df.index)
+
+    w_pct = pct_chg.loc[df_window.index]
+    w_vol = v.loc[df_window.index]
+    w_cr = cr_series.loc[df_window.index]
+    w_vol_avg = vol_avg.loc[df_window.index]
+
+    pos_signs = []; neg_signs = []
+
+    # ══ 5.2 POSITIVE SIGNS ══
+
+    if pnl_pct > 0:
+        pos_signs.append(("Unmittelbare Stärke nach Kauf", f"+{pnl_pct:.1f}% Gewinn seit Einstieg ({days_held}T)"))
+    elif pnl_pct < -3:
+        neg_signs.append(("Kein Gewinn nach Kauf", f"{pnl_pct:.1f}% Verlust seit Einstieg ({days_held}T)"))
+
+    avg_cr = w_cr.mean()
+    if avg_cr > 0.6:
+        pos_signs.append(("Schlüsse im oberen Bereich", f"Ø CR: {avg_cr:.0%} ({window}T)"))
+    elif avg_cr < 0.35:
+        neg_signs.append(("Schlüsse nahe Tagestief", f"Ø CR: {avg_cr:.0%} ({window}T)"))
+
+    green_days = int((w_pct > 0).sum()); red_days = int((w_pct < 0).sum())
+    green_ratio = green_days / window if window > 0 else 0
+    if green_ratio >= 0.7:
+        pos_signs.append(("Überwiegend grüne Tage", f"{green_days}/{window} im Plus ({green_ratio:.0%})"))
+    elif green_ratio <= 0.4:
+        neg_signs.append(("Überwiegend rote Tage", f"{red_days}/{window} im Minus ({1-green_ratio:.0%})"))
+
+    if price > buy_price * 0.97:
+        pos_signs.append(("Kurs über Kaufniveau", f"${price:,.2f} > ${buy_price:,.2f}"))
+    else:
+        neg_signs.append(("Schlusskurs unter Kaufniveau", f"${price:,.2f} < ${buy_price:,.2f}"))
+
+    e21_val = ema21.iloc[-1]; s50_val = sma50.iloc[-1]
+    if not np.isnan(e21_val) and price > e21_val:
+        pos_signs.append(("Kurs über 21-EMA", f"${price:,.2f} > ${e21_val:,.2f}"))
+    elif not np.isnan(e21_val):
+        neg_signs.append(("Bruch der 21-EMA", f"${price:,.2f} < ${e21_val:,.2f}"))
+    if not np.isnan(s50_val) and price > s50_val:
+        pos_signs.append(("Kurs über 50-SMA", f"${price:,.2f} > ${s50_val:,.2f}"))
+    elif not np.isnan(s50_val):
+        neg_signs.append(("Bruch der 50-SMA", f"${price:,.2f} < ${s50_val:,.2f}"))
+
+    if len(df_since) >= 3:
+        rs_buy = c.loc[df_since.index[0]]
+        rs_change = (price / rs_buy - 1) * 100 if rs_buy > 0 else 0
+        if rs_change > 2:
+            pos_signs.append(("Steigende Stärke seit Kauf", f"+{rs_change:.1f}% seit Kaufdatum"))
+        elif rs_change < -3:
+            neg_signs.append(("Schwäche seit Kauf", f"{rs_change:.1f}% seit Kaufdatum"))
+
+    up_vol_w = v.loc[df_window.index].where(pct_chg.loc[df_window.index] > 0).mean()
+    dn_vol_w = v.loc[df_window.index].where(pct_chg.loc[df_window.index] < 0).mean()
+    if up_vol_w and dn_vol_w and not np.isnan(up_vol_w) and not np.isnan(dn_vol_w) and dn_vol_w > 0:
+        ratio = up_vol_w / dn_vol_w
+        if ratio > 1.2:
+            pos_signs.append(("Akkumulationsmuster", f"Up/Down-Vol: {ratio:.2f} ({window}T)"))
+        elif ratio < 0.8:
+            neg_signs.append(("Verschlechterung Up/Down-Volume", f"Ratio: {ratio:.2f} ({window}T)"))
+
+    ema21_w = ema21.loc[df_window.index]; lows_w = l.loc[df_window.index]
+    touched = (lows_w <= ema21_w * 1.005).any()
+    bounced = touched and price > e21_val if not np.isnan(e21_val) else False
+    if bounced:
+        pos_signs.append(("Pullback an 21-EMA gehalten", "Kurs hat 21-EMA getestet und abgeprallt"))
+
+    # ══ 5.3 WARNING SIGNS ══
+
+    stall_w = ((w_pct >= 0) & (w_pct < 0.005) & (w_vol > w_vol_avg * 0.95)).sum() if len(w_vol_avg.dropna()) > 0 else 0
+    if stall_w >= 2:
+        neg_signs.append(("Stau-Tage nahe Ausbruchspunkt", f"{stall_w} in {window}T"))
+
+    c_window = c.loc[df_window.index]
+    recent_high = c_window.iloc[-1] >= c_window.max() * 0.998
+    weak_vol = w_vol.mean() < vol_avg.iloc[-1] * 0.8 if not np.isnan(vol_avg.iloc[-1]) else False
+    if recent_high and weak_vol:
+        neg_signs.append(("Neue Hochs bei magerem Volumen", "Nachlassende Kaufbereitschaft"))
+
+    dist_w = int(((w_pct < 0) & (w_vol > v.shift(1).loc[df_window.index])).sum())
+    if dist_w >= 3:
+        neg_signs.append(("Häufung von Verkaufstagen", f"{dist_w} Dist.-Tage in {window}T"))
+
+    if len(w_pct.dropna()) >= 3:
+        worst_day = w_pct.min()
+        if worst_day < -0.02:
+            worst_idx = w_pct.idxmin()
+            days_since_w = len(c.loc[worst_idx:]) - 1
+            recovery = (c.iloc[-1] / c.loc[worst_idx] - 1) * 100
+            if days_since_w >= 3 and recovery < abs(worst_day * 100) * 0.5:
+                neg_signs.append(("Schwache Erholungsversuche",
+                    f"Schlimmster Tag: {worst_day*100:.1f}% · Erholung nach {days_since_w}T: {recovery:+.1f}%"))
+
+    if pnl_pct < -7:
+        neg_signs.append(("⚠ STOP-LOSS: >7% Verlust", f"{pnl_pct:.1f}% — Sofort verkaufen"))
+
+    # ── Display ──
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        st.markdown('<div class="info-card" style="border-color:#22c55e30;">'
+                    '<div class="card-label" style="color:#22c55e;">✓ POSITIVE ZEICHEN (Kap. 5.2)</div>', unsafe_allow_html=True)
+        if pos_signs:
+            for nm, dt in pos_signs:
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
+                            f'<div style="font-size:.8rem;color:#22c55e;">{nm}</div>'
+                            f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
-            df_since = df.loc[mask]
-            days_held = len(df_since)
-            window = min(20, days_held)
-            df_window = df_since.tail(window)
+            st.markdown('<div style="color:#4a5568;font-size:.8rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            pnl_pct = (price / buy_price - 1) * 100
+    with pc2:
+        st.markdown('<div class="info-card" style="border-color:#ef444430;">'
+                    '<div class="card-label" style="color:#ef4444;">⚠ WARNZEICHEN (Kap. 5.3)</div>', unsafe_allow_html=True)
+        if neg_signs:
+            for nm, dt in neg_signs:
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
+                            f'<div style="font-size:.8rem;color:#ef4444;">{nm}</div>'
+                            f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="color:#4a5568;font-size:.8rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            eur_note = ""
-            if currency == "EUR" and eur_usd_rate:
-                eur_note = f' · €{buy_price_input:,.2f} × {eur_usd_rate:.4f} = ${buy_price:,.2f}'
-
-            st.markdown(
-                f'<div style="text-align:center;padding:8px;margin:8px 0;background:#111827;border:1px solid #1e293b;border-radius:8px;">'
-                f'<span style="color:{"#22c55e" if pnl_pct>=0 else "#ef4444"};font-size:1.1rem;font-weight:700;">'
-                f'{"+" if pnl_pct>=0 else ""}{pnl_pct:.1f}% seit Kauf</span>'
-                f'<span style="color:#64748b;font-size:.8rem;margin-left:12px;">'
-                f'Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note} → Aktuell: ${price:,.2f} · {days_held} Handelstage · Fenster: {window}T</span></div>',
-                unsafe_allow_html=True)
-
-            # ── Compute post-buy metrics on the window ──
-            c = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
-            pct_chg = c.pct_change()
-            vol_avg = v.rolling(50).mean()
-            ema21 = c.ewm(span=21).mean(); sma50 = c.rolling(50).mean()
-            rng_d = h - l
-            cr_series = pd.Series(np.where(rng_d > 0, (c - l) / rng_d, 0.5), index=df.index)
-
-            # Window-specific slices
-            w_pct = pct_chg.loc[df_window.index]
-            w_vol = v.loc[df_window.index]
-            w_cr = cr_series.loc[df_window.index]
-            w_vol_avg = vol_avg.loc[df_window.index]
-
-            pos_signs = []; neg_signs = []
-
-            # ══ 5.2 POSITIVE SIGNS ══
-
-            # 1. Immediate strength
-            if pnl_pct > 0:
-                pos_signs.append(("Unmittelbare Stärke nach Kauf", f"+{pnl_pct:.1f}% Gewinn seit Einstieg ({days_held}T)"))
-            elif pnl_pct < -3:
-                neg_signs.append(("Kein Gewinn nach Kauf", f"{pnl_pct:.1f}% Verlust seit Einstieg ({days_held}T)"))
-
-            # 2. Closing Range in window
-            avg_cr = w_cr.mean()
-            if avg_cr > 0.6:
-                pos_signs.append(("Schlüsse im oberen Bereich", f"Ø Closing Range: {avg_cr:.0%} ({window}T seit Kauf)"))
-            elif avg_cr < 0.35:
-                neg_signs.append(("Schlüsse nahe Tagestief", f"Ø Closing Range: {avg_cr:.0%} ({window}T seit Kauf)"))
-
-            # 3. Green vs red days (book: ~7 of 10 green)
-            green_days = int((w_pct > 0).sum()); red_days = int((w_pct < 0).sum())
-            green_ratio = green_days / window if window > 0 else 0
-            if green_ratio >= 0.7:
-                pos_signs.append(("Überwiegend grüne Tage", f"{green_days}/{window} Tage im Plus ({green_ratio:.0%})"))
-            elif green_ratio <= 0.4:
-                neg_signs.append(("Überwiegend rote Tage", f"{red_days}/{window} Tage im Minus ({1-green_ratio:.0%})"))
-
-            # 4. Price above buy-day low
-            if price > buy_price * 0.97:
-                pos_signs.append(("Kurs über Kaufniveau", f"${price:,.2f} > ${buy_price:,.2f}"))
-            else:
-                neg_signs.append(("Schlusskurs unter Kaufniveau", f"${price:,.2f} < ${buy_price:,.2f}"))
-
-            # 5. Living above 21-EMA and 50-SMA
-            e21_val = ema21.iloc[-1]; s50_val = sma50.iloc[-1]
-            if not np.isnan(e21_val) and price > e21_val:
-                pos_signs.append(("Kurs über 21-EMA", f"${price:,.2f} > ${e21_val:,.2f}"))
-            elif not np.isnan(e21_val) and price < e21_val:
-                neg_signs.append(("Früher Bruch der 21-EMA", f"${price:,.2f} < ${e21_val:,.2f}"))
-            if not np.isnan(s50_val) and price > s50_val:
-                pos_signs.append(("Kurs über 50-SMA", f"${price:,.2f} > ${s50_val:,.2f}"))
-            elif not np.isnan(s50_val) and price < s50_val:
-                neg_signs.append(("Früher Bruch der 50-SMA", f"${price:,.2f} < ${s50_val:,.2f}"))
-
-            # 6. RS line since buy
-            if len(df_since) >= 3:
-                rs_buy = c.loc[df_since.index[0]] if len(df_since) > 0 else price
-                rs_change = (price / rs_buy - 1) * 100 if rs_buy > 0 else 0
-                if rs_change > 2:
-                    pos_signs.append(("Steigende Stärke seit Kauf", f"+{rs_change:.1f}% seit Kaufdatum"))
-                elif rs_change < -3:
-                    neg_signs.append(("Schwäche seit Kauf", f"{rs_change:.1f}% seit Kaufdatum"))
-
-            # 7. Up-vol on gains vs down-vol on losses in window
-            up_vol_w = v.loc[df_window.index].where(pct_chg.loc[df_window.index] > 0).mean()
-            dn_vol_w = v.loc[df_window.index].where(pct_chg.loc[df_window.index] < 0).mean()
-            if up_vol_w and dn_vol_w and not np.isnan(up_vol_w) and not np.isnan(dn_vol_w) and dn_vol_w > 0:
-                ratio = up_vol_w / dn_vol_w
-                if ratio > 1.2:
-                    pos_signs.append(("Akkumulationsmuster", f"Up/Down-Vol: {ratio:.2f} ({window}T)"))
-                elif ratio < 0.8:
-                    neg_signs.append(("Verschlechterung Up/Down-Volume", f"Ratio: {ratio:.2f} ({window}T)"))
-
-            # 8. Pullback to 21-EMA/50-SMA held (book: first pullbacks are best)
-            ema21_window = ema21.loc[df_window.index]
-            lows_window = l.loc[df_window.index]
-            touched_21 = (lows_window <= ema21_window * 1.005).any()
-            bounced_21 = touched_21 and price > e21_val if not np.isnan(e21_val) else False
-            if bounced_21:
-                pos_signs.append(("Pullback an 21-EMA gehalten", "Kurs hat 21-EMA getestet und abgeprallt"))
-
-            # ══ 5.3 WARNING SIGNS ══
-
-            # 9. Stall days near breakout
-            stall_w = ((w_pct >= 0) & (w_pct < 0.005) & (w_vol > w_vol_avg * 0.95)).sum() if len(w_vol_avg.dropna()) > 0 else 0
-            if stall_w >= 2:
-                neg_signs.append(("Stau-Tage nahe Ausbruchspunkt", f"{stall_w} in {window}T"))
-
-            # 10. New highs on weak volume
-            c_window = c.loc[df_window.index]
-            recent_high = c_window.iloc[-1] >= c_window.max() * 0.998
-            weak_vol = w_vol.mean() < vol_avg.iloc[-1] * 0.8 if not np.isnan(vol_avg.iloc[-1]) else False
-            if recent_high and weak_vol:
-                neg_signs.append(("Neue Hochs bei magerem Volumen", "Nachlassende Kaufbereitschaft"))
-
-            # 11. Distribution days in window
-            dist_w = int(((w_pct < 0) & (w_vol > v.shift(1).loc[df_window.index])).sum())
-            if dist_w >= 3:
-                neg_signs.append(("Häufung von Verkaufstagen", f"{dist_w} Dist.-Tage in {window}T"))
-
-            # 12. Slow recovery after bad day
-            if len(w_pct.dropna()) >= 3:
-                worst_day = w_pct.min()
-                if worst_day < -0.02:
-                    worst_idx = w_pct.idxmin()
-                    days_since_worst = len(c.loc[worst_idx:]) - 1
-                    recovery = (c.iloc[-1] / c.loc[worst_idx] - 1) * 100
-                    if days_since_worst >= 3 and recovery < abs(worst_day * 100) * 0.5:
-                        neg_signs.append(("Schwache Erholungsversuche",
-                                          f"Schlimmster Tag: {worst_day*100:.1f}% · Erholung nach {days_since_worst}T: {recovery:+.1f}%"))
-
-            # 13. Stop-loss: > 7% loss from purchase
-            if pnl_pct < -7:
-                neg_signs.append(("⚠ STOP-LOSS: >7% Verlust", f"{pnl_pct:.1f}% — Sofort verkaufen"))
-
-            # ── Display ──
-            pc1, pc2 = st.columns(2)
-            with pc1:
-                st.markdown('<div class="info-card" style="border-color:#22c55e30;">'
-                            '<div class="card-label" style="color:#22c55e;">✓ POSITIVE ZEICHEN (Kap. 5.2)</div>', unsafe_allow_html=True)
-                if pos_signs:
-                    for nm, dt in pos_signs:
-                        st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
-                                    f'<div style="font-size:.8rem;color:#22c55e;">{nm}</div>'
-                                    f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<div style="color:#4a5568;font-size:.8rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            with pc2:
-                st.markdown('<div class="info-card" style="border-color:#ef444430;">'
-                            '<div class="card-label" style="color:#ef4444;">⚠ WARNZEICHEN (Kap. 5.3)</div>', unsafe_allow_html=True)
-                if neg_signs:
-                    for nm, dt in neg_signs:
-                        st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
-                                    f'<div style="font-size:.8rem;color:#ef4444;">{nm}</div>'
-                                    f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<div style="color:#4a5568;font-size:.8rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            # Summary
-            np2 = len(pos_signs); nn2 = len(neg_signs)
-            score2 = np2 - nn2
-            if nn2 == 0 and np2 >= 3: verdict2 = "Gesundes Verhalten — Position halten"; vc2 = "#22c55e"
-            elif score2 >= 2: verdict2 = "Überwiegend positiv — beobachten"; vc2 = "#22c55e"
-            elif score2 >= 0: verdict2 = "Gemischt — erhöhte Aufmerksamkeit"; vc2 = "#f59e0b"
-            elif pnl_pct < -7: verdict2 = "STOP-LOSS erreicht — Position schließen"; vc2 = "#ef4444"
-            else: verdict2 = "Überwiegend negativ — Position überprüfen"; vc2 = "#ef4444"
-            st.markdown(
-                f'<div style="text-align:center;padding:12px;background:#111827;border:1px solid #1e293b;border-radius:10px;">'
-                f'<div style="font-size:.7rem;color:#64748b;">NACH-KAUF-BEWERTUNG</div>'
-                f'<div style="font-size:1rem;font-weight:700;color:{vc2};">{verdict2}</div>'
-                f'<div style="font-size:.75rem;color:#94a3b8;">{np2} Positiv · {nn2} Negativ · Score: {score2:+d}</div></div>',
-                unsafe_allow_html=True)
+    np2 = len(pos_signs); nn2 = len(neg_signs); score2 = np2 - nn2
+    if nn2 == 0 and np2 >= 3: verdict2 = "Gesundes Verhalten — Position halten"; vc2 = "#22c55e"
+    elif score2 >= 2: verdict2 = "Überwiegend positiv — beobachten"; vc2 = "#22c55e"
+    elif score2 >= 0: verdict2 = "Gemischt — erhöhte Aufmerksamkeit"; vc2 = "#f59e0b"
+    elif pnl_pct < -7: verdict2 = "STOP-LOSS erreicht — Position schließen"; vc2 = "#ef4444"
+    else: verdict2 = "Überwiegend negativ — Position überprüfen"; vc2 = "#ef4444"
+    st.markdown(
+        f'<div style="text-align:center;padding:12px;background:#111827;border:1px solid #1e293b;border-radius:10px;">'
+        f'<div style="font-size:.7rem;color:#64748b;">NACH-KAUF-BEWERTUNG</div>'
+        f'<div style="font-size:1rem;font-weight:700;color:{vc2};">{verdict2}</div>'
+        f'<div style="font-size:.75rem;color:#94a3b8;">{np2} Positiv · {nn2} Negativ · Score: {score2:+d}</div></div>',
+        unsafe_allow_html=True)
 
 
 def _tab_sektoranalyse():
@@ -1790,7 +1807,6 @@ def _tab_marktanalyse():
         render_check(label,ok,detail,warn=check_warn)
     nr=int(L.get("Neg_Reversals_10d",0));w=nr>=3;_w("Intraday-Umkehrungen (10T)",nr<3,f"{nr} negative Umkehrungen",w)
     lc=int(L.get("Low_CR_5d",0));w=lc>=3;_w("Closing Range Häufung (5T)",lc<3,f"{lc}/5 Tage Schluss im unteren 25%",w)
-    w=dc>=4;_w("Distributionstage",dc<=3,f"{dc} im 25T-Fenster",w)
     st10=int(df["Is_Stall"].tail(10).sum());w=st10>=3;_w("Stau-Tage (10T)",st10<3,f"{st10} Stau-Tage",w)
     if not np.isnan(d50): w=d50>t50 or d50<0;_w(f"50-SMA Abstand",not w,f"{d50:+.1f}% ({'über' if d50>0 else 'unter'} 50-SMA, Schwelle: {t50:.0f}%)",w)
     if not np.isnan(d21): w=d21>3.0 or d21<0;_w("21-EMA Abstand",not w,f"{d21:.1f} ATR ({'über' if d21>0 else 'unter'} 21-EMA, Schwelle: 3.0 ATR)",w)
@@ -1829,7 +1845,6 @@ def _tab_marktanalyse():
         render_check("21-EMA > 50-SMA",eo and so and _e>_s5,f"{_e:,.0f} vs {_s5:,.0f}" if eo and so else "")
         render_check("21-EMA > 200-SMA",eo and s2o and _e>_s2,f"{_e:,.0f} vs {_s2:,.0f}" if eo and s2o else "")
         render_check("50-SMA > 200-SMA",so and s2o and _s5>_s2,f"{_s5:,.0f} vs {_s2:,.0f}" if so and s2o else "")
-        render_check("Distributionstage ≤ 3",dc<=3,f"{dc}")
         st.markdown("</div>",unsafe_allow_html=True)
     with cr_:
         # Sector rotation detail (if available)
@@ -2017,7 +2032,6 @@ def _tab_marktanalyse():
                  f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein Zyklus" if L["Ampel_Phase"] in ("neutral","aufwaertstrend") else "Noch keine")
     render_check("Startschuss (≥Gelb)?",L["Ampel_Phase"] in ("gelb","gruen","aufwaertstrend"),f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND','AUFWÄRTSTREND')}")
     if ep in data: dfe=compute_breadth_mode(data[ep].copy());render_check("Marktbreite?",dfe.iloc[-1]["Breadth_Mode"]!="schutz",f"Modus: {dfe.iloc[-1]['Breadth_Mode'].capitalize()}")
-    render_check("Dist.-Tage ≤3?",dc<=3,f"{dc}")
     if "VIX" in data: dv=analyze_vix(data["VIX"].copy());render_check("VIX nicht Panik?",not bool(dv.iloc[-1].get("Is_Panic",False)),f"VIX: {data['VIX'].iloc[-1]['Close']:.1f}")
     render_check(f"Warnzeichen ≤2?",wc<=2,f"{wc} aktiv")
     st.markdown("</div>",unsafe_allow_html=True)
