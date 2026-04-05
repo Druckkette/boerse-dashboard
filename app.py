@@ -1370,35 +1370,59 @@ def _tab_aktienbewertung():
     st.markdown('<div class="card-label">NACH DEM KAUF — HALTE- UND WARNSIGNALE (Kap. 5.2 / 5.3)</div>', unsafe_allow_html=True)
     st.caption("Kaufkurs und Kaufdatum eingeben um zu prüfen ob die Aktie sich seit dem Kauf gesund verhält.")
 
-    bc1, bc2 = st.columns(2)
-    with bc1:
-        buy_price = st.number_input("Kaufkurs ($)", min_value=0.01, value=round(float(price * 0.95), 2), step=0.01)
+    bc1, bc2, bc3 = st.columns([2, 2, 1])
     with bc2:
-        # Default: 10 trading days ago
         default_date = df.index[-10].date() if len(df) >= 10 else df.index[0].date()
         buy_date = st.date_input("Kaufdatum", value=default_date, min_value=df.index[0].date(), max_value=df.index[-1].date())
+    with bc3:
+        currency = st.selectbox("Währung", ["USD", "EUR"], index=0)
+    with bc1:
+        lbl = "Kaufkurs ($)" if currency == "USD" else "Kaufkurs (€)"
+        buy_price_input = st.number_input(lbl, min_value=0.01, value=round(float(price * 0.95), 2), step=0.01)
 
-    if buy_price and buy_price > 0 and buy_date:
+    if buy_price_input and buy_price_input > 0 and buy_date:
+        # ── Convert EUR to USD if needed ──
+        buy_price = buy_price_input
+        eur_usd_rate = None
+        if currency == "EUR":
+            try:
+                fx = yf.Ticker("EURUSD=X").history(start=buy_date - timedelta(days=5),
+                                                    end=buy_date + timedelta(days=3))
+                if fx is not None and len(fx) > 0:
+                    eur_usd_rate = float(fx["Close"].iloc[-1])
+                    buy_price = buy_price_input * eur_usd_rate
+            except: pass
+            if eur_usd_rate is None:
+                eur_usd_rate = 1.08  # fallback
+                buy_price = buy_price_input * eur_usd_rate
+
+        # ── Timezone-aware slicing ──
         buy_ts = pd.Timestamp(buy_date)
+        if df.index.tz is not None:
+            buy_ts = buy_ts.tz_localize(df.index.tz)
 
-        # Slice data from buy_date onwards
-        df_since = df.loc[buy_ts:]
-        if len(df_since) < 1:
-            st.warning("Kaufdatum liegt außerhalb der verfügbaren Daten.")
+        # Find the first trading day on or after buy_date
+        mask = df.index >= buy_ts
+        if not mask.any():
+            st.warning("Kaufdatum liegt nach den verfügbaren Daten.")
         else:
+            df_since = df.loc[mask]
             days_held = len(df_since)
-            # Rolling window: max 20 trading days, but at most days_held
             window = min(20, days_held)
             df_window = df_since.tail(window)
 
             pnl_pct = (price / buy_price - 1) * 100
+
+            eur_note = ""
+            if currency == "EUR" and eur_usd_rate:
+                eur_note = f' · €{buy_price_input:,.2f} × {eur_usd_rate:.4f} = ${buy_price:,.2f}'
 
             st.markdown(
                 f'<div style="text-align:center;padding:8px;margin:8px 0;background:#111827;border:1px solid #1e293b;border-radius:8px;">'
                 f'<span style="color:{"#22c55e" if pnl_pct>=0 else "#ef4444"};font-size:1.1rem;font-weight:700;">'
                 f'{"+" if pnl_pct>=0 else ""}{pnl_pct:.1f}% seit Kauf</span>'
                 f'<span style="color:#64748b;font-size:.8rem;margin-left:12px;">'
-                f'Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")} → Aktuell: ${price:,.2f} · {days_held} Handelstage · Fenster: {window}T</span></div>',
+                f'Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note} → Aktuell: ${price:,.2f} · {days_held} Handelstage · Fenster: {window}T</span></div>',
                 unsafe_allow_html=True)
 
             # ── Compute post-buy metrics on the window ──
