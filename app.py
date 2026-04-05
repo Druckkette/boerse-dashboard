@@ -1308,6 +1308,52 @@ def _tab_aktienbewertung():
     beta = info.get("beta") if info else None
     with k6: st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
 
+    # ── PRICE CHART with MAs + VOLUME ──
+    _ema21 = df["Close"].ewm(span=21).mean()
+    _sma50 = df["Close"].rolling(50).mean()
+    _sma200 = df["Close"].rolling(200).mean()
+    _vol_sma50 = df["Volume"].rolling(50).mean()
+
+    from plotly.subplots import make_subplots
+    fig_stock = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+                              row_heights=[0.75, 0.25])
+
+    x = df.index
+    # Candlestick
+    fig_stock.add_trace(go.Candlestick(
+        x=x, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        increasing_line_color="#22c55e", decreasing_line_color="#ef4444",
+        increasing_fillcolor="#22c55e", decreasing_fillcolor="#ef4444",
+        name="Kurs", line=dict(width=1)), row=1, col=1)
+
+    # MAs
+    fig_stock.add_trace(go.Scatter(x=x, y=_ema21, name="21-EMA",
+        line=dict(color="#06b6d4", width=1.2, dash="dot")), row=1, col=1)
+    fig_stock.add_trace(go.Scatter(x=x, y=_sma50, name="50-SMA",
+        line=dict(color="#f97316", width=1.2, dash="dot")), row=1, col=1)
+    fig_stock.add_trace(go.Scatter(x=x, y=_sma200, name="200-SMA",
+        line=dict(color="#a855f7", width=1.2, dash="dash")), row=1, col=1)
+
+    # Volume bars colored by close direction
+    vol_colors = ["#22c55e" if df["Close"].iloc[i] >= df["Open"].iloc[i] else "#ef4444"
+                  for i in range(len(df))]
+    fig_stock.add_trace(go.Bar(x=x, y=df["Volume"], marker_color=vol_colors,
+        opacity=0.5, name="Volumen", showlegend=False), row=2, col=1)
+    fig_stock.add_trace(go.Scatter(x=x, y=_vol_sma50, name="Vol 50-SMA",
+        line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
+
+    fig_stock.update_layout(
+        template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
+        height=420, margin=dict(l=10, r=10, t=30, b=10),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
+        yaxis=dict(title="", gridcolor="#1e293b"),
+        yaxis2=dict(title="", gridcolor="#1e293b"),
+        xaxis2=dict(gridcolor="#1e293b"),
+    )
+    fig_stock.update_xaxes(showgrid=False)
+    st.plotly_chart(fig_stock, use_container_width=True, key="stock_chart")
+
     st.markdown("---")
 
     # ── TWO COLUMNS ──
