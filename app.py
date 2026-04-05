@@ -707,287 +707,306 @@ def main():
 # TAB 3: AKTIENBEWERTUNG — Stock evaluation (Book Ch.3.4–4.7)
 # ═══════════════════════════════════════════════════════
 @st.cache_data(ttl=900, show_spinner=False)
+# ═══════════════════════════════════════════════════════
+# TAB 3: AKTIENBEWERTUNG (Book Ch.3.4–4.7)
+# ═══════════════════════════════════════════════════════
+@st.cache_data(ttl=900, show_spinner=False)
 def load_stock_full(ticker, lookback_days=500):
-    """Load OHLCV, quarterly financials, and info for a stock."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     try:
         t = yf.Ticker(ticker)
         df = t.history(start=start, end=end, auto_adjust=True)
-        if df is None or len(df) < 20: return None, None, None, None
+        if df is None or len(df) < 20: return None, None, None, None, None
         df.index = pd.to_datetime(df.index); df = df.sort_index()
         for c in ["Open","High","Low","Close","Volume"]:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
         info = t.info or {}
-        qf = None; qi = None
-        try: qf = t.quarterly_financials
-        except: pass
+        qi = None; ai = None; ih = None
         try: qi = t.quarterly_income_stmt
         except: pass
-        return df, info, qf, qi
-    except: return None, None, None, None
+        try: ai = t.income_stmt  # annual
+        except: pass
+        try: ih = t.institutional_holders
+        except: pass
+        return df, info, qi, ai, ih
+    except: return None, None, None, None, None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
-    """Load S&P 500 close for relative strength benchmark."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     return _dl("^GSPC", start, end)
 
-def _quarterly_yoy_growth(qi, row_name):
-    """Extract YoY quarterly growth rates from quarterly income statement.
-    Returns list of (quarter_label, growth_pct) for last 3 quarters, newest first."""
-    if qi is None or qi.empty: return []
-    # Find the row (try multiple names)
-    names_map = {
-        "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
-        "eps": ["Diluted EPS", "Basic EPS", "Earnings Per Share"],
-        "net_income": ["Net Income", "Net Income Common Stockholders"],
-    }
-    candidates = names_map.get(row_name, [row_name])
-    row = None
+# ── HELPERS ──
+def _find_row(stmt, candidates):
+    """Find a row in an income statement by trying multiple name variants."""
+    if stmt is None or stmt.empty: return None
     for name in candidates:
-        if name in qi.index:
-            row = qi.loc[name]; break
+        if name in stmt.index: return stmt.loc[name]
+    return None
+
+def _quarterly_yoy_growth(qi, field):
+    """YoY growth for last 3 quarters. Returns list of (label, growth%) newest first."""
+    candidates = {
+        "eps": ["Diluted EPS","Basic EPS"],
+        "revenue": ["Total Revenue","Revenue","Operating Revenue"],
+        "net_income": ["Net Income","Net Income Common Stockholders"],
+    }
+    row = _find_row(qi, candidates.get(field, [field]))
     if row is None: return []
-    # Columns are dates, newest first
     vals = row.dropna().sort_index(ascending=False)
-    if len(vals) < 5: return []  # need at least 4 recent + 1 year-ago
+    if len(vals) < 5: return []
     results = []
     for i in range(min(3, len(vals) - 4)):
-        current = vals.iloc[i]
-        # Find same quarter one year ago (4 quarters back)
-        yoy_idx = i + 4
-        if yoy_idx >= len(vals): break
-        prev = vals.iloc[yoy_idx]
-        if prev != 0 and not np.isnan(prev) and not np.isnan(current):
-            growth = (current / prev - 1) * 100
-            qlabel = vals.index[i].strftime("Q%q %Y") if hasattr(vals.index[i], 'strftime') else str(vals.index[i])[:7]
-            results.append((qlabel, round(growth, 1)))
+        cur = vals.iloc[i]; prev = vals.iloc[i + 4]
+        if prev != 0 and not np.isnan(prev) and not np.isnan(cur):
+            g = (cur / prev - 1) * 100
+            lbl = vals.index[i].strftime("%Y-%m") if hasattr(vals.index[i], 'strftime') else str(vals.index[i])[:7]
+            results.append((lbl, round(g, 1)))
     return results
 
+def _annual_yoy_growth(ai, field):
+    """YoY growth for last 3 years. Returns list of (year, growth%)."""
+    candidates = {
+        "eps": ["Diluted EPS","Basic EPS"],
+        "revenue": ["Total Revenue","Revenue","Operating Revenue"],
+    }
+    row = _find_row(ai, candidates.get(field, [field]))
+    if row is None: return []
+    vals = row.dropna().sort_index(ascending=False)
+    if len(vals) < 2: return []
+    results = []
+    for i in range(min(3, len(vals) - 1)):
+        cur = vals.iloc[i]; prev = vals.iloc[i + 1]
+        if prev != 0 and not np.isnan(prev) and not np.isnan(cur):
+            g = (cur / prev - 1) * 100
+            yr = vals.index[i].strftime("%Y") if hasattr(vals.index[i], 'strftime') else str(vals.index[i])[:4]
+            results.append((yr, round(g, 1)))
+    return results
+
+def _sum_last_4q_eps(qi):
+    """Sum of the last 4 quarterly EPS values."""
+    row = _find_row(qi, ["Diluted EPS","Basic EPS"])
+    if row is None: return None
+    vals = row.dropna().sort_index(ascending=False)
+    if len(vals) < 4: return None
+    return round(float(vals.iloc[:4].sum()), 2)
+
 def _calc_cmf(df, period=20):
-    """Calculate Chaikin Money Flow (20-day). Book formula from Ch.3.5."""
     h = df["High"]; l = df["Low"]; c = df["Close"]; v = df["Volume"]
     rng = h - l
     mfm = np.where(rng > 0, ((c - l) - (h - c)) / rng, 0.0)
     mfv = mfm * v
-    cmf = pd.Series(mfv, index=df.index).rolling(period).sum() / v.rolling(period).sum()
-    return cmf
+    return pd.Series(mfv, index=df.index).rolling(period).sum() / v.rolling(period).sum()
 
-def _cmf_rating(cmf_val):
-    """Convert CMF value to A-E rating per Table 13."""
-    if np.isnan(cmf_val): return "—", "Nicht verfügbar", "#64748b"
-    if cmf_val > 0.25: return "A", "Starke Akkumulation", "#22c55e"
-    if cmf_val > 0.10: return "B", "Moderate Akkumulation", "#22c55e"
-    if cmf_val > -0.10: return "C", "Neutral", "#f59e0b"
-    if cmf_val > -0.25: return "D", "Moderate Distribution", "#ef4444"
-    return "E", "Starke Distribution", "#ef4444"
+def _cmf_rating(val):
+    if np.isnan(val): return "—","Nicht verfügbar","#64748b"
+    if val > 0.25: return "A","Starke Akkumulation","#22c55e"
+    if val > 0.10: return "B","Moderate Akkumulation","#22c55e"
+    if val > -0.10: return "C","Neutral","#f59e0b"
+    if val > -0.25: return "D","Moderate Distribution","#ef4444"
+    return "E","Starke Distribution","#ef4444"
 
-def _calc_rs_rating(stock_close, spx_close):
-    """Calculate Relative Strength Rating (1-99) per Table 11 weighting.
-    40% 0-3M, 20% 3-6M, 20% 6-9M, 20% 9-12M.
-    Compares stock performance to S&P 500 in each window."""
-    if stock_close is None or spx_close is None: return None
-    if len(stock_close) < 252 or len(spx_close) < 252: return None
-    # Align dates
-    common = stock_close.index.intersection(spx_close.index)
-    if len(common) < 200: return None
-    sc = stock_close.reindex(common); sp = spx_close.reindex(common)
-    # Performance windows
-    windows = [(0, 63, 0.4), (63, 126, 0.2), (126, 189, 0.2), (189, 252, 0.2)]
+def _calc_rs_rating(sc, sp):
+    if sc is None or sp is None or len(sc)<252 or len(sp)<252: return None
+    common = sc.index.intersection(sp.index)
+    if len(common)<200: return None
+    s = sc.reindex(common); m = sp.reindex(common)
+    windows = [(0,63,0.4),(63,126,0.2),(126,189,0.2),(189,252,0.2)]
     score = 0
-    for start_d, end_d, weight in windows:
-        if end_d > len(sc): break
-        s_perf = sc.iloc[-start_d-1] / sc.iloc[-end_d] - 1 if start_d == 0 else sc.iloc[-start_d] / sc.iloc[-end_d] - 1
-        m_perf = sp.iloc[-start_d-1] / sp.iloc[-end_d] - 1 if start_d == 0 else sp.iloc[-start_d] / sp.iloc[-end_d] - 1
-        # Relative outperformance
-        rel = s_perf - m_perf
-        score += rel * weight
-    # Convert to 1-99 scale (rough mapping: +30% outperformance → 99, -30% → 1)
-    raw = 50 + score * 100 * 1.5
-    return max(1, min(99, int(round(raw))))
+    for a,b,w in windows:
+        if b > len(s): break
+        sp_ = s.iloc[-a-1]/s.iloc[-b]-1 if a==0 else s.iloc[-a]/s.iloc[-b]-1
+        mp_ = m.iloc[-a-1]/m.iloc[-b]-1 if a==0 else m.iloc[-a]/m.iloc[-b]-1
+        score += (sp_ - mp_) * w
+    return max(1, min(99, int(round(50 + score * 150))))
 
-def _atr_category(atr_pct):
-    """ATR classification per Table 15."""
-    if np.isnan(atr_pct): return "—", "#64748b"
-    if atr_pct <= 2.5: return f"Ruhig ({atr_pct:.1f}%)", "#22c55e"
-    if atr_pct <= 4.0: return f"Lebhaft ({atr_pct:.1f}%)", "#06b6d4"
-    if atr_pct <= 8.0: return f"Stürmisch ({atr_pct:.1f}%)", "#f59e0b"
-    return f"Explosiv ({atr_pct:.1f}%)", "#ef4444"
+def _atr_category(pct):
+    if np.isnan(pct): return "—","#64748b"
+    if pct <= 2.5: return "Ruhig","#22c55e"
+    if pct <= 4.0: return "Lebhaft","#06b6d4"
+    if pct <= 8.0: return "Stürmisch","#f59e0b"
+    return "Explosiv","#ef4444"
 
-def evaluate_fundamentals(info, qi):
-    """Evaluate fundamental checklist from book Ch.3.4."""
+# ═══════════════════════════════════════════════════════
+# FUNDAMENTAL CHECKLIST
+# ═══════════════════════════════════════════════════════
+def evaluate_fundamentals(info, qi, ai, ih):
     checks = []
-    def _g(key, default=None):
-        v = info.get(key, default) if info else default
-        return v if v is not None else default
+    def _g(k, d=None):
+        v = info.get(k, d) if info else d
+        return v if v is not None else d
 
-    # ── EPS: 3 quarters YoY growth ≥ 20% ──
-    eps_growth = _quarterly_yoy_growth(qi, "eps")
-    if eps_growth:
-        all_above = all(g >= 20 for _, g in eps_growth)
-        details = " → ".join(f"{q}: {g:+.0f}%" for q, g in eps_growth)
-        n_q = len(eps_growth)
-        checks.append((f"EPS-Wachstum ≥20% YoY ({n_q} Quartal{'e' if n_q>1 else ''})", all_above, details))
-        # Acceleration check
-        if len(eps_growth) >= 2:
-            accel = eps_growth[0][1] > eps_growth[1][1]
-            checks.append(("EPS-Wachstum beschleunigend", accel,
-                          f"{eps_growth[1][1]:+.0f}% → {eps_growth[0][1]:+.0f}%"))
+    # ── EPS: quarterly YoY (3 quarters) ──
+    epsg = _quarterly_yoy_growth(qi, "eps")
+    if epsg:
+        details = " → ".join(f"{q}: {g:+.0f}%" for q, g in epsg)
+        all20 = all(g >= 20 for _, g in epsg)
+        checks.append((f"EPS ≥20% YoY ({len(epsg)}Q)", all20, details))
     else:
-        teps = _g("trailingEps"); feps = _g("forwardEps")
-        if teps and feps and teps > 0:
-            g = (feps / teps - 1) * 100
-            checks.append(("EPS-Wachstum (Forward vs Trailing)", g >= 20, f"{g:+.1f}%"))
+        eq = _g("earningsQuarterlyGrowth")
+        if eq is not None:
+            checks.append(("EPS ≥20% YoY (letztes Q)", eq*100 >= 20, f"{eq*100:+.1f}%"))
         else:
-            epsg = _g("earningsQuarterlyGrowth")
-            if epsg is not None:
-                checks.append(("EPS-Wachstum letztes Quartal ≥20%", epsg*100 >= 20, f"{epsg*100:+.1f}%"))
-            else:
-                checks.append(("EPS-Wachstum ≥20% YoY", False, "Quartals-Daten nicht verfügbar"))
+            checks.append(("EPS ≥20% YoY", False, "Keine Quartalsdaten"))
 
-    # Annual EPS growth ≥ 20% over 3 years
-    epsg_ann = _g("earningsGrowth")
-    if epsg_ann is not None:
-        checks.append(("Jährl. EPS-Wachstum ≥20%", epsg_ann*100 >= 20, f"{epsg_ann*100:+.1f}%"))
+    # ── EPS acceleration ──
+    if len(epsg) >= 2:
+        # Check if growth rates are accelerating across available quarters
+        accel_count = sum(1 for i in range(len(epsg)-1) if epsg[i][1] > epsg[i+1][1])
+        full_accel = accel_count == len(epsg) - 1
+        details = " → ".join(f"{g:+.0f}%" for _, g in reversed(epsg))
+        # Book: with clean acceleration, even ~13% in latest quarter is acceptable
+        latest_ok = epsg[0][1] >= 13 if full_accel else epsg[0][1] >= 20
+        checks.append(("EPS-Beschleunigung", full_accel,
+                       f"Verlauf: {details}" + (" (bei Beschl. ab 13% akzeptabel)" if full_accel and epsg[0][1] < 20 else "")))
 
-    # Trailing EPS > 0
-    teps = _g("trailingEps")
-    if teps is not None:
-        checks.append(("Trailing EPS positiv (>0)", teps > 0, f"${teps:.2f}"))
+    # ── EPS: annual 3-year ──
+    epsg_ann = _annual_yoy_growth(ai, "eps")
+    if epsg_ann and len(epsg_ann) >= 2:
+        details = " · ".join(f"{yr}: {g:+.0f}%" for yr, g in epsg_ann)
+        all20 = all(g >= 20 for _, g in epsg_ann)
+        checks.append((f"Jährl. EPS ≥20% ({len(epsg_ann)} Jahre)", all20, details))
+    else:
+        eg = _g("earningsGrowth")
+        if eg is not None:
+            checks.append(("Jährl. EPS-Wachstum ≥20%", eg*100 >= 20, f"{eg*100:+.1f}% (nur 1 Jahr verfügbar)"))
 
-    # ── Revenue: 3 quarters YoY growth ≥ 20% ──
-    rev_growth = _quarterly_yoy_growth(qi, "revenue")
-    if rev_growth:
-        all_above = all(g >= 20 for _, g in rev_growth)
-        details = " → ".join(f"{q}: {g:+.0f}%" for q, g in rev_growth)
-        n_q = len(rev_growth)
-        checks.append((f"Umsatzwachstum ≥20% YoY ({n_q}Q)", all_above, details))
-        # Acceleration
-        if len(rev_growth) >= 2:
-            accel = rev_growth[0][1] > rev_growth[1][1]
-            checks.append(("Umsatzwachstum beschleunigend (Bonus)", accel,
-                          f"{rev_growth[1][1]:+.0f}% → {rev_growth[0][1]:+.0f}%"))
+    # ── Sum of last 4 quarterly EPS > 0 ──
+    eps_sum = _sum_last_4q_eps(qi)
+    if eps_sum is not None:
+        checks.append(("Summe letzte 4 Quartals-EPS > 0", eps_sum > 0, f"${eps_sum:.2f}"))
+    else:
+        te = _g("trailingEps")
+        if te is not None:
+            checks.append(("Trailing EPS > 0 (Proxy für 4Q-Summe)", te > 0, f"${te:.2f}"))
+
+    # ── Revenue: quarterly YoY (3 quarters) ──
+    revg = _quarterly_yoy_growth(qi, "revenue")
+    if revg:
+        details = " → ".join(f"{q}: {g:+.0f}%" for q, g in revg)
+        all20 = all(g >= 20 for _, g in revg)
+        checks.append((f"Umsatz ≥20% YoY ({len(revg)}Q)", all20, details))
     else:
         rg = _g("revenueGrowth")
         if rg is not None:
-            checks.append(("Umsatzwachstum ≥20%", rg*100 >= 20, f"{rg*100:+.1f}%"))
+            checks.append(("Umsatz ≥20% YoY", rg*100 >= 20, f"{rg*100:+.1f}% (nur jährlich verfügbar)"))
         else:
-            checks.append(("Umsatzwachstum ≥20% YoY", False, "Quartals-Daten nicht verfügbar"))
+            checks.append(("Umsatz ≥20% YoY", False, "Keine Quartalsdaten"))
 
-    # Annual revenue growth
-    rg_ann = _g("revenueGrowth")
-    if rg_ann is not None and not rev_growth:
-        checks.append(("Jährl. Umsatzwachstum ≥20%", rg_ann*100 >= 20, f"{rg_ann*100:+.1f}%"))
+    # ── Revenue acceleration (Bonus) ──
+    if len(revg) >= 2:
+        accel = revg[0][1] > revg[1][1]
+        checks.append(("Umsatz-Beschleunigung (Bonus)", accel,
+                       f"{revg[1][1]:+.0f}% → {revg[0][1]:+.0f}%"))
+
+    # ── Revenue: annual 3-year ──
+    revg_ann = _annual_yoy_growth(ai, "revenue")
+    if revg_ann and len(revg_ann) >= 2:
+        details = " · ".join(f"{yr}: {g:+.0f}%" for yr, g in revg_ann)
+        all20 = all(g >= 20 for _, g in revg_ann)
+        checks.append((f"Jährl. Umsatz ≥20% ({len(revg_ann)}J)", all20, details))
+    else:
+        rg = _g("revenueGrowth")
+        if rg is not None:
+            checks.append(("Jährl. Umsatzwachstum ≥20%", rg*100 >= 20, f"{rg*100:+.1f}%"))
 
     # ── ROE ≥ 17% ──
     roe = _g("returnOnEquity")
     if roe is not None:
-        checks.append(("Eigenkapitalrendite (ROE) ≥17%", roe*100 >= 17, f"{roe*100:.1f}%"))
+        checks.append(("ROE ≥17%", roe*100 >= 17, f"{roe*100:.1f}%"))
     else:
-        checks.append(("Eigenkapitalrendite (ROE) ≥17%", False, "Nicht verfügbar"))
+        checks.append(("ROE ≥17%", False, "Nicht verfügbar"))
 
-    # ── Institutional holders count & change ──
-    inst_holders = _g("institutionCount") or _g("floatShares")
+    # ── Institutional holders: count + top holders list ──
     inst_pct = _g("heldPercentInstitutions")
-    if inst_pct is not None:
-        pct = inst_pct * 100
-        checks.append(("Institutionelle Beteiligung vorhanden", pct > 20,
-                       f"{pct:.0f}% der Aktien inst. gehalten"))
+    if ih is not None and not ih.empty:
+        n_holders = len(ih)
+        total_pct = inst_pct * 100 if inst_pct else 0
+        top3 = ", ".join(ih["Holder"].head(3).tolist()) if "Holder" in ih.columns else ""
+        checks.append(("Institutionelle Unterstützung", n_holders >= 5,
+                       f"{n_holders} Top-Institutionen · {total_pct:.0f}% inst. gehalten" + (f" · Top: {top3}" if top3 else "")))
+    elif inst_pct is not None:
+        checks.append(("Institutionelle Beteiligung", inst_pct * 100 > 20,
+                       f"{inst_pct*100:.0f}% inst. gehalten (Detailliste nicht verfügbar)"))
     else:
-        checks.append(("Institutionelle Beteiligung", False, "Nicht verfügbar"))
+        checks.append(("Institutionelle Unterstützung", False, "Nicht verfügbar"))
 
-    # Profit margin
+    # ── Profit margin ──
     pm = _g("profitMargins")
     if pm is not None:
-        checks.append(("Gewinnmarge positiv", pm*100 > 0, f"{pm*100:.1f}%"))
+        checks.append(("Gewinnmarge positiv", pm > 0, f"{pm*100:.1f}%"))
 
     return checks
 
+# ═══════════════════════════════════════════════════════
+# TECHNICAL CHECKLIST
+# ═══════════════════════════════════════════════════════
 def evaluate_technicals(df, info, spx_df=None):
-    """Evaluate technical checklist from book Ch.3.5 + Ch.3.6."""
     checks = []; L = df.iloc[-1]; price = L["Close"]
 
-    # ── Price ≥ $15, near ATH ──
+    # Price ≥ $15
     checks.append(("Preis ≥ $15", price >= 15, f"${price:,.2f}"))
-    high_52w = df["High"].rolling(252, min_periods=20).max().iloc[-1]
-    if not np.isnan(high_52w):
-        d = (price / high_52w - 1) * 100
-        checks.append(("Nahe am 52W-Hoch (positiv)", d > -10, f"{d:+.1f}% vom Hoch ({high_52w:,.2f})"))
 
-    # ── Dollar Volume ≥ $30M ──
-    avg_vol = df["Volume"].tail(20).mean(); dol_vol = avg_vol * price / 1e6
-    checks.append(("Dollar-Volumen ≥ $30 Mio.", dol_vol >= 30, f"${dol_vol:,.0f} Mio./Tag"))
+    # Near ATH
+    h52 = df["High"].rolling(252, min_periods=20).max().iloc[-1]
+    if not np.isnan(h52):
+        d = (price / h52 - 1) * 100
+        checks.append(("Nahe am 52W-Hoch", d > -10, f"{d:+.1f}% vom Hoch (${h52:,.2f})"))
 
-    # ── Up/Down Volume Ratio ≥ 1.0 (50 days) ──
+    # Dollar volume ≥ $30M
+    avg_v = df["Volume"].tail(20).mean(); dol_v = avg_v * price / 1e6
+    checks.append(("Dollar-Volumen ≥ $30 Mio.", dol_v >= 30, f"${dol_v:,.0f} Mio./Tag"))
+
+    # Up/Down Volume Ratio ≥ 1.0
     pc = df["Close"].pct_change()
     uv = df["Volume"].where(pc > 0).tail(50).sum(); dv = df["Volume"].where(pc < 0).tail(50).sum()
     if dv > 0:
         udv = uv / dv
-        lbl = "ideal ≥1.1" if udv >= 1.1 else ""
-        checks.append(("Up/Down Volume Ratio ≥1.0", udv >= 1.0, f"{udv:.2f} {lbl}"))
-    else:
-        checks.append(("Up/Down Volume Ratio ≥1.0", True, "Kein Down-Volume"))
+        checks.append(("Up/Down Vol. Ratio ≥1.0", udv >= 1.0, f"{udv:.2f}" + (" (ideal ≥1.1)" if udv >= 1.1 else "")))
 
-    # ── Relative Strength Rating ≥ 80 (real benchmark vs S&P 500) ──
+    # RS Rating
     rs = None
     if spx_df is not None and len(spx_df) > 200:
         rs = _calc_rs_rating(df["Close"], spx_df["Close"])
     if rs is not None:
-        lbl = "Elite-Zone (≥90)" if rs >= 90 else "Stark" if rs >= 80 else "Unter Schwelle (<80)"
-        checks.append(("Relative-Stärke-Bewertung ≥80", rs >= 80, f"RS: {rs} · {lbl}"))
-    else:
-        # Fallback: simple 6M performance comparison
-        if len(df) >= 126 and spx_df is not None and len(spx_df) >= 126:
-            s_perf = (df["Close"].iloc[-1] / df["Close"].iloc[-126] - 1) * 100
-            m_perf = (spx_df["Close"].iloc[-1] / spx_df["Close"].iloc[-126] - 1) * 100
-            outperf = s_perf - m_perf
-            checks.append(("Relative Stärke vs. S&P 500 (6M)", outperf > 0,
-                           f"Aktie: {s_perf:+.1f}% · S&P: {m_perf:+.1f}% · Differenz: {outperf:+.1f}%"))
-        else:
-            checks.append(("Relative-Stärke-Bewertung", False, "Nicht genug Daten"))
+        lbl = "Elite" if rs >= 90 else "Stark" if rs >= 80 else "Meiden (<70)" if rs < 70 else "OK"
+        checks.append(("RS-Bewertung ≥80", rs >= 80, f"RS: {rs} ({lbl})"))
+    elif spx_df is not None and len(df) >= 126 and len(spx_df) >= 126:
+        sp = (df["Close"].iloc[-1] / df["Close"].iloc[-126] - 1) * 100
+        mp = (spx_df["Close"].iloc[-1] / spx_df["Close"].iloc[-126] - 1) * 100
+        checks.append(("Relative Stärke vs. S&P (6M)", sp > mp, f"Aktie: {sp:+.1f}% · S&P: {mp:+.1f}% · Diff: {sp-mp:+.1f}%"))
 
-    # ── Chaikin Money Flow Rating A or B ──
-    cmf = _calc_cmf(df, 20)
-    cmf_val = cmf.iloc[-1] if len(cmf) > 0 else np.nan
-    rating, meaning, _ = _cmf_rating(cmf_val)
-    checks.append(("Chaikin Money Flow Rating A oder B", rating in ("A","B"),
-                   f"CMF: {cmf_val:+.3f} → Rating {rating} ({meaning})"))
+    # CMF Rating A or B
+    cmf = _calc_cmf(df, 20); cmf_val = cmf.iloc[-1] if len(cmf) > 0 else np.nan
+    rat, meaning, _ = _cmf_rating(cmf_val)
+    checks.append(("CMF Rating A oder B", rat in ("A","B"), f"CMF: {cmf_val:+.3f} → {rat} ({meaning})"))
 
-    # ── Closing Range (last day) ──
-    rng = L["High"] - L["Low"]
-    cr = (L["Close"] - L["Low"]) / rng * 100 if rng > 0 else 50
-    checks.append(("Closing Range", True, f"{cr:.0f}% (Schluss im {'oberen' if cr > 50 else 'unteren'} Bereich)"))
-
-    # ── MAs and MA Order ──
+    # MAs
     e21 = df["Close"].ewm(span=21).mean().iloc[-1]
+    s10 = df["Close"].rolling(10).mean().iloc[-1]
     s50 = df["Close"].rolling(50).mean().iloc[-1]
     s200 = df["Close"].rolling(200).mean().iloc[-1]
-    if not np.isnan(e21): checks.append(("Kurs über 21-EMA", price > e21, f"{price:,.2f} vs {e21:,.2f}"))
-    if not np.isnan(s50): checks.append(("Kurs über 50-SMA", price > s50, f"{price:,.2f} vs {s50:,.2f}"))
-    if not np.isnan(s200): checks.append(("Kurs über 200-SMA", price > s200, f"{price:,.2f} vs {s200:,.2f}"))
+
+    for nm, mv in [("21-EMA", e21), ("50-SMA", s50), ("200-SMA", s200)]:
+        if not np.isnan(mv): checks.append((f"Kurs über {nm}", price > mv, f"{price:,.2f} vs {mv:,.2f}"))
+
     if not any(np.isnan(x) for x in [e21, s50, s200]):
-        order = e21 > s50 > s200
-        checks.append(("MA-Ordnung (21>50>200)", order, f"21:{e21:,.0f} · 50:{s50:,.0f} · 200:{s200:,.0f}"))
+        checks.append(("MA-Ordnung (21>50>200)", e21 > s50 > s200, f"21:{e21:,.0f} · 50:{s50:,.0f} · 200:{s200:,.0f}"))
 
-    # ── ATR (21T) with classification per Table 15 ──
-    atr_s = _atr(df, 21)
-    atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
-    atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) and price > 0 else np.nan
-    cat, cat_c = _atr_category(atr_pct)
-    checks.append(("ATR (21T)", True, f"ATR: ${atr_val:,.2f} ({atr_pct:.1f}%) · {cat}"))
+    # ── MA Distance warnings (book thresholds) ──
+    for nm, mv, thresh in [("10-SMA", s10, 10.0), ("21-EMA", e21, 14.0), ("50-SMA", s50, 25.0), ("200-SMA", s200, 70.0)]:
+        if not np.isnan(mv):
+            dist = (price / mv - 1) * 100
+            extended = dist > thresh or dist < -thresh
+            checks.append((f"Abstand {nm} (<{thresh:.0f}%)", not extended,
+                           f"{dist:+.1f}% ({'überdehnt' if dist > 0 else 'darunter'}, Schwelle: ±{thresh:.0f}%)"))
 
-    # ── Daily Relative Range (DRR) ──
-    drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
-    checks.append(("Daily Relative Range (Ø 21T)", True, f"DRR: {drr:.2f}%"))
+    return checks, cmf_val, rs
 
-    # Beta
-    beta = info.get("beta") if info else None
-    if beta: checks.append(("Beta", True, f"{beta:.2f}" + (" (>1.3 dynamisch)" if beta > 1.3 else "")))
-
-    return checks, cmf_val, rs, atr_pct, drr, cr
-
+# ═══════════════════════════════════════════════════════
+# CHART SIGNS (Table 28)
+# ═══════════════════════════════════════════════════════
 def evaluate_chart_signs(df):
-    """Evaluate positive, negative, neutral chart signs from Table 28."""
     signs = {"positiv": [], "negativ": [], "neutral": []}
     if len(df) < 50: return signs
     c = df["Close"]; h = df["High"]; l = df["Low"]; o = df["Open"]; v = df["Volume"]
@@ -997,137 +1016,146 @@ def evaluate_chart_signs(df):
 
     # Up-vol vs down-vol days (20d)
     t20 = df.tail(20)
-    up_hvol = ((t20["Close"] > t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
-    dn_hvol = ((t20["Close"] < t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
-    if up_hvol > dn_hvol: signs["positiv"].append(("Mehr Gewinn- als Verlusttage mit hohem Volumen", f"{up_hvol} vs {dn_hvol} (20T)"))
-    elif dn_hvol > up_hvol: signs["negativ"].append(("Mehr Verlust- als Gewinntage mit hohem Volumen", f"{dn_hvol} vs {up_hvol} (20T)"))
-    # Living above/below MAs
+    uhv = ((t20["Close"] > t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
+    dhv = ((t20["Close"] < t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
+    if uhv > dhv: signs["positiv"].append(("Mehr Gewinn- als Verlusttage mit hohem Vol.", f"{uhv} vs {dhv} (20T)"))
+    elif dhv > uhv: signs["negativ"].append(("Mehr Verlust- als Gewinntage mit hohem Vol.", f"{dhv} vs {uhv} (20T)"))
+
     a21 = (c.tail(10) > ema21.tail(10)).sum(); a50 = (c.tail(10) > sma50.tail(10)).sum()
-    if a21 >= 8 and a50 >= 8: signs["positiv"].append(("Leben über den gleitenden Durchschnitten", f"{a21}/10 über 21-EMA, {a50}/10 über 50-SMA"))
-    elif a21 <= 2 or a50 <= 2: signs["negativ"].append(("Leben unter den gleitenden Durchschnitten", f"{a21}/10 über 21-EMA, {a50}/10 über 50-SMA"))
-    # MA order & direction
+    if a21 >= 8 and a50 >= 8: signs["positiv"].append(("Leben über den Durchschnitten", f"{a21}/10 über 21-EMA, {a50}/10 über 50-SMA"))
+    elif a21 <= 2 or a50 <= 2: signs["negativ"].append(("Leben unter den Durchschnitten", f"{a21}/10 über 21-EMA, {a50}/10 über 50-SMA"))
+
     e21 = ema21.iloc[-1]; s50 = sma50.iloc[-1]; s200 = sma200.iloc[-1]
     if not any(np.isnan(x) for x in [e21, s50, s200]):
         if e21 > s50 > s200: signs["positiv"].append(("Durchschnitte in richtiger Ordnung", "21>50>200"))
         elif e21 < s50 < s200: signs["negativ"].append(("Durchschnitte in falscher Ordnung", "21<50<200"))
     if len(ema21) >= 10:
-        e_up = ema21.iloc[-1] > ema21.iloc[-10]; s_up = sma50.iloc[-1] > sma50.iloc[-10] if not np.isnan(sma50.iloc[-10]) else None
-        if e_up and s_up: signs["positiv"].append(("Nach oben zeigende Durchschnittslinien", "21-EMA und 50-SMA steigend"))
-        elif not e_up and s_up is False: signs["negativ"].append(("Nach unten zeigende Durchschnittslinien", "21-EMA und 50-SMA fallend"))
-    # Gaps
+        eu = ema21.iloc[-1] > ema21.iloc[-10]; su = sma50.iloc[-1] > sma50.iloc[-10] if not np.isnan(sma50.iloc[-10]) else None
+        if eu and su: signs["positiv"].append(("Nach oben zeigende Durchschnittslinien", ""))
+        elif not eu and su is False: signs["negativ"].append(("Nach unten zeigende Durchschnittslinien", ""))
+
     gu = ((o.tail(20) > h.shift(1).tail(20)) & (v.tail(20) > vol_avg.tail(20))).sum()
     gd = ((o.tail(20) < l.shift(1).tail(20)) & (v.tail(20) > vol_avg.tail(20))).sum()
     if gu > 0: signs["positiv"].append(("Positive Kurslücken", f"{gu} in 20T"))
-    if gd > 0: signs["negativ"].append(("Negative Kurslücken bei hohem Volumen", f"{gd} in 20T"))
-    # Price drops on low/high volume
+    if gd > 0: signs["negativ"].append(("Negative Kurslücken bei hohem Vol.", f"{gd} in 20T"))
+
     drops = pct.tail(20) < -0.005
     dl = (drops & (v.tail(20) < vol_avg.tail(20) * 0.8)).sum()
-    dh = (drops & (v.tail(20) > vol_avg.tail(20) * 1.2)).sum()
-    if dl >= 3: signs["positiv"].append(("Preisrückgänge bei niedrigem Volumen", f"{dl} Tage"))
-    if dh >= 3: signs["negativ"].append(("Preisrückgänge bei hohem Volumen", f"{dh} Tage"))
-    # Price rises on high volume
+    dhh = (drops & (v.tail(20) > vol_avg.tail(20) * 1.2)).sum()
+    if dl >= 3: signs["positiv"].append(("Preisrückgänge bei niedrigem Vol.", f"{dl} Tage"))
+    if dhh >= 3: signs["negativ"].append(("Preisrückgänge bei hohem Vol.", f"{dhh} Tage"))
     rises = pct.tail(20) > 0.005
     rh = (rises & (v.tail(20) > vol_avg.tail(20) * 1.2)).sum()
-    if rh >= 3: signs["positiv"].append(("Preissteigerungen bei hohem Volumen", f"{rh} in 20T"))
-    # Stall days
-    stall = ((pct.tail(10) >= 0) & (pct.tail(10) < 0.005) & (v.tail(10) >= v.shift(1).tail(10) * 0.95)).sum()
+    if rh >= 3: signs["positiv"].append(("Preissteigerungen bei hohem Vol.", f"{rh} in 20T"))
+
+    stall = ((pct.tail(10) >= 0) & (pct.tail(10) < 0.005) & (v.tail(10) >= v.shift(1).tail(10) * 0.95) & (cr_s.tail(10) < 0.5)).sum()
     if stall >= 2: signs["negativ"].append(("Stau-Tage", f"{stall} in 10T"))
-    # Reversals
+
     ur = ((o.tail(10) < c.shift(1).tail(10)) & (c.tail(10) > o.tail(10)) & (cr_s.tail(10) > 0.7)).sum()
     dr2 = ((o.tail(10) > c.shift(1).tail(10)) & (c.tail(10) < o.tail(10)) & (cr_s.tail(10) < 0.3)).sum()
     if ur >= 2: signs["positiv"].append(("Upside Reversals", f"{ur} in 10T"))
     if dr2 >= 2: signs["negativ"].append(("Downside Reversals", f"{dr2} in 10T"))
-    # RS line
+
     if len(c) >= 63:
-        rs_now = c.iloc[-1] / c.iloc[-21]; rs_prev = c.iloc[-21] / c.iloc[-63]
-        if rs_now > rs_prev: signs["positiv"].append(("Steigende Relative-Stärke-Linie", f"{rs_now:.3f} vs {rs_prev:.3f}"))
-        elif rs_now < rs_prev * 0.95: signs["negativ"].append(("Kippende Relative-Stärke-Linie", f"{rs_now:.3f} vs {rs_prev:.3f}"))
-    # Closing Range avg
+        rn = c.iloc[-1] / c.iloc[-21]; rp = c.iloc[-21] / c.iloc[-63]
+        if rn > rp: signs["positiv"].append(("Steigende RS-Linie", f"{rn:.3f} vs {rp:.3f}"))
+        elif rn < rp * 0.95: signs["negativ"].append(("Kippende RS-Linie", f"{rn:.3f} vs {rp:.3f}"))
+
     avg_cr = cr_s.tail(5).mean()
-    if avg_cr > 0.6: signs["positiv"].append(("Schlussposition im oberen 40%", f"Ø {avg_cr:.0%}"))
+    if avg_cr > 0.6: signs["positiv"].append(("Schlussposition obere 40%", f"Ø {avg_cr:.0%}"))
     elif avg_cr < 0.25: signs["negativ"].append(("Tiefe Schlussposition", f"Ø {avg_cr:.0%}"))
-    # Distance to MAs
+
     if not np.isnan(s50):
         d50 = (c.iloc[-1] / s50 - 1) * 100
-        if d50 > 15: signs["negativ"].append(("Großer Abstand zu gleitenden Durchschnitten", f"{d50:+.1f}% zur 50-SMA"))
-    # 5 positive weeks
+        if d50 > 15: signs["negativ"].append(("Großer Abstand zu Durchschnitten", f"{d50:+.1f}% zur 50-SMA"))
+
     wc = c.resample("W-FRI").last().dropna()
     if len(wc) >= 6 and (wc.pct_change().tail(5) > 0).all():
         signs["positiv"].append(("5 positive Wochen in Folge", ""))
-    # Neutral signs
-    if not np.isnan(s50) and abs(c.iloc[-1] / s50 - 1) < 0.01: signs["neutral"].append(("Rückkehr zur 50-Tage-Linie", f"Close ≈ 50-SMA"))
-    if h.iloc[-1] <= h.iloc[-2] and l.iloc[-1] >= l.iloc[-2]: signs["neutral"].append(("Inside Day", "Hoch und Tief im Vortag"))
+
+    if not np.isnan(s50) and abs(c.iloc[-1] / s50 - 1) < 0.01: signs["neutral"].append(("Rückkehr zur 50-Tage-Linie", ""))
+    if h.iloc[-1] <= h.iloc[-2] and l.iloc[-1] >= l.iloc[-2]: signs["neutral"].append(("Inside Day", ""))
     r5 = (h.tail(5).max() - l.tail(5).min()) / c.iloc[-1] * 100
     if r5 < 3: signs["neutral"].append(("Enge Konsolidierung", f"5T-Range: {r5:.1f}%"))
-    if not np.isnan(e21) and abs(l.iloc[-1] - e21) / e21 < 0.005: signs["neutral"].append(("Test der 21-Tage-EMA", ""))
-    if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-Tage-SMA", ""))
+    if not np.isnan(e21) and abs(l.iloc[-1] - e21) / e21 < 0.005: signs["neutral"].append(("Test der 21-EMA", ""))
+    if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-SMA", ""))
     return signs
 
-
+# ═══════════════════════════════════════════════════════
+# TAB LAYOUT
+# ═══════════════════════════════════════════════════════
 def _tab_aktienbewertung():
-    """Tab 3: Single stock evaluation."""
     st.markdown("### 📋 Aktienbewertung — Einzelaktien-Check")
-    st.caption("Fundamentale Checkliste (Kap. 3.4), Technische Checkliste (Kap. 3.5/3.6), Chartverhalten (Tab. 28).")
+    st.caption("Fundamentale Checkliste (Kap. 3.4) · Technische Checkliste (Kap. 3.5/3.6) · Chartverhalten (Tab. 28)")
 
     ticker = st.text_input("Ticker eingeben (z.B. NVDA, AAPL, MSFT)", value="", placeholder="NVDA").upper().strip()
     if not ticker: return
 
-    with st.spinner(f"Lade Daten für {ticker} …"):
-        df, info, qf, qi = load_stock_full(ticker)
+    with st.spinner(f"Lade {ticker} …"):
+        df, info, qi, ai, ih = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
 
     if df is None or len(df) < 20:
-        st.error(f"Keine Daten für '{ticker}'. Bitte gültigen US-Ticker eingeben."); return
+        st.error(f"Keine Daten für '{ticker}'."); return
 
     L = df.iloc[-1]; name = info.get("shortName", ticker) if info else ticker
     price = L["Close"]; prev = df["Close"].iloc[-2]; chg = (price / prev - 1) * 100
 
-    # Header
-    st.markdown(f'<div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">{name} ({ticker})</div>'
-                f'<div style="font-size:1.1rem;color:{"#22c55e" if chg>=0 else "#ef4444"};font-weight:700;">'
-                f'${price:,.2f} ({chg:+.2f}%)</div>', unsafe_allow_html=True)
+    # ── Header ──
+    st.markdown(
+        f'<div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">{name} ({ticker})</div>'
+        f'<div style="font-size:1.1rem;color:{"#22c55e" if chg>=0 else "#ef4444"};font-weight:700;">'
+        f'${price:,.2f} ({chg:+.2f}%)</div>', unsafe_allow_html=True)
 
-    # Key metrics row
-    sm1, sm2, sm3, sm4, sm5 = st.columns(5)
-    with sm1: st.metric("Sektor", info.get("sector", "—")[:20] if info else "—")
-    with sm2: st.metric("Branche", info.get("industry", "—")[:22] if info else "—")
-    mc = info.get("marketCap", 0) if info else 0
-    with sm3: st.metric("Marktkapitalisierung", f"${mc/1e9:,.0f} Mrd." if mc > 1e9 else f"${mc/1e6:,.0f} Mio." if mc > 0 else "—")
+    # ── Key metrics row ──
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    with k1: st.metric("Sektor", (info.get("sector","—") if info else "—")[:18])
+    with k2: st.metric("Branche", (info.get("industry","—") if info else "—")[:20])
+
     # Closing Range
     rng_hl = L["High"] - L["Low"]; cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
-    with sm4: st.metric("Closing Range", f"{cr_today:.0f}%")
-    # ATR
+    with k3: st.metric("Closing Range", f"{cr_today:.0f}%")
+
+    # ATR in %
     atr_s = _atr(df, 21); atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
-    cat_lbl, _ = _atr_category(atr_pct)
-    with sm5: st.metric("ATR (21T)", f"${atr_val:,.2f}" if not np.isnan(atr_val) else "—", cat_lbl)
+    cat_lbl, cat_c = _atr_category(atr_pct)
+    with k4: st.metric("ATR (21T)", f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", cat_lbl)
+
+    # DRR
+    drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
+    with k5: st.metric("DRR (Ø21T)", f"{drr:.2f}%")
+
+    # Beta
+    beta = info.get("beta") if info else None
+    with k6: st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
 
     st.markdown("---")
 
-    # ── TWO COLUMNS: FUNDAMENTAL + TECHNICAL ──
+    # ── TWO COLUMNS ──
     col_f, col_t = st.columns(2)
 
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">FUNDAMENTALE CHECKLISTE (Kap. 3.4)</div>', unsafe_allow_html=True)
-        fund_checks = evaluate_fundamentals(info, qi)
-        fund_ok = sum(1 for _, ok, _ in fund_checks if ok)
-        for label, ok, detail in fund_checks: render_check(label, ok, detail)
-        sc = "#22c55e" if fund_ok >= 6 else "#f59e0b" if fund_ok >= 4 else "#ef4444"
-        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fund_ok}/{len(fund_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
+        fc = evaluate_fundamentals(info, qi, ai, ih)
+        fok = sum(1 for _, ok, _ in fc if ok)
+        for label, ok, detail in fc: render_check(label, ok, detail)
+        sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
+        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_t:
         st.markdown('<div class="info-card"><div class="card-label">TECHNISCHE CHECKLISTE (Kap. 3.5 / 3.6)</div>', unsafe_allow_html=True)
-        tech_checks, cmf_val, rs_val, atr_pct_v, drr_v, cr_v = evaluate_technicals(df, info, spx_df)
-        tech_ok = sum(1 for _, ok, _ in tech_checks if ok)
-        for label, ok, detail in tech_checks: render_check(label, ok, detail)
-        sc = "#22c55e" if tech_ok >= 10 else "#f59e0b" if tech_ok >= 6 else "#ef4444"
-        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tech_ok}/{len(tech_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
+        tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df)
+        tok = sum(1 for _, ok, _ in tc if ok)
+        for label, ok, detail in tc: render_check(label, ok, detail)
+        sc = "#22c55e" if tok >= 10 else "#f59e0b" if tok >= 6 else "#ef4444"
+        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(tc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # ── CHART SIGNS (Table 28) ──
+    # ── CHART SIGNS ──
     st.markdown('<div class="card-label">CHARTVERHALTEN — POSITIVE / NEGATIVE / NEUTRALE ZEICHEN (Tabelle 28)</div>', unsafe_allow_html=True)
     signs = evaluate_chart_signs(df)
     sc1, sc2, sc3 = st.columns(3)
@@ -1141,20 +1169,21 @@ def _tab_aktienbewertung():
                                 f'<div style="font-size:.8rem;color:{color};">{nm}</div>'
                                 f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div style="color:#4a5568;font-size:.8rem;">Keine Zeichen erkannt</div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="color:#4a5568;font-size:.8rem;">Keine Zeichen</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    # Summary
-    n_pos = len(signs["positiv"]); n_neg = len(signs["negativ"]); n_neu = len(signs["neutral"])
-    score = n_pos - n_neg
+    np_ = len(signs["positiv"]); nn = len(signs["negativ"]); nu = len(signs["neutral"])
+    score = np_ - nn
     if score >= 3: verd = "Starkes Chartbild"; vc = "#22c55e"
     elif score >= 1: verd = "Leicht positiv"; vc = "#22c55e"
     elif score >= -1: verd = "Gemischt — Vorsicht"; vc = "#f59e0b"
-    else: verd = "Schwaches Chartbild — defensiv"; vc = "#ef4444"
-    st.markdown(f'<div style="text-align:center;padding:12px;background:#111827;border:1px solid #1e293b;border-radius:10px;">'
-                f'<div style="font-size:.7rem;color:#64748b;">GESAMTBEWERTUNG</div>'
-                f'<div style="font-size:1rem;font-weight:700;color:{vc};">{verd}</div>'
-                f'<div style="font-size:.75rem;color:#94a3b8;">{n_pos} Positiv · {n_neg} Negativ · {n_neu} Neutral · Score: {score:+d}</div></div>', unsafe_allow_html=True)
+    else: verd = "Schwaches Chartbild"; vc = "#ef4444"
+    st.markdown(
+        f'<div style="text-align:center;padding:12px;background:#111827;border:1px solid #1e293b;border-radius:10px;">'
+        f'<div style="font-size:.7rem;color:#64748b;">GESAMTBEWERTUNG</div>'
+        f'<div style="font-size:1rem;font-weight:700;color:{vc};">{verd}</div>'
+        f'<div style="font-size:.75rem;color:#94a3b8;">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score: {score:+d}</div></div>',
+        unsafe_allow_html=True)
 
 
 def _tab_sektoranalyse():
