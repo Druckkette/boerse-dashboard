@@ -740,39 +740,51 @@ def load_stock_full(ticker, lookback_days=500):
             try: fmp_key = st.secrets.get("FMP_API_KEY", "")
             except: pass
         if not fmp_key: fmp_key = os.environ.get("FMP_API_KEY", "")
-        qraw = _fetch_quarterly_fmp(ticker, fmp_key) if fmp_key else None
-        return df, info, qi, ai, ih, qe, ed, qraw
-    except: return None, None, None, None, None, None, None, None
+        qraw = None; fmp_err = None
+        if fmp_key:
+            result = _fetch_quarterly_fmp(ticker, fmp_key)
+            if isinstance(result, tuple):
+                qraw, fmp_err = result
+            else:
+                qraw = result
+        return df, info, qi, ai, ih, qe, ed, qraw, fmp_err
+    except: return None, None, None, None, None, None, None, None, None
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_quarterly_fmp(ticker, fmp_key):
-    """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters).
-    Free tier: 250 requests/day. Returns dict with 'DilutedEPS' and 'TotalRevenue' as pd.Series."""
-    if not fmp_key: return None
+    """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters)."""
+    if not fmp_key: return None, "Kein API-Key"
     try:
         import json
         url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
         params = {"period": "quarter", "limit": 12, "apikey": fmp_key}
         r = requests.get(url, params=params, timeout=15)
-        if r.status_code == 429: return None  # rate limited
-        if r.status_code != 200: return None
+        if r.status_code == 429: return None, f"Rate Limited (429)"
+        if r.status_code == 403: return None, f"Zugriff verweigert (403) — Domain evtl. geblockt"
+        if r.status_code == 401: return None, f"API-Key ungültig (401)"
+        if r.status_code != 200: return None, f"HTTP {r.status_code}"
         data = json.loads(r.text)
-        if not data or not isinstance(data, list): return None
+        if isinstance(data, dict) and "Error Message" in data:
+            return None, f"FMP Fehler: {data['Error Message'][:80]}"
+        if not data or not isinstance(data, list): return None, f"Leere Antwort (Typ: {type(data).__name__})"
         out = {}; eps_vals = {}; rev_vals = {}
         for item in data:
             date_str = item.get("date", "")
             if not date_str: continue
             dt = pd.Timestamp(date_str)
-            # FMP uses lowercase field names
             eps = item.get("epsdiluted", item.get("epsDiluted"))
             rev = item.get("revenue")
             if eps is not None: eps_vals[dt] = float(eps)
             if rev is not None: rev_vals[dt] = float(rev)
         if eps_vals: out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
         if rev_vals: out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
-        return out if out else None
-    except Exception:
-        return None
+        return (out if out else None), None
+    except requests.exceptions.ConnectionError as e:
+        return None, f"Verbindungsfehler: {str(e)[:60]}"
+    except requests.exceptions.Timeout:
+        return None, "Timeout (>15s)"
+    except Exception as e:
+        return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
@@ -965,7 +977,7 @@ def _atr_category(pct):
 # ═══════════════════════════════════════════════════════
 # FUNDAMENTAL CHECKLIST
 # ═══════════════════════════════════════════════════════
-def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None):
+def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err=None):
     checks = []
     def _g(k, d=None):
         v = info.get(k, d) if info else d
@@ -976,15 +988,15 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None):
     if qraw is not None:
         for key, series in qraw.items():
             src_info.append(f"FMP {key}: {len(series)}Q")
+    elif fmp_err:
+        src_info.append(f"FMP: {fmp_err}")
     else:
-        # Check if FMP key was available
         fmp_avail = False
-        try: fmp_avail = bool(st.secrets.get("FMP_API_KEY", ""))
+        try: fmp_avail = bool(st.secrets["FMP_API_KEY"])
         except:
-            try: fmp_avail = bool(st.secrets["FMP_API_KEY"])
+            try: fmp_avail = bool(st.secrets.get("FMP_API_KEY", ""))
             except: pass
-        if not fmp_avail: src_info.append("FMP: kein API-Key")
-        else: src_info.append("FMP: Fehler beim Abruf")
+        if not fmp_avail: src_info.append("FMP: kein API-Key in Secrets")
     if qi is not None and not qi.empty:
         eps_row = _find_row(qi, ["Diluted EPS","Basic EPS"])
         rev_row = _find_row(qi, ["Total Revenue","Revenue","Operating Revenue"])
@@ -1258,7 +1270,7 @@ def _tab_aktienbewertung():
     if not ticker: return
 
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe, ed, qraw = load_stock_full(ticker)
+        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
 
     if df is None or len(df) < 20:
@@ -1303,7 +1315,7 @@ def _tab_aktienbewertung():
 
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">FUNDAMENTALE CHECKLISTE (Kap. 3.4)</div>', unsafe_allow_html=True)
-        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw)
+        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
         fok = sum(1 for _, ok, _ in fc if ok)
         for label, ok, detail in fc: render_check(label, ok, detail)
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
