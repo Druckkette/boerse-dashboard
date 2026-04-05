@@ -784,16 +784,33 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
 
     # ── 1. earnings_dates: epsActual for up to 12 quarters (EPS only) ──
     if field == "eps" and ed is not None and not ed.empty:
+        # Find the right column name (varies by yfinance version)
         eps_col = None
-        for col_name in ["EPS Actual", "Reported EPS", "epsActual"]:
+        for col_name in ["Reported EPS", "EPS Actual", "epsActual", "Earnings/Share"]:
             if col_name in ed.columns: eps_col = col_name; break
         if eps_col:
-            eps_data = ed[[eps_col]].dropna().sort_index(ascending=False)
+            # Filter: drop future dates (NaN EPS) and duplicates
+            eps_data = ed[[eps_col]].copy()
+            eps_data = eps_data[eps_data[eps_col].notna()]
+            eps_data = eps_data[~eps_data.index.duplicated(keep='first')]
+            eps_data = eps_data.sort_index(ascending=False)
             if len(eps_data) >= 5:
                 res = _extract_yoy(eps_data[eps_col])
                 if res: return res
 
-    # ── 2. quarterly_earnings (Earnings + Revenue) ──
+    # ── 2. quarterly_income_stmt (try first for revenue, usually 4-5 quarters) ──
+    candidates = {
+        "eps": ["Diluted EPS", "Basic EPS"],
+        "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
+    }
+    row = _find_row(qi, candidates.get(field, [field]))
+    if row is not None:
+        vals = row.dropna().sort_index(ascending=False)
+        if len(vals) >= 5:
+            res = _extract_yoy(vals)
+            if res: return res
+
+    # ── 3. quarterly_earnings (deprecated but may still work for some tickers) ──
     if qe is not None and not qe.empty:
         col_map = {"eps": "Earnings", "revenue": "Revenue"}
         col = col_map.get(field)
@@ -802,15 +819,9 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
             res = _extract_yoy(vals)
             if res: return res
 
-    # ── 3. quarterly_income_stmt (fallback) ──
-    candidates = {
-        "eps": ["Diluted EPS", "Basic EPS"],
-        "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
-    }
-    row = _find_row(qi, candidates.get(field, [field]))
-    if row is None: return []
-    vals = row.dropna().sort_index(ascending=False)
-    return _extract_yoy(vals)
+    # ── 4. Last resort for EPS: use .info single-quarter value ──
+    # (Already handled by the caller as fallback)
+    return []
 
 def _annual_yoy_growth(ai, field):
     """YoY growth for last 3 years. Returns list of (year, growth%, flag, cur, prev)."""
@@ -914,6 +925,25 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None):
     def _g(k, d=None):
         v = info.get(k, d) if info else d
         return v if v is not None else d
+
+    # ── Debug: show data availability ──
+    src_info = []
+    if qi is not None and not qi.empty:
+        eps_row = _find_row(qi, ["Diluted EPS","Basic EPS"])
+        rev_row = _find_row(qi, ["Total Revenue","Revenue","Operating Revenue"])
+        n_eps = len(eps_row.dropna()) if eps_row is not None else 0
+        n_rev = len(rev_row.dropna()) if rev_row is not None else 0
+        src_info.append(f"income_stmt: {n_eps}Q EPS, {n_rev}Q Rev")
+    if ed is not None and not ed.empty:
+        for col in ["Reported EPS","EPS Actual","epsActual"]:
+            if col in ed.columns:
+                n = ed[col].notna().sum()
+                src_info.append(f"earnings_dates: {n}Q EPS")
+                break
+    if qe is not None and not qe.empty:
+        src_info.append(f"quarterly_earnings: {len(qe)}Q")
+    data_note = " · ".join(src_info) if src_info else "Keine Quartalsdaten"
+    checks.append(("Datenquellen", bool(src_info), data_note))
 
     # ── EPS: quarterly YoY (3 quarters) ──
     epsg = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed)
