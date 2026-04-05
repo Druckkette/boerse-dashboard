@@ -716,7 +716,7 @@ def load_stock_full(ticker, lookback_days=500):
     try:
         t = yf.Ticker(ticker)
         df = t.history(start=start, end=end, auto_adjust=True)
-        if df is None or len(df) < 20: return None, None, None, None, None, None, None
+        if df is None or len(df) < 20: return None, None, None, None, None, None, None, None
         df.index = pd.to_datetime(df.index); df = df.sort_index()
         for c in ["Open","High","Low","Close","Volume"]:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -732,69 +732,42 @@ def load_stock_full(ticker, lookback_days=500):
         except: pass
         try: ed = t.get_earnings_dates(limit=12)
         except: pass
-        # Direct Yahoo API call for more quarterly EPS + Revenue history
-        qraw = _fetch_quarterly_raw(ticker)
+        # FMP API: up to 12 quarters of EPS + Revenue (primary source)
+        fmp_key = ""
+        try: fmp_key = st.secrets.get("FMP_API_KEY", "")
+        except: pass
+        if not fmp_key: fmp_key = os.environ.get("FMP_API_KEY", "")
+        qraw = _fetch_quarterly_fmp(ticker, fmp_key)
         return df, info, qi, ai, ih, qe, ed, qraw
     except: return None, None, None, None, None, None, None, None
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_quarterly_raw(ticker):
-    """Direct Yahoo timeseries API: two calls with overlapping windows to get 8+ quarters.
-    Yahoo returns max 5 quarters per call, so we call twice:
-    - Call 1: recent (last 2 years) → gets quarters Q-4 to Q0
-    - Call 2: older (2-4 years ago) → gets quarters Q-8 to Q-4
-    Then merge both to get up to 10 quarters."""
-    import json
-
-    def _call(ticker, period1, period2):
-        try:
-            url = f"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{ticker}"
-            params = {
-                "symbol": ticker,
-                "type": "quarterlyDilutedEPS,quarterlyTotalRevenue",
-                "period1": str(int(period1)),
-                "period2": str(int(period2)),
-            }
-            r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-            if r.status_code != 200: return {}
-            data = json.loads(r.text)
-            results = data.get("timeseries", {}).get("result", [])
-            out = {}
-            for item in results:
-                for key in item:
-                    if key in ("meta", "timestamp"): continue
-                    series_data = item[key]
-                    vals = {}
-                    for entry in series_data:
-                        dt = pd.Timestamp(entry["asOfDate"])
-                        val = entry.get("reportedValue", {}).get("raw")
-                        if val is not None: vals[dt] = val
-                    if vals:
-                        clean_key = key.replace("quarterly", "")
-                        out[clean_key] = vals
-            return out
-        except: return {}
-
-    now = datetime.now().timestamp()
-    two_years_ago = (datetime.now() - timedelta(days=730)).timestamp()
-    four_years_ago = (datetime.now() - timedelta(days=1460)).timestamp()
-
-    # Call 1: recent quarters
-    recent = _call(ticker, two_years_ago, now)
-    # Call 2: older quarters (overlapping window)
-    older = _call(ticker, four_years_ago, two_years_ago + 86400*90)  # overlap by 90 days
-
-    # Merge: combine both calls, dedup by date
-    merged = {}
-    for key in set(list(recent.keys()) + list(older.keys())):
-        combined = {}
-        if key in older: combined.update(older[key])
-        if key in recent: combined.update(recent[key])  # recent overwrites older for same date
-        if combined:
-            s = pd.Series(combined).sort_index(ascending=False)
-            merged[key] = s
-
-    return merged if merged else None
+def _fetch_quarterly_fmp(ticker, fmp_key):
+    """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters).
+    Free tier: 250 requests/day. Returns dict with 'DilutedEPS' and 'TotalRevenue' as pd.Series."""
+    if not fmp_key: return None
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
+        params = {"period": "quarter", "limit": 12, "apikey": fmp_key}
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code == 429: return None  # rate limited, fall back
+        if r.status_code != 200: return None
+        import json
+        data = json.loads(r.text)
+        if not data or not isinstance(data, list): return None
+        out = {}
+        eps_vals = {}; rev_vals = {}
+        for item in data:
+            dt = pd.Timestamp(item.get("date", ""))
+            eps = item.get("epsdiluted")  # FMP uses lowercase
+            if eps is None: eps = item.get("epsDiluted")
+            rev = item.get("revenue")
+            if dt and eps is not None: eps_vals[dt] = float(eps)
+            if dt and rev is not None: rev_vals[dt] = float(rev)
+        if eps_vals: out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
+        if rev_vals: out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
+        return out if out else None
+    except: return None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
@@ -995,23 +968,21 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None):
 
     # ── Debug: show data availability ──
     src_info = []
+    if qraw is not None:
+        for key, series in qraw.items():
+            src_info.append(f"FMP {key}: {len(series)}Q")
     if qi is not None and not qi.empty:
         eps_row = _find_row(qi, ["Diluted EPS","Basic EPS"])
         rev_row = _find_row(qi, ["Total Revenue","Revenue","Operating Revenue"])
         n_eps = len(eps_row.dropna()) if eps_row is not None else 0
         n_rev = len(rev_row.dropna()) if rev_row is not None else 0
-        src_info.append(f"income_stmt: {n_eps}Q EPS, {n_rev}Q Rev")
-    if qraw is not None:
-        for key, series in qraw.items():
-            src_info.append(f"yahoo_api {key}: {len(series)}Q")
+        src_info.append(f"Yahoo: {n_eps}Q EPS, {n_rev}Q Rev")
     if ed is not None and not ed.empty:
         for col in ["Reported EPS","EPS Actual","epsActual"]:
             if col in ed.columns:
                 n = ed[col].notna().sum()
-                src_info.append(f"earnings_dates: {n}Q EPS")
+                src_info.append(f"earnings_dates: {n}Q")
                 break
-    if qe is not None and not qe.empty:
-        src_info.append(f"quarterly_earnings: {len(qe)}Q")
     data_note = " · ".join(src_info) if src_info else "Keine Quartalsdaten"
     checks.append(("Datenquellen", bool(src_info), data_note))
 
