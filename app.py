@@ -739,38 +739,62 @@ def load_stock_full(ticker, lookback_days=500):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_quarterly_raw(ticker):
-    """Direct Yahoo timeseries API call for quarterly EPS and Revenue.
-    Requests only 2 fields (not all financials) which sometimes returns more quarters."""
-    try:
-        url = f"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{ticker}"
-        params = {
-            "symbol": ticker,
-            "type": "quarterlyDilutedEPS,quarterlyTotalRevenue",
-            "period1": "1388534400",  # 2014-01-01 (far back)
-            "period2": str(int(datetime.now().timestamp())),
-        }
-        r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        if r.status_code != 200: return None
-        import json
-        data = json.loads(r.text)
-        results = data.get("timeseries", {}).get("result", [])
-        out = {}
-        for item in results:
-            for key in item:
-                if key in ("meta", "timestamp"): continue
-                series_data = item[key]
-                vals = {}
-                for entry in series_data:
-                    dt = pd.Timestamp(entry["asOfDate"])
-                    val = entry.get("reportedValue", {}).get("raw")
-                    if val is not None: vals[dt] = val
-                if vals:
-                    s = pd.Series(vals).sort_index(ascending=False)
-                    # Strip the "quarterly" prefix
-                    clean_key = key.replace("quarterly", "")
-                    out[clean_key] = s
-        return out if out else None
-    except: return None
+    """Direct Yahoo timeseries API: two calls with overlapping windows to get 8+ quarters.
+    Yahoo returns max 5 quarters per call, so we call twice:
+    - Call 1: recent (last 2 years) → gets quarters Q-4 to Q0
+    - Call 2: older (2-4 years ago) → gets quarters Q-8 to Q-4
+    Then merge both to get up to 10 quarters."""
+    import json
+
+    def _call(ticker, period1, period2):
+        try:
+            url = f"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{ticker}"
+            params = {
+                "symbol": ticker,
+                "type": "quarterlyDilutedEPS,quarterlyTotalRevenue",
+                "period1": str(int(period1)),
+                "period2": str(int(period2)),
+            }
+            r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            if r.status_code != 200: return {}
+            data = json.loads(r.text)
+            results = data.get("timeseries", {}).get("result", [])
+            out = {}
+            for item in results:
+                for key in item:
+                    if key in ("meta", "timestamp"): continue
+                    series_data = item[key]
+                    vals = {}
+                    for entry in series_data:
+                        dt = pd.Timestamp(entry["asOfDate"])
+                        val = entry.get("reportedValue", {}).get("raw")
+                        if val is not None: vals[dt] = val
+                    if vals:
+                        clean_key = key.replace("quarterly", "")
+                        out[clean_key] = vals
+            return out
+        except: return {}
+
+    now = datetime.now().timestamp()
+    two_years_ago = (datetime.now() - timedelta(days=730)).timestamp()
+    four_years_ago = (datetime.now() - timedelta(days=1460)).timestamp()
+
+    # Call 1: recent quarters
+    recent = _call(ticker, two_years_ago, now)
+    # Call 2: older quarters (overlapping window)
+    older = _call(ticker, four_years_ago, two_years_ago + 86400*90)  # overlap by 90 days
+
+    # Merge: combine both calls, dedup by date
+    merged = {}
+    for key in set(list(recent.keys()) + list(older.keys())):
+        combined = {}
+        if key in older: combined.update(older[key])
+        if key in recent: combined.update(recent[key])  # recent overwrites older for same date
+        if combined:
+            s = pd.Series(combined).sort_index(ascending=False)
+            merged[key] = s
+
+    return merged if merged else None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
