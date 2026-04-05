@@ -721,15 +721,19 @@ def load_stock_full(ticker, lookback_days=500):
         for c in ["Open","High","Low","Close","Volume"]:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
         info = t.info or {}
-        qi = None; ai = None; ih = None
+        qi = None; ai = None; ih = None; qe = None
         try: qi = t.quarterly_income_stmt
         except: pass
-        try: ai = t.income_stmt  # annual
+        try: ai = t.income_stmt
         except: pass
         try: ih = t.institutional_holders
         except: pass
-        return df, info, qi, ai, ih
-    except: return None, None, None, None, None
+        # quarterly_earnings often has more history (8+ quarters)
+        # Returns DataFrame with columns: Revenue, Earnings
+        try: qe = t.quarterly_earnings
+        except: pass
+        return df, info, qi, ai, ih, qe
+    except: return None, None, None, None, None, None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
@@ -744,28 +748,62 @@ def _find_row(stmt, candidates):
         if name in stmt.index: return stmt.loc[name]
     return None
 
-def _quarterly_yoy_growth(qi, field):
-    """YoY growth for last 3 quarters. Returns list of (label, growth%) newest first."""
+def _quarterly_yoy_growth(qi, field, qe=None):
+    """YoY growth for last 3 quarters. Each quarter vs SAME quarter previous year.
+    Returns list of (label, growth%, flag) newest first.
+    flag: None=normal, 'turnaround'=neg→pos, 'still_neg'=neg→neg, 'turned_neg'=pos→neg."""
+
+    def _fmt_qlabel(idx):
+        if hasattr(idx, 'month'):
+            return f"{idx.year} Q{(idx.month - 1) // 3 + 1}"
+        return str(idx)[:7]
+
+    def _extract_yoy(vals):
+        if len(vals) < 5: return []
+        results = []
+        for i in range(min(3, len(vals) - 4)):
+            cur = float(vals.iloc[i]); prev = float(vals.iloc[i + 4])
+            if np.isnan(prev) or np.isnan(cur): continue
+            lbl = _fmt_qlabel(vals.index[i])
+
+            if prev < 0 and cur > 0:
+                # Turnaround: negative to positive — special case
+                results.append((lbl, None, "turnaround", cur, prev))
+            elif prev < 0 and cur <= 0:
+                # Still negative — not good
+                results.append((lbl, None, "still_neg", cur, prev))
+            elif prev > 0 and cur < 0:
+                # Turned negative — bad
+                results.append((lbl, None, "turned_neg", cur, prev))
+            elif prev == 0:
+                results.append((lbl, None, "prev_zero", cur, prev))
+            else:
+                # Normal case: both positive
+                g = (cur / prev - 1) * 100
+                results.append((lbl, round(g, 1), None, cur, prev))
+        return results
+
+    # ── Try quarterly_earnings first ──
+    if qe is not None and not qe.empty:
+        col_map = {"eps": "Earnings", "revenue": "Revenue"}
+        col = col_map.get(field)
+        if col and col in qe.columns:
+            vals = qe[col].dropna().sort_index(ascending=False)
+            res = _extract_yoy(vals)
+            if res: return res
+
+    # ── Fallback: quarterly_income_stmt ──
     candidates = {
-        "eps": ["Diluted EPS","Basic EPS"],
-        "revenue": ["Total Revenue","Revenue","Operating Revenue"],
-        "net_income": ["Net Income","Net Income Common Stockholders"],
+        "eps": ["Diluted EPS", "Basic EPS"],
+        "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
     }
     row = _find_row(qi, candidates.get(field, [field]))
     if row is None: return []
     vals = row.dropna().sort_index(ascending=False)
-    if len(vals) < 5: return []
-    results = []
-    for i in range(min(3, len(vals) - 4)):
-        cur = vals.iloc[i]; prev = vals.iloc[i + 4]
-        if prev != 0 and not np.isnan(prev) and not np.isnan(cur):
-            g = (cur / prev - 1) * 100
-            lbl = vals.index[i].strftime("%Y-%m") if hasattr(vals.index[i], 'strftime') else str(vals.index[i])[:7]
-            results.append((lbl, round(g, 1)))
-    return results
+    return _extract_yoy(vals)
 
 def _annual_yoy_growth(ai, field):
-    """YoY growth for last 3 years. Returns list of (year, growth%)."""
+    """YoY growth for last 3 years. Returns list of (year, growth%, flag, cur, prev)."""
     candidates = {
         "eps": ["Diluted EPS","Basic EPS"],
         "revenue": ["Total Revenue","Revenue","Operating Revenue"],
@@ -776,12 +814,43 @@ def _annual_yoy_growth(ai, field):
     if len(vals) < 2: return []
     results = []
     for i in range(min(3, len(vals) - 1)):
-        cur = vals.iloc[i]; prev = vals.iloc[i + 1]
-        if prev != 0 and not np.isnan(prev) and not np.isnan(cur):
+        cur = float(vals.iloc[i]); prev = float(vals.iloc[i + 1])
+        if np.isnan(prev) or np.isnan(cur): continue
+        yr = vals.index[i].strftime("%Y") if hasattr(vals.index[i], 'strftime') else str(vals.index[i])[:4]
+        if prev < 0 and cur > 0:
+            results.append((yr, None, "turnaround", cur, prev))
+        elif prev < 0 and cur <= 0:
+            results.append((yr, None, "still_neg", cur, prev))
+        elif prev > 0 and cur < 0:
+            results.append((yr, None, "turned_neg", cur, prev))
+        elif prev == 0:
+            results.append((yr, None, "prev_zero", cur, prev))
+        else:
             g = (cur / prev - 1) * 100
-            yr = vals.index[i].strftime("%Y") if hasattr(vals.index[i], 'strftime') else str(vals.index[i])[:4]
-            results.append((yr, round(g, 1)))
+            results.append((yr, round(g, 1), None, cur, prev))
     return results
+
+def _fmt_growth_item(item):
+    """Format a single growth item (label, growth, flag, cur, prev) for display."""
+    lbl, g, flag, cur, prev = item
+    if flag == "turnaround":
+        return f"{lbl}: Turnaround ({prev:.2f}→{cur:.2f})"
+    elif flag == "still_neg":
+        return f"{lbl}: noch negativ ({prev:.2f}→{cur:.2f})"
+    elif flag == "turned_neg":
+        return f"{lbl}: ins Negative ({prev:.2f}→{cur:.2f})"
+    elif flag == "prev_zero":
+        return f"{lbl}: Vorjahr war 0"
+    else:
+        return f"{lbl}: {g:+.0f}%"
+
+def _check_growth_ok(items, threshold=20):
+    """Check if all normal growth items meet the threshold. Turnarounds count as OK."""
+    for _, g, flag, _, _ in items:
+        if flag == "turnaround": continue  # turnaround is acceptable
+        if flag in ("still_neg", "turned_neg"): return False
+        if g is not None and g < threshold: return False
+    return True
 
 def _sum_last_4q_eps(qi):
     """Sum of the last 4 quarterly EPS values."""
@@ -830,18 +899,18 @@ def _atr_category(pct):
 # ═══════════════════════════════════════════════════════
 # FUNDAMENTAL CHECKLIST
 # ═══════════════════════════════════════════════════════
-def evaluate_fundamentals(info, qi, ai, ih):
+def evaluate_fundamentals(info, qi, ai, ih, qe=None):
     checks = []
     def _g(k, d=None):
         v = info.get(k, d) if info else d
         return v if v is not None else d
 
     # ── EPS: quarterly YoY (3 quarters) ──
-    epsg = _quarterly_yoy_growth(qi, "eps")
+    epsg = _quarterly_yoy_growth(qi, "eps", qe=qe)
     if epsg:
-        details = " → ".join(f"{q}: {g:+.0f}%" for q, g in epsg)
-        all20 = all(g >= 20 for _, g in epsg)
-        checks.append((f"EPS ≥20% YoY ({len(epsg)}Q)", all20, details))
+        details = " → ".join(_fmt_growth_item(item) for item in epsg)
+        all_ok = _check_growth_ok(epsg, threshold=20)
+        checks.append((f"EPS ≥20% YoY ({len(epsg)}Q)", all_ok, details))
     else:
         eq = _g("earningsQuarterlyGrowth")
         if eq is not None:
@@ -851,21 +920,21 @@ def evaluate_fundamentals(info, qi, ai, ih):
 
     # ── EPS acceleration ──
     if len(epsg) >= 2:
-        # Check if growth rates are accelerating across available quarters
-        accel_count = sum(1 for i in range(len(epsg)-1) if epsg[i][1] > epsg[i+1][1])
-        full_accel = accel_count == len(epsg) - 1
-        details = " → ".join(f"{g:+.0f}%" for _, g in reversed(epsg))
-        # Book: with clean acceleration, even ~13% in latest quarter is acceptable
-        latest_ok = epsg[0][1] >= 13 if full_accel else epsg[0][1] >= 20
-        checks.append(("EPS-Beschleunigung", full_accel,
-                       f"Verlauf: {details}" + (" (bei Beschl. ab 13% akzeptabel)" if full_accel and epsg[0][1] < 20 else "")))
+        # Extract only the normal growth rates (skip turnarounds etc. for acceleration check)
+        normal_rates = [(lbl, g) for lbl, g, flag, _, _ in epsg if flag is None and g is not None]
+        if len(normal_rates) >= 2:
+            accel_count = sum(1 for i in range(len(normal_rates)-1) if normal_rates[i][1] > normal_rates[i+1][1])
+            full_accel = accel_count == len(normal_rates) - 1
+            details = " → ".join(f"{g:+.0f}%" for _, g in reversed(normal_rates))
+            checks.append(("EPS-Beschleunigung", full_accel,
+                           f"Verlauf: {details}" + (" (bei Beschl. ab 13% akzeptabel)" if full_accel and normal_rates[0][1] < 20 else "")))
 
     # ── EPS: annual 3-year ──
     epsg_ann = _annual_yoy_growth(ai, "eps")
     if epsg_ann and len(epsg_ann) >= 2:
-        details = " · ".join(f"{yr}: {g:+.0f}%" for yr, g in epsg_ann)
-        all20 = all(g >= 20 for _, g in epsg_ann)
-        checks.append((f"Jährl. EPS ≥20% ({len(epsg_ann)} Jahre)", all20, details))
+        details = " · ".join(_fmt_growth_item(item) for item in epsg_ann)
+        all_ok = _check_growth_ok(epsg_ann, threshold=20)
+        checks.append((f"Jährl. EPS ≥20% ({len(epsg_ann)} Jahre)", all_ok, details))
     else:
         eg = _g("earningsGrowth")
         if eg is not None:
@@ -881,11 +950,11 @@ def evaluate_fundamentals(info, qi, ai, ih):
             checks.append(("Trailing EPS > 0 (Proxy für 4Q-Summe)", te > 0, f"${te:.2f}"))
 
     # ── Revenue: quarterly YoY (3 quarters) ──
-    revg = _quarterly_yoy_growth(qi, "revenue")
+    revg = _quarterly_yoy_growth(qi, "revenue", qe=qe)
     if revg:
-        details = " → ".join(f"{q}: {g:+.0f}%" for q, g in revg)
-        all20 = all(g >= 20 for _, g in revg)
-        checks.append((f"Umsatz ≥20% YoY ({len(revg)}Q)", all20, details))
+        details = " → ".join(_fmt_growth_item(item) for item in revg)
+        all_ok = _check_growth_ok(revg, threshold=20)
+        checks.append((f"Umsatz ≥20% YoY ({len(revg)}Q)", all_ok, details))
     else:
         rg = _g("revenueGrowth")
         if rg is not None:
@@ -895,16 +964,18 @@ def evaluate_fundamentals(info, qi, ai, ih):
 
     # ── Revenue acceleration (Bonus) ──
     if len(revg) >= 2:
-        accel = revg[0][1] > revg[1][1]
-        checks.append(("Umsatz-Beschleunigung (Bonus)", accel,
-                       f"{revg[1][1]:+.0f}% → {revg[0][1]:+.0f}%"))
+        normal_rev = [(lbl, g) for lbl, g, flag, _, _ in revg if flag is None and g is not None]
+        if len(normal_rev) >= 2:
+            accel = normal_rev[0][1] > normal_rev[1][1]
+            checks.append(("Umsatz-Beschleunigung (Bonus)", accel,
+                           f"{normal_rev[1][1]:+.0f}% → {normal_rev[0][1]:+.0f}%"))
 
     # ── Revenue: annual 3-year ──
     revg_ann = _annual_yoy_growth(ai, "revenue")
     if revg_ann and len(revg_ann) >= 2:
-        details = " · ".join(f"{yr}: {g:+.0f}%" for yr, g in revg_ann)
-        all20 = all(g >= 20 for _, g in revg_ann)
-        checks.append((f"Jährl. Umsatz ≥20% ({len(revg_ann)}J)", all20, details))
+        details = " · ".join(_fmt_growth_item(item) for item in revg_ann)
+        all_ok = _check_growth_ok(revg_ann, threshold=20)
+        checks.append((f"Jährl. Umsatz ≥20% ({len(revg_ann)}J)", all_ok, details))
     else:
         rg = _g("revenueGrowth")
         if rg is not None:
@@ -1092,7 +1163,7 @@ def _tab_aktienbewertung():
     if not ticker: return
 
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih = load_stock_full(ticker)
+        df, info, qi, ai, ih, qe = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
 
     if df is None or len(df) < 20:
@@ -1137,7 +1208,7 @@ def _tab_aktienbewertung():
 
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">FUNDAMENTALE CHECKLISTE (Kap. 3.4)</div>', unsafe_allow_html=True)
-        fc = evaluate_fundamentals(info, qi, ai, ih)
+        fc = evaluate_fundamentals(info, qi, ai, ih, qe)
         fok = sum(1 for _, ok, _ in fc if ok)
         for label, ok, detail in fc: render_check(label, ok, detail)
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
