@@ -734,10 +734,13 @@ def load_stock_full(ticker, lookback_days=500):
         except: pass
         # FMP API: up to 12 quarters of EPS + Revenue (primary source)
         fmp_key = ""
-        try: fmp_key = st.secrets.get("FMP_API_KEY", "")
+        try: fmp_key = st.secrets["FMP_API_KEY"]
         except: pass
+        if not fmp_key:
+            try: fmp_key = st.secrets.get("FMP_API_KEY", "")
+            except: pass
         if not fmp_key: fmp_key = os.environ.get("FMP_API_KEY", "")
-        qraw = _fetch_quarterly_fmp(ticker, fmp_key)
+        qraw = _fetch_quarterly_fmp(ticker, fmp_key) if fmp_key else None
         return df, info, qi, ai, ih, qe, ed, qraw
     except: return None, None, None, None, None, None, None, None
 
@@ -747,27 +750,29 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
     Free tier: 250 requests/day. Returns dict with 'DilutedEPS' and 'TotalRevenue' as pd.Series."""
     if not fmp_key: return None
     try:
+        import json
         url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
         params = {"period": "quarter", "limit": 12, "apikey": fmp_key}
         r = requests.get(url, params=params, timeout=15)
-        if r.status_code == 429: return None  # rate limited, fall back
+        if r.status_code == 429: return None  # rate limited
         if r.status_code != 200: return None
-        import json
         data = json.loads(r.text)
         if not data or not isinstance(data, list): return None
-        out = {}
-        eps_vals = {}; rev_vals = {}
+        out = {}; eps_vals = {}; rev_vals = {}
         for item in data:
-            dt = pd.Timestamp(item.get("date", ""))
-            eps = item.get("epsdiluted")  # FMP uses lowercase
-            if eps is None: eps = item.get("epsDiluted")
+            date_str = item.get("date", "")
+            if not date_str: continue
+            dt = pd.Timestamp(date_str)
+            # FMP uses lowercase field names
+            eps = item.get("epsdiluted", item.get("epsDiluted"))
             rev = item.get("revenue")
-            if dt and eps is not None: eps_vals[dt] = float(eps)
-            if dt and rev is not None: rev_vals[dt] = float(rev)
+            if eps is not None: eps_vals[dt] = float(eps)
+            if rev is not None: rev_vals[dt] = float(rev)
         if eps_vals: out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
         if rev_vals: out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
         return out if out else None
-    except: return None
+    except Exception:
+        return None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
@@ -971,6 +976,15 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None):
     if qraw is not None:
         for key, series in qraw.items():
             src_info.append(f"FMP {key}: {len(series)}Q")
+    else:
+        # Check if FMP key was available
+        fmp_avail = False
+        try: fmp_avail = bool(st.secrets.get("FMP_API_KEY", ""))
+        except:
+            try: fmp_avail = bool(st.secrets["FMP_API_KEY"])
+            except: pass
+        if not fmp_avail: src_info.append("FMP: kein API-Key")
+        else: src_info.append("FMP: Fehler beim Abruf")
     if qi is not None and not qi.empty:
         eps_row = _find_row(qi, ["Diluted EPS","Basic EPS"])
         rev_row = _find_row(qi, ["Total Revenue","Revenue","Operating Revenue"])
