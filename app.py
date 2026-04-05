@@ -716,7 +716,7 @@ def load_stock_full(ticker, lookback_days=500):
     try:
         t = yf.Ticker(ticker)
         df = t.history(start=start, end=end, auto_adjust=True)
-        if df is None or len(df) < 20: return None, None, None, None, None, None
+        if df is None or len(df) < 20: return None, None, None, None, None, None, None
         df.index = pd.to_datetime(df.index); df = df.sort_index()
         for c in ["Open","High","Low","Close","Volume"]:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -730,11 +730,47 @@ def load_stock_full(ticker, lookback_days=500):
         except: pass
         try: qe = t.quarterly_earnings
         except: pass
-        # earnings_dates has epsActual for up to 12 quarters
         try: ed = t.get_earnings_dates(limit=12)
         except: pass
-        return df, info, qi, ai, ih, qe, ed
-    except: return None, None, None, None, None, None, None
+        # Direct Yahoo API call for more quarterly EPS + Revenue history
+        qraw = _fetch_quarterly_raw(ticker)
+        return df, info, qi, ai, ih, qe, ed, qraw
+    except: return None, None, None, None, None, None, None, None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_quarterly_raw(ticker):
+    """Direct Yahoo timeseries API call for quarterly EPS and Revenue.
+    Requests only 2 fields (not all financials) which sometimes returns more quarters."""
+    try:
+        url = f"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{ticker}"
+        params = {
+            "symbol": ticker,
+            "type": "quarterlyDilutedEPS,quarterlyTotalRevenue",
+            "period1": "1388534400",  # 2014-01-01 (far back)
+            "period2": str(int(datetime.now().timestamp())),
+        }
+        r = requests.get(url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if r.status_code != 200: return None
+        import json
+        data = json.loads(r.text)
+        results = data.get("timeseries", {}).get("result", [])
+        out = {}
+        for item in results:
+            for key in item:
+                if key in ("meta", "timestamp"): continue
+                series_data = item[key]
+                vals = {}
+                for entry in series_data:
+                    dt = pd.Timestamp(entry["asOfDate"])
+                    val = entry.get("reportedValue", {}).get("raw")
+                    if val is not None: vals[dt] = val
+                if vals:
+                    s = pd.Series(vals).sort_index(ascending=False)
+                    # Strip the "quarterly" prefix
+                    clean_key = key.replace("quarterly", "")
+                    out[clean_key] = s
+        return out if out else None
+    except: return None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
@@ -749,12 +785,13 @@ def _find_row(stmt, candidates):
         if name in stmt.index: return stmt.loc[name]
     return None
 
-def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
+def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
     """YoY growth for last 3 quarters. Each quarter vs SAME quarter previous year.
     Data sources (tried in order):
-    1. earnings_dates (epsActual, up to 12 quarters) — EPS only
-    2. quarterly_earnings (Earnings + Revenue, typically 4-8 quarters)
-    3. quarterly_income_stmt (usually only 4 quarters)
+    1. qraw (direct Yahoo API, may have 8+ quarters for EPS and Revenue)
+    2. earnings_dates (epsActual, up to 12 quarters, EPS only)
+    3. quarterly_income_stmt (usually 5 quarters max)
+    4. quarterly_earnings (deprecated, sometimes still works)
     Returns list of (label, growth%, flag, cur, prev) newest first."""
 
     def _fmt_qlabel(idx):
@@ -782,14 +819,22 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
                 results.append((lbl, round(g, 1), None, cur, prev))
         return results
 
+    # ── 0. Direct Yahoo API (qraw) — best source, may have 8+ quarters ──
+    if qraw is not None:
+        raw_map = {"eps": "DilutedEPS", "revenue": "TotalRevenue"}
+        raw_key = raw_map.get(field)
+        if raw_key and raw_key in qraw:
+            vals = qraw[raw_key]
+            if len(vals) >= 5:
+                res = _extract_yoy(vals)
+                if res: return res
+
     # ── 1. earnings_dates: epsActual for up to 12 quarters (EPS only) ──
     if field == "eps" and ed is not None and not ed.empty:
-        # Find the right column name (varies by yfinance version)
         eps_col = None
         for col_name in ["Reported EPS", "EPS Actual", "epsActual", "Earnings/Share"]:
             if col_name in ed.columns: eps_col = col_name; break
         if eps_col:
-            # Filter: drop future dates (NaN EPS) and duplicates
             eps_data = ed[[eps_col]].copy()
             eps_data = eps_data[eps_data[eps_col].notna()]
             eps_data = eps_data[~eps_data.index.duplicated(keep='first')]
@@ -798,7 +843,7 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
                 res = _extract_yoy(eps_data[eps_col])
                 if res: return res
 
-    # ── 2. quarterly_income_stmt (try first for revenue, usually 4-5 quarters) ──
+    # ── 2. quarterly_income_stmt (try for revenue, usually 4-5 quarters) ──
     candidates = {
         "eps": ["Diluted EPS", "Basic EPS"],
         "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
@@ -810,7 +855,7 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
             res = _extract_yoy(vals)
             if res: return res
 
-    # ── 3. quarterly_earnings (deprecated but may still work for some tickers) ──
+    # ── 3. quarterly_earnings (deprecated fallback) ──
     if qe is not None and not qe.empty:
         col_map = {"eps": "Earnings", "revenue": "Revenue"}
         col = col_map.get(field)
@@ -819,8 +864,6 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
             res = _extract_yoy(vals)
             if res: return res
 
-    # ── 4. Last resort for EPS: use .info single-quarter value ──
-    # (Already handled by the caller as fallback)
     return []
 
 def _annual_yoy_growth(ai, field):
@@ -920,7 +963,7 @@ def _atr_category(pct):
 # ═══════════════════════════════════════════════════════
 # FUNDAMENTAL CHECKLIST
 # ═══════════════════════════════════════════════════════
-def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None):
+def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None):
     checks = []
     def _g(k, d=None):
         v = info.get(k, d) if info else d
@@ -934,6 +977,9 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None):
         n_eps = len(eps_row.dropna()) if eps_row is not None else 0
         n_rev = len(rev_row.dropna()) if rev_row is not None else 0
         src_info.append(f"income_stmt: {n_eps}Q EPS, {n_rev}Q Rev")
+    if qraw is not None:
+        for key, series in qraw.items():
+            src_info.append(f"yahoo_api {key}: {len(series)}Q")
     if ed is not None and not ed.empty:
         for col in ["Reported EPS","EPS Actual","epsActual"]:
             if col in ed.columns:
@@ -946,7 +992,7 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None):
     checks.append(("Datenquellen", bool(src_info), data_note))
 
     # ── EPS: quarterly YoY (3 quarters) ──
-    epsg = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed)
+    epsg = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed, qraw=qraw)
     if epsg:
         details = " → ".join(_fmt_growth_item(item) for item in epsg)
         all_ok = _check_growth_ok(epsg, threshold=20)
@@ -990,7 +1036,7 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None):
             checks.append(("Trailing EPS > 0 (Proxy für 4Q-Summe)", te > 0, f"${te:.2f}"))
 
     # ── Revenue: quarterly YoY (3 quarters) ──
-    revg = _quarterly_yoy_growth(qi, "revenue", qe=qe, ed=ed)
+    revg = _quarterly_yoy_growth(qi, "revenue", qe=qe, ed=ed, qraw=qraw)
     if revg:
         details = " → ".join(_fmt_growth_item(item) for item in revg)
         all_ok = _check_growth_ok(revg, threshold=20)
@@ -1203,7 +1249,7 @@ def _tab_aktienbewertung():
     if not ticker: return
 
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe, ed = load_stock_full(ticker)
+        df, info, qi, ai, ih, qe, ed, qraw = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
 
     if df is None or len(df) < 20:
@@ -1248,7 +1294,7 @@ def _tab_aktienbewertung():
 
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">FUNDAMENTALE CHECKLISTE (Kap. 3.4)</div>', unsafe_allow_html=True)
-        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed)
+        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw)
         fok = sum(1 for _, ok, _ in fc if ok)
         for label, ok, detail in fc: render_check(label, ok, detail)
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
