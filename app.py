@@ -716,24 +716,25 @@ def load_stock_full(ticker, lookback_days=500):
     try:
         t = yf.Ticker(ticker)
         df = t.history(start=start, end=end, auto_adjust=True)
-        if df is None or len(df) < 20: return None, None, None, None, None
+        if df is None or len(df) < 20: return None, None, None, None, None, None
         df.index = pd.to_datetime(df.index); df = df.sort_index()
         for c in ["Open","High","Low","Close","Volume"]:
             if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
         info = t.info or {}
-        qi = None; ai = None; ih = None; qe = None
+        qi = None; ai = None; ih = None; qe = None; ed = None
         try: qi = t.quarterly_income_stmt
         except: pass
         try: ai = t.income_stmt
         except: pass
         try: ih = t.institutional_holders
         except: pass
-        # quarterly_earnings often has more history (8+ quarters)
-        # Returns DataFrame with columns: Revenue, Earnings
         try: qe = t.quarterly_earnings
         except: pass
-        return df, info, qi, ai, ih, qe
-    except: return None, None, None, None, None, None
+        # earnings_dates has epsActual for up to 12 quarters
+        try: ed = t.get_earnings_dates(limit=12)
+        except: pass
+        return df, info, qi, ai, ih, qe, ed
+    except: return None, None, None, None, None, None, None
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
@@ -748,10 +749,13 @@ def _find_row(stmt, candidates):
         if name in stmt.index: return stmt.loc[name]
     return None
 
-def _quarterly_yoy_growth(qi, field, qe=None):
+def _quarterly_yoy_growth(qi, field, qe=None, ed=None):
     """YoY growth for last 3 quarters. Each quarter vs SAME quarter previous year.
-    Returns list of (label, growth%, flag) newest first.
-    flag: None=normal, 'turnaround'=neg→pos, 'still_neg'=neg→neg, 'turned_neg'=pos→neg."""
+    Data sources (tried in order):
+    1. earnings_dates (epsActual, up to 12 quarters) — EPS only
+    2. quarterly_earnings (Earnings + Revenue, typically 4-8 quarters)
+    3. quarterly_income_stmt (usually only 4 quarters)
+    Returns list of (label, growth%, flag, cur, prev) newest first."""
 
     def _fmt_qlabel(idx):
         if hasattr(idx, 'month'):
@@ -765,25 +769,31 @@ def _quarterly_yoy_growth(qi, field, qe=None):
             cur = float(vals.iloc[i]); prev = float(vals.iloc[i + 4])
             if np.isnan(prev) or np.isnan(cur): continue
             lbl = _fmt_qlabel(vals.index[i])
-
             if prev < 0 and cur > 0:
-                # Turnaround: negative to positive — special case
                 results.append((lbl, None, "turnaround", cur, prev))
             elif prev < 0 and cur <= 0:
-                # Still negative — not good
                 results.append((lbl, None, "still_neg", cur, prev))
             elif prev > 0 and cur < 0:
-                # Turned negative — bad
                 results.append((lbl, None, "turned_neg", cur, prev))
             elif prev == 0:
                 results.append((lbl, None, "prev_zero", cur, prev))
             else:
-                # Normal case: both positive
                 g = (cur / prev - 1) * 100
                 results.append((lbl, round(g, 1), None, cur, prev))
         return results
 
-    # ── Try quarterly_earnings first ──
+    # ── 1. earnings_dates: epsActual for up to 12 quarters (EPS only) ──
+    if field == "eps" and ed is not None and not ed.empty:
+        eps_col = None
+        for col_name in ["EPS Actual", "Reported EPS", "epsActual"]:
+            if col_name in ed.columns: eps_col = col_name; break
+        if eps_col:
+            eps_data = ed[[eps_col]].dropna().sort_index(ascending=False)
+            if len(eps_data) >= 5:
+                res = _extract_yoy(eps_data[eps_col])
+                if res: return res
+
+    # ── 2. quarterly_earnings (Earnings + Revenue) ──
     if qe is not None and not qe.empty:
         col_map = {"eps": "Earnings", "revenue": "Revenue"}
         col = col_map.get(field)
@@ -792,7 +802,7 @@ def _quarterly_yoy_growth(qi, field, qe=None):
             res = _extract_yoy(vals)
             if res: return res
 
-    # ── Fallback: quarterly_income_stmt ──
+    # ── 3. quarterly_income_stmt (fallback) ──
     candidates = {
         "eps": ["Diluted EPS", "Basic EPS"],
         "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
@@ -899,14 +909,14 @@ def _atr_category(pct):
 # ═══════════════════════════════════════════════════════
 # FUNDAMENTAL CHECKLIST
 # ═══════════════════════════════════════════════════════
-def evaluate_fundamentals(info, qi, ai, ih, qe=None):
+def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None):
     checks = []
     def _g(k, d=None):
         v = info.get(k, d) if info else d
         return v if v is not None else d
 
     # ── EPS: quarterly YoY (3 quarters) ──
-    epsg = _quarterly_yoy_growth(qi, "eps", qe=qe)
+    epsg = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed)
     if epsg:
         details = " → ".join(_fmt_growth_item(item) for item in epsg)
         all_ok = _check_growth_ok(epsg, threshold=20)
@@ -950,7 +960,7 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None):
             checks.append(("Trailing EPS > 0 (Proxy für 4Q-Summe)", te > 0, f"${te:.2f}"))
 
     # ── Revenue: quarterly YoY (3 quarters) ──
-    revg = _quarterly_yoy_growth(qi, "revenue", qe=qe)
+    revg = _quarterly_yoy_growth(qi, "revenue", qe=qe, ed=ed)
     if revg:
         details = " → ".join(_fmt_growth_item(item) for item in revg)
         all_ok = _check_growth_ok(revg, threshold=20)
@@ -1163,7 +1173,7 @@ def _tab_aktienbewertung():
     if not ticker: return
 
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe = load_stock_full(ticker)
+        df, info, qi, ai, ih, qe, ed = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
 
     if df is None or len(df) < 20:
@@ -1208,7 +1218,7 @@ def _tab_aktienbewertung():
 
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">FUNDAMENTALE CHECKLISTE (Kap. 3.4)</div>', unsafe_allow_html=True)
-        fc = evaluate_fundamentals(info, qi, ai, ih, qe)
+        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed)
         fok = sum(1 for _, ok, _ in fc if ok)
         for label, ok, detail in fc: render_check(label, ok, detail)
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
