@@ -459,14 +459,14 @@ def _download_single_close(symbol, start, end, timeout=20):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_russell2000_breadth_data(lookback_days=550, batch_size=75, retry_batch_size=25, rescue_workers=8):
+def load_russell2000_breadth_data(lookback_days=550, batch_size=140, retry_batch_size=50):
     """Download close prices for the Russell 2000 universe.
 
-    Strategy:
-    1. medium-sized bulk batches for speed
-    2. smaller bulk retries for missing symbols
-    3. parallel single-ticker rescue for the remaining names
-    The function prefers a usable broad universe over an all-or-nothing failure.
+    Pragmatic fast mode:
+    1. larger bulk batches for speed
+    2. one smaller bulk retry pass for missing symbols
+    3. no slow single-ticker rescue because that added a lot of runtime
+       without materially improving the final coverage in practice
     """
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = get_russell2000_tickers()
@@ -478,13 +478,12 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=75, retry_batch_
     loaded_cols = set()
 
     try:
-        # First pass: reasonably large bulk batches
+        # First pass: larger bulk batches to stay close to the older faster behaviour
         for batch in _chunked(tickers, batch_size):
-            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=30)
+            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=35)
             if closes is not None and closes.shape[1] > 0:
                 fast_frames.append(closes)
                 loaded_cols.update(closes.columns.tolist())
-            time.sleep(0.05)
 
         if not fast_frames:
             return None
@@ -493,7 +492,7 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=75, retry_batch_
         closes = closes.loc[:, ~closes.columns.duplicated()]
         closes = closes.sort_index().dropna(axis=1, how="all")
 
-        # Second pass: smaller bulk retries for missing symbols
+        # Second pass: one compact retry pass for unresolved symbols
         missing = [t for t in tickers if t not in loaded_cols]
         if missing:
             retry_frames = []
@@ -502,25 +501,8 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=75, retry_batch_
                 if rcloses is not None and rcloses.shape[1] > 0:
                     retry_frames.append(rcloses)
                     loaded_cols.update(rcloses.columns.tolist())
-                time.sleep(0.03)
             if retry_frames:
                 closes = pd.concat([closes] + retry_frames, axis=1)
-                closes = closes.loc[:, ~closes.columns.duplicated()]
-                closes = closes.sort_index().dropna(axis=1, how="all")
-
-        # Third pass: parallel single-symbol rescue only for unresolved names
-        missing = [t for t in tickers if t not in loaded_cols]
-        rescue_frames = []
-        if missing:
-            with ThreadPoolExecutor(max_workers=rescue_workers) as ex:
-                futures = {ex.submit(_download_single_close, sym, start, end, 20): sym for sym in missing}
-                for fut in as_completed(futures):
-                    frame = fut.result()
-                    if frame is not None and frame.shape[1] == 1:
-                        rescue_frames.append(frame)
-                        loaded_cols.update(frame.columns.tolist())
-            if rescue_frames:
-                closes = pd.concat([closes] + rescue_frames, axis=1)
                 closes = closes.loc[:, ~closes.columns.duplicated()]
                 closes = closes.sort_index().dropna(axis=1, how="all")
 
@@ -538,7 +520,7 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=75, retry_batch_
         closes.attrs["coverage_ratio"] = coverage
         closes.attrs["partial_universe"] = coverage < 0.75
 
-        # Russell 2000 is noisy. Prefer continuing with a substantial partial universe.
+        # Russell 2000 via Yahoo is often incomplete. Continue with a usable subset.
         min_required = max(350, int(requested * 0.18))
         return closes if loaded >= min_required else None
     except Exception as e:
