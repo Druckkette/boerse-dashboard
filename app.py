@@ -10,7 +10,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import warnings, os, requests
+import warnings, os, requests, io, re
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Börse ohne Bauchgefühl", page_icon="🚦", layout="wide", initial_sidebar_state="collapsed")
@@ -93,6 +93,56 @@ def get_sp500_tickers():
         'WMB','WMT','WRB','WRK','WST','WTW','WY','WYNN','XEL','XOM','XRAY','XYL','YUM','ZBH','ZBRA',
         'ZION','ZTS',
     ]
+
+
+def _normalize_ticker_list(values):
+    tickers = []
+    for raw in values:
+        if pd.isna(raw):
+            continue
+        t = str(raw).strip().upper().replace(".", "-")
+        if not t or t in {"USD", "CASH", "N/A", "-"}:
+            continue
+        if re.fullmatch(r"[A-Z0-9\-]+", t):
+            tickers.append(t)
+    return list(dict.fromkeys(tickers))
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_russell1000_tickers():
+    """Load current Russell 1000 constituents with robust fallbacks."""
+    official_url = "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/?dataType=fund&fileName=IWB_holdings&fileType=csv"
+
+    try:
+        resp = requests.get(official_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        lines = resp.text.splitlines()
+        header_idx = next((i for i, line in enumerate(lines[:80]) if "Ticker" in line and "Name" in line), None)
+        if header_idx is not None:
+            holdings = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+            ticker_col = next((c for c in holdings.columns if str(c).strip().lower() == "ticker"), None)
+            if ticker_col is not None:
+                tickers = _normalize_ticker_list(holdings[ticker_col])
+                if len(tickers) >= 900:
+                    return tickers
+    except Exception:
+        pass
+
+    try:
+        tables = pd.read_html("https://en.wikipedia.org/wiki/Russell_1000_Index")
+        collected = []
+        for table in tables:
+            lower_cols = {str(c).strip().lower(): c for c in table.columns}
+            sym_col = lower_cols.get("symbol") or lower_cols.get("ticker")
+            if sym_col is not None:
+                collected.extend(table[sym_col].tolist())
+        tickers = _normalize_ticker_list(collected)
+        if len(tickers) >= 900:
+            return tickers
+    except Exception:
+        pass
+
+    return []
 
 # ═══════════════════════════════════════════════════════
 # DATA LOADING
@@ -211,29 +261,49 @@ def build_sector_table(closes, mode="daily", n_periods=20):
     return result, latest_ranked
 
 # ═══════════════════════════════════════════════════════
-# DEEP ANALYSIS: S&P 500 breadth + FRED
+# DEEP ANALYSIS: Russell 1000 breadth + FRED
 # ═══════════════════════════════════════════════════════
+def _chunked(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
 @st.cache_data(ttl=900, show_spinner=False)
-def load_sp500_breadth_data(lookback_days=550):
-    """Download close prices for all S&P 500 stocks."""
+def load_russell1000_breadth_data(lookback_days=550, batch_size=125):
+    """Download close prices for the Russell 1000 universe in batches for stability."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
-    tickers = get_sp500_tickers()
+    tickers = get_russell1000_tickers()
+    if not tickers:
+        return None
+
+    close_batches = []
     try:
-        df = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=True, threads=True)
-        if df is None or len(df) == 0: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            closes = df["Close"].copy()
-        else:
-            closes = df[["Close"]].copy()
-        closes = closes.apply(pd.to_numeric, errors="coerce")
-        closes.index = pd.to_datetime(closes.index)
-        closes = closes.sort_index()
-        # Drop columns (stocks) that are mostly NaN (delisted, etc.)
-        thresh = len(closes) * 0.5  # need at least 50% of days
+        for batch in _chunked(tickers, batch_size):
+            df = yf.download(batch, start=start, end=end, progress=False, auto_adjust=True, threads=True)
+            if df is None or len(df) == 0:
+                continue
+            if isinstance(df.columns, pd.MultiIndex):
+                closes = df["Close"].copy()
+            else:
+                closes = df[["Close"]].copy()
+                if len(batch) == 1:
+                    closes.columns = batch
+            closes = closes.apply(pd.to_numeric, errors="coerce")
+            closes.index = pd.to_datetime(closes.index)
+            closes = closes.sort_index()
+            close_batches.append(closes)
+
+        if not close_batches:
+            return None
+
+        closes = pd.concat(close_batches, axis=1)
+        closes = closes.loc[:, ~closes.columns.duplicated()]
+        thresh = len(closes) * 0.5
         closes = closes.dropna(axis=1, thresh=int(thresh))
+        closes = closes.sort_index()
         return closes
     except Exception as e:
-        st.warning(f"Fehler beim Laden der S&P 500 Daten: {e}")
+        st.warning(f"Fehler beim Laden der Russell-1000-Daten: {e}")
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -2118,7 +2188,7 @@ def _tab_marktanalyse():
     # ══════════════════════════════════════════════════
     st.markdown("---")
     st.markdown("### 🔬 Tiefenanalyse — Marktbreite & Makro")
-    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs, Deemer Ratio aus allen S&P 500 Aktien. Optional: Fed Funds Rate über FRED API.")
+    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs und Deemer Ratio aus dem Russell-1000-Universum. Der S&P 500 dient weiter als Referenzindex für Divergenzen. Optional: Fed Funds Rate über FRED API.")
 
     # FRED key: try secrets first, then environment, then manual input
     fred_key = ""
@@ -2132,8 +2202,8 @@ def _tab_marktanalyse():
         fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfeed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
 
     if st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True):
-        with st.spinner("Lade S&P 500 Aktien … (kann 1–2 Min. dauern)"):
-            closes = load_sp500_breadth_data()
+        with st.spinner("Lade Russell 1000 Aktien … (kann etwas dauern)"):
+            closes = load_russell1000_breadth_data()
 
         if closes is not None and len(closes) > 50:
             br = compute_breadth_from_components(closes)
@@ -2144,7 +2214,7 @@ def _tab_marktanalyse():
                 is_today = last_trading_date == today_str
                 date_note = f"Stand: {last_trading_date}" + ("" if is_today else " (letzter Handelstag)")
 
-                st.success(f"✓ {len(closes.columns)} Aktien geladen, {len(br)} Handelstage · {date_note}")
+                st.success(f"✓ {len(closes.columns)} Russell-1000-Aktien geladen, {len(br)} Handelstage · {date_note}")
 
                 # ── Breadth Charts ──
                 st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
@@ -2159,7 +2229,7 @@ def _tab_marktanalyse():
                 bL = br_valid.iloc[-1]
                 bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
 
-                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — S&P 500 ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — Russell 1000 ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
 
                 kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                 with kb1:
@@ -2223,7 +2293,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte S&P 500 Daten nicht laden. Bitte erneut versuchen.")
+            st.error("Konnte die Russell-1000-Daten nicht laden. Bitte erneut versuchen.")
 
         # ── Fed Funds Rate ──
         if fred_key:
