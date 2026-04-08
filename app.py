@@ -328,71 +328,77 @@ def _extract_close_frame(df, requested_batch):
     return closes if closes.shape[1] else None
 
 
-def _download_close_batch(batch, start, end):
+def _download_close_batch_fast(batch, start, end):
+    """Fast bulk download similar to the earlier 500-stock approach."""
     batch = list(dict.fromkeys(batch))
     if not batch:
         return None
-
     try:
-        df = yf.download(batch, start=start, end=end, progress=False, auto_adjust=True, threads=False, group_by="column")
-        closes = _extract_close_frame(df, batch)
-        if closes is not None and closes.shape[1] > 0:
-            return closes
+        df = yf.download(
+            batch,
+            start=start,
+            end=end,
+            progress=False,
+            auto_adjust=True,
+            threads=True,
+            group_by="column",
+        )
+        return _extract_close_frame(df, batch)
     except Exception:
-        pass
-
-    if len(batch) <= 10:
-        singles = []
-        for ticker in batch:
-            try:
-                sdf = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True, threads=False)
-                closes = _extract_close_frame(sdf, [ticker])
-                if closes is not None:
-                    singles.append(closes)
-            except Exception:
-                continue
-        if singles:
-            out = pd.concat(singles, axis=1)
-            out = out.loc[:, ~out.columns.duplicated()]
-            return out
         return None
-
-    mid = len(batch) // 2
-    left = _download_close_batch(batch[:mid], start, end)
-    right = _download_close_batch(batch[mid:], start, end)
-    frames = [x for x in (left, right) if x is not None and x.shape[1] > 0]
-    if not frames:
-        return None
-    out = pd.concat(frames, axis=1)
-    out = out.loc[:, ~out.columns.duplicated()]
-    return out
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_russell1000_breadth_data(lookback_days=550, batch_size=50):
-    """Download close prices for the Russell 1000 universe in smaller resilient batches."""
+def load_russell1000_breadth_data(lookback_days=550, batch_size=150, retry_batch_size=50):
+    """Download close prices for the Russell 1000 universe.
+
+    First pass uses the older fast bulk approach in larger batches.
+    Only if the hit rate is too low do we retry the missing symbols in smaller batches.
+    """
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = get_russell1000_tickers()
     if not tickers:
         return None
 
-    close_batches = []
-    try:
-        for batch in _chunked(tickers, batch_size):
-            closes = _download_close_batch(batch, start, end)
-            if closes is not None and closes.shape[1] > 0:
-                close_batches.append(closes)
+    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-') for t in tickers if t]))
+    fast_frames = []
+    loaded_cols = set()
 
-        if not close_batches:
+    try:
+        # Fast first pass: close to the old 500-stock method, just scaled to Russell 1000.
+        for batch in _chunked(tickers, batch_size):
+            closes = _download_close_batch_fast(batch, start, end)
+            if closes is not None and closes.shape[1] > 0:
+                fast_frames.append(closes)
+                loaded_cols.update(closes.columns.tolist())
+
+        if not fast_frames:
             return None
 
-        closes = pd.concat(close_batches, axis=1)
+        closes = pd.concat(fast_frames, axis=1)
         closes = closes.loc[:, ~closes.columns.duplicated()]
         closes = closes.sort_index()
         closes = closes.dropna(axis=1, how="all")
+
+        # Retry only the symbols that are still missing, and only when the first pass was weak.
+        missing = [t for t in tickers if t not in loaded_cols]
+        success_ratio = len(closes.columns) / max(len(tickers), 1)
+
+        if missing and success_ratio < 0.85:
+            retry_frames = []
+            for batch in _chunked(missing, retry_batch_size):
+                rcloses = _download_close_batch_fast(batch, start, end)
+                if rcloses is not None and rcloses.shape[1] > 0:
+                    retry_frames.append(rcloses)
+            if retry_frames:
+                closes = pd.concat([closes] + retry_frames, axis=1)
+                closes = closes.loc[:, ~closes.columns.duplicated()]
+                closes = closes.sort_index()
+                closes = closes.dropna(axis=1, how="all")
+
         thresh = max(60, int(len(closes) * 0.5))
         closes = closes.dropna(axis=1, thresh=thresh)
-        return closes if closes.shape[1] >= 300 else None
+        return closes if closes.shape[1] >= 500 else None
     except Exception as e:
         st.warning(f"Fehler beim Laden der Russell-1000-Daten: {e}")
         return None
@@ -2384,7 +2390,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte die Russell-1000-Daten nicht laden. Diese Version nutzt mehrere Quellen und kleinere Download-Blöcke, um den Abruf robuster zu machen.")
+            st.error("Konnte die Russell-1000-Daten nicht laden. Diese Version nutzt eine schnelle Bulk-Logik mit zusätzlichem Retry für fehlende Titel.")
 
         # ── Fed Funds Rate ──
         if fred_key:
