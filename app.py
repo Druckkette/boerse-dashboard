@@ -10,7 +10,8 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import warnings, os, requests, io, re
+import warnings, os, requests, io, re, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Börse ohne Bauchgefühl", page_icon="🚦", layout="wide", initial_sidebar_state="collapsed")
@@ -100,7 +101,8 @@ def _normalize_ticker_list(values):
     for raw in values:
         if pd.isna(raw):
             continue
-        t = str(raw).strip().upper().replace(".", "-")
+        t = str(raw).strip().upper()
+        t = t.replace(".", "-").replace("/", "-").replace(" ", "")
         if not t or t in {"USD", "CASH", "N/A", "-"}:
             continue
         if re.fullmatch(r"[A-Z0-9\-]+", t):
@@ -412,8 +414,8 @@ def _extract_close_frame(df, requested_batch):
     return closes if closes.shape[1] else None
 
 
-def _download_close_batch_fast(batch, start, end):
-    """Fast bulk download similar to the earlier 500-stock approach."""
+def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
+    """Bulk download helper for medium-sized ticker batches."""
     batch = list(dict.fromkeys(batch))
     if not batch:
         return None
@@ -424,37 +426,65 @@ def _download_close_batch_fast(batch, start, end):
             end=end,
             progress=False,
             auto_adjust=True,
-            threads=True,
+            threads=threads,
             group_by="column",
+            timeout=timeout,
         )
         return _extract_close_frame(df, batch)
     except Exception:
         return None
 
 
+def _download_single_close(symbol, start, end, timeout=20):
+    """More reliable single-ticker fallback for missing symbols."""
+    try:
+        df = yf.Ticker(symbol).history(
+            start=start,
+            end=end,
+            auto_adjust=True,
+            timeout=timeout,
+            raise_errors=False,
+        )
+        if df is None or len(df) == 0 or "Close" not in df.columns:
+            return None
+        s = pd.to_numeric(df["Close"], errors="coerce").dropna()
+        if s.empty:
+            return None
+        out = pd.DataFrame({symbol: s})
+        out.index = pd.to_datetime(out.index)
+        out = out.sort_index()
+        return out
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=900, show_spinner=False)
-def load_russell2000_breadth_data(lookback_days=550, batch_size=125, retry_batch_size=50, rescue_batch_size=25):
+def load_russell2000_breadth_data(lookback_days=550, batch_size=75, retry_batch_size=25, rescue_workers=8):
     """Download close prices for the Russell 2000 universe.
 
-    Primary goal is speed via bulk downloads. If coverage is incomplete, the
-    function retries missing symbols in smaller chunks and returns a usable
-    partial universe instead of failing too aggressively.
+    Strategy:
+    1. medium-sized bulk batches for speed
+    2. smaller bulk retries for missing symbols
+    3. parallel single-ticker rescue for the remaining names
+    The function prefers a usable broad universe over an all-or-nothing failure.
     """
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = get_russell2000_tickers()
     if not tickers:
         return None
 
-    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-') for t in tickers if t]))
+    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
     fast_frames = []
     loaded_cols = set()
 
     try:
+        # First pass: reasonably large bulk batches
         for batch in _chunked(tickers, batch_size):
-            closes = _download_close_batch_fast(batch, start, end)
+            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=30)
             if closes is not None and closes.shape[1] > 0:
                 fast_frames.append(closes)
                 loaded_cols.update(closes.columns.tolist())
+            time.sleep(0.05)
 
         if not fast_frames:
             return None
@@ -463,38 +493,39 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=125, retry_batch
         closes = closes.loc[:, ~closes.columns.duplicated()]
         closes = closes.sort_index().dropna(axis=1, how="all")
 
+        # Second pass: smaller bulk retries for missing symbols
         missing = [t for t in tickers if t not in loaded_cols]
-        success_ratio = len(closes.columns) / max(len(tickers), 1)
-
-        if missing and success_ratio < 0.90:
+        if missing:
             retry_frames = []
             for batch in _chunked(missing, retry_batch_size):
-                rcloses = _download_close_batch_fast(batch, start, end)
+                rcloses = _download_close_batch_fast(batch, start, end, threads=False, timeout=25)
                 if rcloses is not None and rcloses.shape[1] > 0:
                     retry_frames.append(rcloses)
                     loaded_cols.update(rcloses.columns.tolist())
+                time.sleep(0.03)
             if retry_frames:
                 closes = pd.concat([closes] + retry_frames, axis=1)
                 closes = closes.loc[:, ~closes.columns.duplicated()]
                 closes = closes.sort_index().dropna(axis=1, how="all")
 
+        # Third pass: parallel single-symbol rescue only for unresolved names
         missing = [t for t in tickers if t not in loaded_cols]
-        success_ratio = len(closes.columns) / max(len(tickers), 1)
-
-        if missing and success_ratio < 0.55:
-            rescue_frames = []
-            for batch in _chunked(missing, rescue_batch_size):
-                rcloses = _download_close_batch_fast(batch, start, end)
-                if rcloses is not None and rcloses.shape[1] > 0:
-                    rescue_frames.append(rcloses)
-                    loaded_cols.update(rcloses.columns.tolist())
+        rescue_frames = []
+        if missing:
+            with ThreadPoolExecutor(max_workers=rescue_workers) as ex:
+                futures = {ex.submit(_download_single_close, sym, start, end, 20): sym for sym in missing}
+                for fut in as_completed(futures):
+                    frame = fut.result()
+                    if frame is not None and frame.shape[1] == 1:
+                        rescue_frames.append(frame)
+                        loaded_cols.update(frame.columns.tolist())
             if rescue_frames:
                 closes = pd.concat([closes] + rescue_frames, axis=1)
                 closes = closes.loc[:, ~closes.columns.duplicated()]
                 closes = closes.sort_index().dropna(axis=1, how="all")
 
-        # Keep a stock if it has a meaningful history, but do not demand nearly full coverage.
-        thresh = max(80, int(len(closes) * 0.20))
+        # Keep stocks with meaningful history. For breadth we do not need perfect completeness.
+        thresh = max(120, int(len(closes) * 0.30))
         closes = closes.dropna(axis=1, thresh=thresh)
         closes = closes.loc[:, ~closes.columns.duplicated()]
 
@@ -507,8 +538,8 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=125, retry_batch
         closes.attrs["coverage_ratio"] = coverage
         closes.attrs["partial_universe"] = coverage < 0.75
 
-        # For breadth metrics a few hundred stocks are already usable; do not fail too hard.
-        min_required = max(200, int(requested * 0.10)) if requested >= 1000 else max(150, int(requested * 0.20))
+        # Russell 2000 is noisy. Prefer continuing with a substantial partial universe.
+        min_required = max(350, int(requested * 0.18))
         return closes if loaded >= min_required else None
     except Exception as e:
         st.warning(f"Fehler beim Laden der Russell-2000-Daten: {e}")
