@@ -3,7 +3,10 @@ Single-file Streamlit app.
 Merged back into one app.py while keeping the refactor improvements.
 """
 
+import hashlib
+import hmac
 import io
+import json
 import logging
 import os
 import re
@@ -38,35 +41,542 @@ PAGE_CONFIG = {
 }
 
 APP_CSS = """<style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
-.stApp{background-color:#0a0e17;color:#e2e8f0;font-family:'JetBrains Mono',monospace}
-.main .block-container{padding-top:1.5rem;max-width:1200px}
-h1,h2,h3{font-family:'JetBrains Mono',monospace!important}
-h1{font-size:1.6rem!important;font-weight:800!important;background:linear-gradient(135deg,#06b6d4,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-[data-testid="stMetric"]{background:#111827;border:1px solid #1e293b;border-radius:10px;padding:12px 16px}
-[data-testid="stMetricLabel"]{color:#64748b!important;font-size:.75rem!important;text-transform:uppercase;letter-spacing:.08em}
-[data-testid="stMetricValue"]{color:#e2e8f0!important;font-size:1.4rem!important;font-weight:700!important}
-.stTabs [data-baseweb="tab-list"]{gap:4px;background:transparent}
-.stTabs [data-baseweb="tab"]{background:#111827;border:1px solid #1e293b;border-radius:8px;color:#94a3b8;padding:8px 16px;font-size:.8rem}
-.stTabs [aria-selected="true"]{background:#06b6d420;border-color:#06b6d4;color:#06b6d4}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+:root{
+  --bg:#0b1220;
+  --panel:#111827;
+  --panel-2:#0f172a;
+  --border:#1e293b;
+  --muted:#94a3b8;
+  --text:#e5eefb;
+  --accent:#06b6d4;
+  --good:#22c55e;
+  --warn:#f59e0b;
+  --bad:#ef4444;
+}
+html, body, [class*="css"] {font-family:'Inter',system-ui,sans-serif;}
+.stApp{background-color:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif}
+.main .block-container{padding-top:1.1rem;max-width:1220px}
+h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em}
+h1{font-size:1.85rem!important;font-weight:800!important;background:linear-gradient(135deg,#22d3ee,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+h2{font-size:1.25rem!important}
+h3{font-size:1.05rem!important}
+p, li, label, .stMarkdown, .stCaption {font-family:'Inter',system-ui,sans-serif!important}
+code, pre, .card-label, [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace!important}
+[data-testid="stMetric"]{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:0 0 0 1px rgba(255,255,255,.01) inset}
+[data-testid="stMetricLabel"]{color:#7c8aa0!important;font-size:.72rem!important;text-transform:uppercase;letter-spacing:.08em}
+[data-testid="stMetricValue"]{color:var(--text)!important;font-size:1.32rem!important;font-weight:700!important}
+.stTabs [data-baseweb="tab-list"]{gap:6px;background:transparent;flex-wrap:wrap}
+.stTabs [data-baseweb="tab"]{background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--muted);padding:8px 14px;font-size:.86rem}
+.stTabs [aria-selected="true"]{background:#06b6d415;border-color:#0891b2;color:#67e8f9}
+.summary-hero,.change-card,.info-card,.workspace-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
+.summary-hero{padding:18px 20px;background:linear-gradient(135deg,rgba(6,182,212,.08),rgba(59,130,246,.06))}
 .ampel-box{border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px}
 .ampel-dot{width:48px;height:48px;border-radius:50%;flex-shrink:0}
-.check-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid #1e293b}
+.check-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.check-item:last-child{border-bottom:none}
 .check-icon{width:22px;height:22px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.check-ok{background:#22c55e20;border:1.5px solid #22c55e50;color:#22c55e}
-.check-fail{background:#ef444420;border:1.5px solid #ef444450;color:#ef4444}
-.check-warn{background:#f59e0b20;border:1.5px solid #f59e0b50;color:#f59e0b}
-.info-card{background:#111827;border:1px solid #1e293b;border-radius:12px;padding:16px;margin-bottom:12px}
-.card-label{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
-.breadth-track{height:10px;border-radius:5px;background:#1e293b;position:relative;overflow:hidden;margin:8px 0}
+.check-ok{background:#22c55e20;border:1.5px solid #22c55e50;color:var(--good)}
+.check-fail{background:#ef444420;border:1.5px solid #ef444450;color:var(--bad)}
+.check-warn{background:#f59e0b20;border:1.5px solid #f59e0b50;color:var(--warn)}
+.info-card,.workspace-card{margin-bottom:12px}
+.card-label{font-size:.7rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.mini-help{font-size:.76rem;color:#7c8aa0;line-height:1.45;margin-top:6px}
+.hero-title{font-size:1.25rem;font-weight:800;color:var(--text);margin-bottom:4px}
+.hero-subtitle{font-size:.9rem;color:var(--muted);margin-bottom:14px}
+.hero-action{font-size:.95rem;font-weight:700;padding:10px 12px;border-radius:10px;margin-top:10px}
+.hero-good{background:#22c55e18;color:#86efac;border:1px solid #22c55e40}
+.hero-warn{background:#f59e0b18;color:#fcd34d;border:1px solid #f59e0b40}
+.hero-bad{background:#ef444418;color:#fca5a5;border:1px solid #ef444440}
+.change-card{padding:14px 16px}
+.change-title{font-size:.72rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.change-value{font-size:1rem;font-weight:700;color:var(--text)}
+.change-detail{font-size:.8rem;color:var(--muted);margin-top:4px;line-height:1.35}
+.kpi-explainer{background:rgba(15,23,42,.85);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:.8rem;color:var(--muted)}
+.pill-wrap{display:flex;flex-wrap:wrap;gap:8px}
+.pill{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#0f172a;border:1px solid var(--border);color:var(--text);font-size:.82rem}
+.workspace-note{font-size:.82rem;color:var(--muted);line-height:1.45}
+.breadth-track{height:10px;border-radius:5px;background:var(--border);position:relative;overflow:hidden;margin:8px 0}
 .breadth-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444);transition:width .5s}
+hr{border:none;border-top:1px solid var(--border);margin:1rem 0}
 </style>"""
 
 def configure_page() -> None:
     st.set_page_config(**PAGE_CONFIG)
 
+
+WORKSPACE_FILE = "user_workspace.json"
+WORKSPACE_SCOPE_DEFAULT = "default"
+DEFAULT_FAVORITES = ["NVDA", "MSFT", "AAPL", "META", "AMZN", "PLTR", "LLY", "TSLA"]
+METRIC_GLOSSARY = {
+    "Dist.-Tage": "Verkaufstage mit höherem Volumen als am Vortag. Viele Distribution Days sprechen für institutionellen Abgabedruck.",
+    "21-EMA": "Abstand zur 21-EMA in ATR. Je weiter der Index darüber liegt, desto eher ist er kurzfristig überdehnt.",
+    "50-SMA": "Prozentualer Abstand zur 50-Tage-Linie. Sehr große positive Abstände können Überhitzung anzeigen.",
+    "Drawdown": "Abstand zum 52-Wochen-Hoch. Große negative Werte zeigen eine laufende Korrektur oder Schwächephase.",
+    "Closing Range": "Wo der Schluss im Tagesbereich liegt. Hohe Werte bedeuten einen starken Schluss nahe Tageshoch.",
+    "ATR (21T)": "Durchschnittliche Schwankungsbreite der letzten 21 Tage in Prozent. Hilft bei Risiko und Positionsgröße.",
+    "DRR (Ø21T)": "Average Daily Range der letzten 21 Tage. Zeigt, wie nervös oder ruhig eine Aktie handelt.",
+    "Beta": "Empfindlichkeit der Aktie gegenüber dem Gesamtmarkt. Werte über 1 bedeuten meist mehr Dynamik, aber auch mehr Schwankung.",
+    "McClellan Osc.": "Kurzfristiger Breadth-Oszillator auf Basis Advancers minus Decliners. Über 0 ist meist konstruktiv.",
+    "NH/NL Ratio": "Verhältnis neuer 52-Wochen-Hochs zu neuen 52-Wochen-Tiefs. Über 1 zeigt breite Stärke.",
+    "% > 50-SMA": "Anteil der Aktien oberhalb ihrer 50-Tage-Linie. Zeigt, wie breit kurzfristige Trends sind.",
+    "% > 200-SMA": "Anteil der Aktien oberhalb ihrer 200-Tage-Linie. Zeigt die langfristige Marktverfassung.",
+    "Deemer Ratio": "Advancing Volume geteilt durch Declining Volume. Werte über 1.97 gelten als seltener Breitenschub.",
+}
+
 def inject_css() -> None:
     st.markdown(APP_CSS, unsafe_allow_html=True)
+
+def _safe_json_load(path: Path, default):
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("workspace load failed: %s", exc)
+    return default
+
+def _safe_json_dump(path: Path, payload) -> None:
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("workspace save failed: %s", exc)
+
+def _workspace_scope() -> str:
+    try:
+        scope = _safe_get_secret("private_area", "workspace_key", default="")
+    except Exception:
+        scope = ""
+    return str(scope or WORKSPACE_SCOPE_DEFAULT).strip() or WORKSPACE_SCOPE_DEFAULT
+
+def _workspace_meta_key(name: str) -> str:
+    return f"workspace:{_workspace_scope()}:{name}"
+
+def _workspace_backend_label() -> str:
+    try:
+        return _get_store_label(_get_price_store())
+    except Exception:
+        return "lokaler Speicher"
+
+def _ensure_workspace_store_ready() -> None:
+    if st.session_state.get("_workspace_store_ready"):
+        return
+    try:
+        _init_price_cache_db(_get_price_store())
+        st.session_state["_workspace_store_ready"] = True
+    except Exception as exc:
+        logger.debug("workspace store init failed: %s", exc)
+
+def _workspace_payload():
+    return {
+        "watchlist": list(dict.fromkeys(st.session_state.get("watchlist", []))),
+        "recent_tickers": list(dict.fromkeys(st.session_state.get("recent_tickers", [])))[:12],
+        "positions": st.session_state.get("positions", []),
+        "todos": st.session_state.get("todos", ""),
+    }
+
+def _load_workspace_from_store():
+    _ensure_workspace_store_ready()
+    payload = {}
+    store = _get_price_store()
+    for field, default in {"watchlist": [], "recent_tickers": [], "positions": [], "todos": ""}.items():
+        raw = _get_cache_metadata(store, _workspace_meta_key(field), None)
+        if raw in (None, ""):
+            payload[field] = default
+            continue
+        try:
+            payload[field] = json.loads(raw)
+        except Exception as exc:
+            logger.debug("workspace field decode failed for %s: %s", field, exc)
+            payload[field] = default
+    return payload
+
+def _sync_workspace() -> None:
+    payload = _workspace_payload()
+    _safe_json_dump(Path(WORKSPACE_FILE), payload)
+    try:
+        _ensure_workspace_store_ready()
+        store = _get_price_store()
+        values = {
+            _workspace_meta_key("watchlist"): json.dumps(payload["watchlist"], ensure_ascii=False),
+            _workspace_meta_key("recent_tickers"): json.dumps(payload["recent_tickers"], ensure_ascii=False),
+            _workspace_meta_key("positions"): json.dumps(payload["positions"], ensure_ascii=False),
+            _workspace_meta_key("todos"): json.dumps(payload["todos"], ensure_ascii=False),
+            _workspace_meta_key("updated_at"): datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _set_cache_metadata_many(store, values)
+    except Exception as exc:
+        logger.debug("workspace sync to store failed: %s", exc)
+
+def _init_workspace_state():
+    if st.session_state.get("_workspace_initialized"):
+        return
+    stored = {}
+    try:
+        stored = _load_workspace_from_store()
+    except Exception as exc:
+        logger.debug("workspace store load failed: %s", exc)
+    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos"]):
+        local_stored = _safe_json_load(Path(WORKSPACE_FILE), {})
+        if isinstance(local_stored, dict) and local_stored:
+            stored = local_stored
+            try:
+                st.session_state["watchlist"] = stored.get("watchlist", [])
+                st.session_state["recent_tickers"] = stored.get("recent_tickers", [])
+                st.session_state["positions"] = stored.get("positions", [])
+                st.session_state["todos"] = stored.get("todos", "")
+                _sync_workspace()
+            except Exception as exc:
+                logger.debug("workspace migration failed: %s", exc)
+    st.session_state["watchlist"] = stored.get("watchlist", []) if isinstance(stored, dict) else []
+    st.session_state["recent_tickers"] = stored.get("recent_tickers", []) if isinstance(stored, dict) else []
+    st.session_state["positions"] = stored.get("positions", []) if isinstance(stored, dict) else []
+    st.session_state["todos"] = stored.get("todos", "") if isinstance(stored, dict) else ""
+    st.session_state["_workspace_initialized"] = True
+
+def _get_private_password_hash() -> str:
+    candidates = [
+        _safe_get_secret("private_area", "password_sha256", default=""),
+        _safe_get_secret("PRIVATE_AREA_PASSWORD_SHA256", default=""),
+    ]
+    for value in candidates:
+        if value and str(value).strip():
+            return str(value).strip().lower()
+    plain = _safe_get_secret("private_area", "password", default="") or _safe_get_secret("PRIVATE_AREA_PASSWORD", default="")
+    if plain and str(plain).strip():
+        return hashlib.sha256(str(plain).encode("utf-8")).hexdigest()
+    return ""
+
+def _private_area_enabled() -> bool:
+    return bool(_get_private_password_hash())
+
+def _is_private_unlocked() -> bool:
+    if not _private_area_enabled():
+        return True
+    return bool(st.session_state.get("private_area_authenticated", False))
+
+def _unlock_private_area(password: str) -> bool:
+    candidate = hashlib.sha256((password or "").encode("utf-8")).hexdigest()
+    ok = bool(password) and hmac.compare_digest(candidate, _get_private_password_hash())
+    st.session_state["private_area_authenticated"] = ok
+    if ok:
+        st.session_state["private_area_error"] = ""
+    else:
+        st.session_state["private_area_error"] = "Passwort nicht korrekt."
+    return ok
+
+def _lock_private_area() -> None:
+    st.session_state["private_area_authenticated"] = False
+
+def _render_private_gate(title: str = "🔐 Privater Bereich") -> bool:
+    if _is_private_unlocked():
+        return True
+    st.markdown(f"### {title}")
+    st.info("Dieser Bereich ist geschützt. Gib dein Passwort ein, um dein persönliches Depot, Watchlist und To-dos zu laden.")
+    with st.form("private_area_login"):
+        password = st.text_input("Passwort", type="password", key="private_area_password_input")
+        submitted = st.form_submit_button("Entsperren", use_container_width=True)
+    if submitted:
+        if _unlock_private_area(password):
+            st.success("Privater Bereich entsperrt.")
+            st.rerun()
+    err = st.session_state.get("private_area_error", "")
+    if err:
+        st.error(err)
+    return False
+
+def _add_recent_ticker(ticker: str) -> None:
+    if not ticker:
+        return
+    _init_workspace_state()
+    recents = [ticker] + [t for t in st.session_state["recent_tickers"] if t != ticker]
+    st.session_state["recent_tickers"] = recents[:12]
+    _sync_workspace()
+
+def _add_watchlist_ticker(ticker: str) -> None:
+    if not ticker:
+        return
+    _init_workspace_state()
+    cur = [t for t in st.session_state["watchlist"] if t != ticker]
+    cur.insert(0, ticker)
+    st.session_state["watchlist"] = cur[:25]
+    _add_recent_ticker(ticker)
+    _sync_workspace()
+
+def _remove_watchlist_ticker(ticker: str) -> None:
+    _init_workspace_state()
+    st.session_state["watchlist"] = [t for t in st.session_state["watchlist"] if t != ticker]
+    _sync_workspace()
+
+def _upsert_position(position: dict) -> None:
+    _init_workspace_state()
+    positions = st.session_state["positions"]
+    ticker = position.get("ticker")
+    updated = False
+    for idx, existing in enumerate(positions):
+        if existing.get("ticker") == ticker:
+            positions[idx] = position
+            updated = True
+            break
+    if not updated:
+        positions.insert(0, position)
+    st.session_state["positions"] = positions[:30]
+    _add_recent_ticker(ticker)
+    if ticker:
+        _add_watchlist_ticker(ticker)
+    _sync_workspace()
+
+def _remove_position(ticker: str) -> None:
+    _init_workspace_state()
+    st.session_state["positions"] = [p for p in st.session_state["positions"] if p.get("ticker") != ticker]
+    _sync_workspace()
+
+@st.cache_data(ttl=900, show_spinner=False)
+def search_symbol_candidates(query: str):
+    query = (query or "").strip()
+    if not query:
+        return []
+    url = "https://query1.finance.yahoo.com/v1/finance/search"
+    params = {"q": query, "quotesCount": 8, "newsCount": 0}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, params=params, headers=headers, timeout=10)
+        res.raise_for_status()
+        payload = res.json() or {}
+        out = []
+        for item in payload.get("quotes", []):
+            symbol = str(item.get("symbol", "")).upper().strip()
+            if not symbol or "=" in symbol or "^" in symbol:
+                continue
+            qtype = str(item.get("quoteType", "")).upper()
+            if qtype and qtype not in {"EQUITY", "ETF"}:
+                continue
+            name = item.get("shortname") or item.get("longname") or ""
+            exch = item.get("exchange", "") or item.get("exchDisp", "")
+            out.append({"symbol": symbol, "name": str(name), "exchange": str(exch), "type": qtype or "EQUITY"})
+        if out:
+            dedup = []
+            seen = set()
+            for row in out:
+                if row["symbol"] in seen:
+                    continue
+                seen.add(row["symbol"])
+                dedup.append(row)
+            return dedup
+    except Exception as exc:
+        logger.debug("symbol search failed for %s: %s", query, exc)
+    fallback = query.upper().replace(" ", "")
+    return [{"symbol": fallback, "name": "", "exchange": "", "type": "MANUAL"}] if fallback else []
+
+def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia"):
+    _init_workspace_state()
+    quick = []
+    for source in [st.session_state.get("recent_tickers", []), st.session_state.get("watchlist", []), DEFAULT_FAVORITES]:
+        for ticker in source:
+            if ticker not in quick:
+                quick.append(ticker)
+    quick = quick[:8]
+    if quick:
+        cols = st.columns(min(4, len(quick)))
+        for i, ticker in enumerate(quick):
+            with cols[i % len(cols)]:
+                if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
+                    st.session_state[f"{key_prefix}_query"] = ticker
+    query = st.text_input(label, value=st.session_state.get(f"{key_prefix}_query", ""), placeholder=placeholder, key=f"{key_prefix}_query")
+    query = (query or "").strip()
+    if not query:
+        return ""
+    candidates = search_symbol_candidates(query)
+    labels = []
+    for item in candidates:
+        name = item.get("name", "")
+        exch = item.get("exchange", "")
+        suffix = f" — {name}" if name else ""
+        if exch:
+            suffix += f" · {exch}"
+        labels.append(f"{item['symbol']}{suffix}")
+    default_idx = 0
+    for idx, item in enumerate(candidates):
+        if item["symbol"].upper() == query.upper():
+            default_idx = idx
+            break
+    if len(candidates) == 1:
+        chosen = candidates[0]["symbol"].upper()
+        st.caption(f"Treffer: {labels[0]}")
+    else:
+        idx = st.selectbox("Treffer", options=list(range(len(candidates))), index=default_idx, format_func=lambda i: labels[i], key=f"{key_prefix}_pick")
+        chosen = candidates[idx]["symbol"].upper()
+    if _is_private_unlocked():
+        _add_recent_ticker(chosen)
+    return chosen
+
+def _format_market_date(ts) -> str:
+    try:
+        return pd.Timestamp(ts).strftime("%d.%m.%Y")
+    except Exception:
+        return "—"
+
+def _elapsed_text(ts) -> str:
+    try:
+        delta = datetime.now() - pd.Timestamp(ts).to_pydatetime()
+        hours = int(delta.total_seconds() // 3600)
+        if hours < 1:
+            minutes = max(1, int(delta.total_seconds() // 60))
+            return f"vor {minutes} Min."
+        if hours < 24:
+            return f"vor {hours} Std."
+        return f"vor {delta.days} Tg."
+    except Exception:
+        return "—"
+
+def _format_data_freshness(selected: str, df: pd.DataFrame, vol_dashboard: pd.DataFrame | None = None) -> dict:
+    latest_date = _format_market_date(df.index[-1]) if df is not None and len(df) else "—"
+    vix_date = _format_market_date(vol_dashboard.index[-1]) if vol_dashboard is not None and len(vol_dashboard) else latest_date
+    store = _get_price_store()
+    return {
+        "index_name": selected,
+        "index_date": latest_date,
+        "vix_date": vix_date,
+        "store_label": _get_store_label(store),
+        "nyse_refresh": _get_cache_metadata(store, "last_refresh_at", "") or _get_cache_metadata(store, "cache_prices_last_write_at", ""),
+        "coverage": _get_cache_metadata(store, "last_refresh_loaded_universe", ""),
+        "requested": _get_cache_metadata(store, "last_refresh_requested_universe", ""),
+    }
+
+def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, vol_regime: str):
+    phase = str(phase or "").lower()
+    breadth_mode = str(breadth_mode or "").lower()
+    vol_regime = str(vol_regime or "").lower()
+    if phase in {"rot"} or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
+        return "Defensiv", "bad", "Risiko reduzieren. Keine aggressiven Neueinstiege. Nur bestehende Positionen kritisch prüfen."
+    if phase in {"gelb"} or warning_count >= 2 or breadth_mode == "neutral" or vol_regime in {"risk", "vorsicht"}:
+        return "Neutral", "warn", "Selektiv bleiben. Nur A-Setups und eher kleine Einstiege."
+    return "Offensiv", "good", "Markt konstruktiv. Führende Aktien beobachten und Risiko schrittweise erhöhen."
+
+def _build_market_reasons(L, warning_count: int, breadth_mode: str, vol_latest: pd.Series):
+    reasons = []
+    phase = str(L.get("Ampel_Phase", "")).upper().replace("AUFWAERTSTREND", "AUFWÄRTSTREND")
+    reasons.append(f"Ampelphase: {phase or '—'}")
+    reasons.append(f"Aktive Warnzeichen: {warning_count}")
+    p50 = L.get("Dist_50SMA_pct", np.nan)
+    if not np.isnan(p50):
+        reasons.append(f"Abstand zur 50-SMA: {p50:+.1f}%")
+    if breadth_mode:
+        reasons.append(f"Equal-Weight-Modus: {str(breadth_mode).capitalize()}")
+    vix_regime = vol_latest.get("VIX_Regime", "")
+    if vix_regime:
+        reasons.append(f"VIX-Regime: {vix_regime}")
+    return reasons[:4]
+
+def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboard: pd.DataFrame | None = None, breadth_label: str = ""):
+    changes = []
+    if df is None or len(df) < 2:
+        return changes
+    prev = df.iloc[-2]
+    latest = df.iloc[-1]
+    price_delta = latest.get("Pct_Change", np.nan)
+    if not np.isnan(price_delta):
+        changes.append({"title": "Heute", "value": f"{selected}: {price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}"})
+    dist_prev = int(prev.get("Dist_Count_25", 0))
+    dist_now = int(latest.get("Dist_Count_25", 0))
+    delta = dist_now - dist_prev
+    delta_txt = f"{delta:+d}" if delta else "unverändert"
+    changes.append({"title": "Distribution", "value": f"{dist_now} aktive Dist.-Tage", "detail": f"Gegenüber gestern: {delta_txt}"})
+    prev_phase = str(prev.get("Ampel_Phase", "")).upper().replace("AUFWAERTSTREND", "AUFWÄRTSTREND")
+    phase = str(latest.get("Ampel_Phase", "")).upper().replace("AUFWAERTSTREND", "AUFWÄRTSTREND")
+    detail = f"Wechsel von {prev_phase or '—'} auf {phase or '—'}" if phase != prev_phase else f"Unverändert seit gestern · {wc} Warnzeichen"
+    changes.append({"title": "Marktmodus", "value": phase or "—", "detail": detail})
+    if vol_dashboard is not None and len(vol_dashboard) >= 2:
+        vp = vol_dashboard.iloc[-2]
+        vl = vol_dashboard.iloc[-1]
+        regime_now = vl.get("VIX_Regime", "n/a")
+        regime_prev = vp.get("VIX_Regime", "n/a")
+        change_detail = f"Regime {regime_prev} → {regime_now}" if regime_now != regime_prev else f"Regime stabil: {regime_now}"
+        val = f"VIX {vl.get('VIX_Close', np.nan):.1f}" if pd.notna(vl.get("VIX_Close", np.nan)) else "VIX n/a"
+        changes.append({"title": "Volatilität", "value": val, "detail": change_detail})
+    if breadth_label:
+        changes.append({"title": "Breite", "value": breadth_label, "detail": "Equal-Weight als Bestätigung des Indextrends"})
+    return changes[:4]
+
+def _render_change_cards(changes):
+    if not changes:
+        return
+    cols = st.columns(len(changes))
+    for col, item in zip(cols, changes):
+        with col:
+            st.markdown(
+                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value">{item["value"]}</div><div class="change-detail">{item["detail"]}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, freshness: dict):
+    tone_cls = {"good": "hero-good", "warn": "hero-warn", "bad": "hero-bad"}.get(tone, "hero-warn")
+    bullets = "".join(f"<li>{r}</li>" for r in reasons)
+    nyse_txt = ""
+    if freshness.get("coverage") and freshness.get("requested"):
+        nyse_txt = f" · NYSE-Cache {freshness['coverage']}/{freshness['requested']}"
+    refresh_txt = ""
+    if freshness.get("nyse_refresh"):
+        refresh_txt = f" · Tiefenanalyse aktualisiert {_elapsed_text(freshness['nyse_refresh'])}"
+    st.markdown(
+        f'<div class="summary-hero"><div class="hero-title">Marktmodus: {mode}</div><div class="hero-subtitle">Stand Index {freshness.get("index_date","—")} · VIX {freshness.get("vix_date","—")} · Speicher {freshness.get("store_label","—")}{nyse_txt}{refresh_txt}</div><ul style="margin:0 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+def _render_market_glossary(keys):
+    items = []
+    for key in keys:
+        text = METRIC_GLOSSARY.get(key)
+        if text:
+            items.append(f"<strong>{key}</strong> — {text}")
+    if items:
+        st.markdown('<div class="kpi-explainer">' + "<br>".join(items) + "</div>", unsafe_allow_html=True)
+
+def _simple_position_health(position: dict):
+    ticker = position.get("ticker", "")
+    if not ticker:
+        return None
+    df, info, *_ = load_stock_full(ticker)
+    if df is None or len(df) < 20:
+        return {"ticker": ticker, "status": "Keine Daten", "pnl": np.nan, "detail": "Yahoo-Daten fehlen"}
+    latest = df.iloc[-1]
+    price = float(latest["Close"])
+    buy_price = float(position.get("buy_price_usd") or position.get("buy_price") or 0)
+    pnl = ((price / buy_price) - 1) * 100 if buy_price else np.nan
+    sma50 = df["Close"].rolling(50).mean().iloc[-1]
+    status = "OK"
+    detail = f"Aktuell ${price:,.2f}"
+    if not np.isnan(pnl) and pnl < -7:
+        status = "Stop-Loss"
+        detail = f"{pnl:.1f}% seit Kauf"
+    elif not np.isnan(sma50) and price < sma50:
+        status = "Unter 50-SMA"
+        detail = f"${price:,.2f} unter ${sma50:,.2f}"
+    elif not np.isnan(pnl):
+        detail = f"{pnl:+.1f}% seit Kauf"
+    return {"ticker": ticker, "name": (info or {}).get("shortName", ticker), "status": status, "pnl": pnl, "detail": detail, "price": price}
+
+def _render_workspace_sidebar():
+    _init_workspace_state()
+    with st.sidebar:
+        st.markdown("### Arbeitsbereich")
+        st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
+        if _private_area_enabled():
+            state_label = "entsperrt" if _is_private_unlocked() else "gesperrt"
+            st.caption(f"Privater Bereich: {state_label}")
+            if _is_private_unlocked():
+                if st.button("🔒 Sperren", use_container_width=True, key="sidebar_lock_private"):
+                    _lock_private_area()
+                    st.rerun()
+        if not _is_private_unlocked():
+            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind aktuell ausgeblendet.</div>', unsafe_allow_html=True)
+            return
+        watchlist = st.session_state.get("watchlist", [])
+        if watchlist:
+            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="workspace-note">Noch keine Watchlist gespeichert.</div>', unsafe_allow_html=True)
+        positions = st.session_state.get("positions", [])
+        st.caption(f"{len(positions)} Positionen · {len(st.session_state.get('recent_tickers', []))} zuletzt genutzt")
 
 # ===== From market_data.py =====
 logger = logging.getLogger(__name__)
@@ -3069,244 +3579,322 @@ def evaluate_chart_signs(df):
     return signs
 
 # ===== From tabs.py =====
-def _tab_aktienbewertung():
-    st.markdown("### 📋 Aktienbewertung — Einzelaktien-Check")
-    st.caption("Fundamentale Checkliste (Kap. 3.4) · Technische Checkliste (Kap. 3.5/3.6) · Chartverhalten (Tab. 28)")
 
-    ticker = st.text_input("Ticker eingeben (z.B. NVDA, AAPL, MSFT)", value="", placeholder="NVDA").upper().strip()
-    if not ticker: return
+def _tab_aktienbewertung():
+    _init_workspace_state()
+    st.markdown("### 📋 Aktienbewertung")
+    st.caption("Einzelaktien-Check mit komfortabler Suche, Watchlist und schneller Einordnung für Fundamentaldaten, Technik und Chartverhalten.")
+
+    ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia")
+    if not ticker:
+        return
 
     with st.spinner(f"Lade {ticker} …"):
         df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
 
     if df is None or len(df) < 20:
-        st.error(f"Keine Daten für '{ticker}'."); return
+        st.error(f"Keine Daten für '{ticker}'.")
+        return
 
-    L = df.iloc[-1]; name = info.get("shortName", ticker) if info else ticker
-    price = L["Close"]; prev = df["Close"].iloc[-2]; chg = (price / prev - 1) * 100
+    _add_recent_ticker(ticker)
+    L = df.iloc[-1]
+    name = info.get("shortName", ticker) if info else ticker
+    price = float(L["Close"])
+    prev = df["Close"].iloc[-2]
+    chg = (price / prev - 1) * 100
+    last_date = _format_market_date(df.index[-1])
 
-    # ── Header ──
+    act1, act2, act3 = st.columns([1, 1, 2])
+    private_ok = _is_private_unlocked()
+    with act1:
+        if st.button("➕ Zur Watchlist", use_container_width=True, key="add_watch_stock", disabled=not private_ok):
+            _add_watchlist_ticker(ticker)
+            st.success(f"{ticker} zur Watchlist hinzugefügt.")
+    with act2:
+        if st.button("💼 Als Position merken", use_container_width=True, key="add_pos_stock", disabled=not private_ok):
+            _upsert_position({
+                "ticker": ticker,
+                "buy_price": round(price, 2),
+                "buy_price_usd": round(price, 2),
+                "buy_date": last_date,
+                "currency": "USD",
+                "note": "",
+            })
+            st.success(f"{ticker} als Position vorgemerkt.")
+    with act3:
+        st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
+        if not private_ok:
+            st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
+
     st.markdown(
-        f'<div style="font-size:1.3rem;font-weight:800;color:#e2e8f0;">{name} ({ticker})</div>'
-        f'<div style="font-size:1.1rem;color:{"#22c55e" if chg>=0 else "#ef4444"};font-weight:700;">'
-        f'${price:,.2f} ({chg:+.2f}%)</div>', unsafe_allow_html=True)
+        f'<div class="summary-hero"><div class="hero-title">{name} ({ticker})</div>'
+        f'<div class="hero-subtitle">Letzter Schluss {last_date}</div>'
+        f'<div class="hero-action {"hero-good" if chg >= 0 else "hero-bad"}">Aktuell ${price:,.2f} · {chg:+.2f}% zum Vortag</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    # ── Key metrics row ──
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    with k1: st.metric("Sektor", (info.get("sector","—") if info else "—")[:18])
-    with k2: st.metric("Branche", (info.get("industry","—") if info else "—")[:20])
-
-    # Closing Range
-    rng_hl = L["High"] - L["Low"]; cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
-    with k3: st.metric("Closing Range", f"{cr_today:.0f}%")
-
-    # ATR in %
-    atr_s = _atr(df, 21); atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
+    # Today / recent changes
+    atr_s = _atr(df, 21)
+    atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
-    cat_lbl, cat_c = _atr_category(atr_pct)
-    with k4: st.metric("ATR (21T)", f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", cat_lbl)
+    vol_ratio = float(L["Volume"] / df["Volume"].rolling(50).mean().iloc[-1]) if len(df) >= 50 and pd.notna(df["Volume"].rolling(50).mean().iloc[-1]) and df["Volume"].rolling(50).mean().iloc[-1] else np.nan
+    rs_hint = ""
+    if spx_df is not None and len(spx_df) >= 63 and len(df) >= 63:
+        rs_now = (df["Close"].iloc[-1] / df["Close"].iloc[-21]) / (spx_df["Close"].iloc[-1] / spx_df["Close"].iloc[-21])
+        rs_prev = (df["Close"].iloc[-21] / df["Close"].iloc[-63]) / (spx_df["Close"].iloc[-21] / spx_df["Close"].iloc[-63])
+        rs_hint = "RS verbessert sich" if rs_now > rs_prev else "RS verliert etwas Tempo"
 
-    # DRR
+    change_cards = [
+        {"title": "Heute", "value": f"{chg:+.2f}%", "detail": f"Schlusskurs ${price:,.2f}"},
+        {"title": "Volumen", "value": f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—", "detail": "Werte >1 zeigen mehr Aktivität"},
+        {"title": "Volatilität", "value": f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", "detail": "ATR als Risikomaß"},
+    ]
+    if rs_hint:
+        change_cards.append({"title": "Rel. Stärke", "value": rs_hint, "detail": "Vergleich zum S&P 500"})
+    _render_change_cards(change_cards[:4])
+
+    # Key metrics arranged in two rows for better readability
+    rng_hl = L["High"] - L["Low"]
+    cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
-    with k5: st.metric("DRR (Ø21T)", f"{drr:.2f}%")
-
-    # Beta
     beta = info.get("beta") if info else None
-    with k6: st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
+    cat_lbl, _ = _atr_category(atr_pct)
 
-    # ── PRICE CHART with MAs + VOLUME ──
+    top_metrics = st.columns(3)
+    with top_metrics[0]:
+        st.metric("Sektor", (info.get("sector", "—") if info else "—")[:22])
+        st.caption("Geschäftsfeld der Aktie")
+    with top_metrics[1]:
+        st.metric("Branche", (info.get("industry", "—") if info else "—")[:28])
+        st.caption("Feinere Untergruppe innerhalb des Sektors")
+    with top_metrics[2]:
+        st.metric("Closing Range", f"{cr_today:.0f}%")
+        st.caption("Wie stark der Schluss im Tagesbereich lag")
+
+    low_metrics = st.columns(3)
+    with low_metrics[0]:
+        st.metric("ATR (21T)", f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", cat_lbl)
+    with low_metrics[1]:
+        st.metric("DRR (Ø21T)", f"{drr:.2f}%")
+    with low_metrics[2]:
+        st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
+
+    with st.expander("Kennzahlen kurz erklärt", expanded=False):
+        _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta"])
+
+    # Chart
     _ema21 = df["Close"].ewm(span=21).mean()
     _sma50 = df["Close"].rolling(50).mean()
     _sma200 = df["Close"].rolling(200).mean()
     _vol_sma50 = df["Volume"].rolling(50).mean()
 
-    from plotly.subplots import make_subplots
-    fig_stock = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02,
-                              row_heights=[0.75, 0.25])
-
+    fig_stock = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.75, 0.25])
     x = df.index
-    # Candlestick
     fig_stock.add_trace(go.Candlestick(
         x=x, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
         increasing_line_color="#22c55e", decreasing_line_color="#ef4444",
         increasing_fillcolor="#22c55e", decreasing_fillcolor="#ef4444",
         name="Kurs", line=dict(width=1)), row=1, col=1)
-
-    # MAs
-    fig_stock.add_trace(go.Scatter(x=x, y=_ema21, name="21-EMA",
-        line=dict(color="#06b6d4", width=1.2, dash="dot")), row=1, col=1)
-    fig_stock.add_trace(go.Scatter(x=x, y=_sma50, name="50-SMA",
-        line=dict(color="#f97316", width=1.2, dash="dot")), row=1, col=1)
-    fig_stock.add_trace(go.Scatter(x=x, y=_sma200, name="200-SMA",
-        line=dict(color="#a855f7", width=1.2, dash="dash")), row=1, col=1)
-
-    # Volume bars colored by close direction
-    vol_colors = ["#22c55e" if df["Close"].iloc[i] >= df["Open"].iloc[i] else "#ef4444"
-                  for i in range(len(df))]
-    fig_stock.add_trace(go.Bar(x=x, y=df["Volume"], marker_color=vol_colors,
-        opacity=0.5, name="Volumen", showlegend=False), row=2, col=1)
-    fig_stock.add_trace(go.Scatter(x=x, y=_vol_sma50, name="Vol 50-SMA",
-        line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
-
-    # Default view: last 6 months
+    fig_stock.add_trace(go.Scatter(x=x, y=_ema21, name="21-EMA", line=dict(color="#06b6d4", width=1.2, dash="dot")), row=1, col=1)
+    fig_stock.add_trace(go.Scatter(x=x, y=_sma50, name="50-SMA", line=dict(color="#f97316", width=1.2, dash="dot")), row=1, col=1)
+    fig_stock.add_trace(go.Scatter(x=x, y=_sma200, name="200-SMA", line=dict(color="#a855f7", width=1.2, dash="dash")), row=1, col=1)
+    vol_colors = ["#22c55e" if df["Close"].iloc[i] >= df["Open"].iloc[i] else "#ef4444" for i in range(len(df))]
+    fig_stock.add_trace(go.Bar(x=x, y=df["Volume"], marker_color=vol_colors, opacity=0.5, name="Volumen", showlegend=False), row=2, col=1)
+    fig_stock.add_trace(go.Scatter(x=x, y=_vol_sma50, name="Vol 50-SMA", line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
     six_months_ago = df.index[-1] - pd.Timedelta(days=180)
     fig_stock.update_layout(
         template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-        height=420, margin=dict(l=10, r=10, t=30, b=10),
-        xaxis_rangeslider_visible=False,
+        height=420, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
         xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#1e293b"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
-        yaxis=dict(title="", gridcolor="#1e293b"),
-        yaxis2=dict(title="", gridcolor="#1e293b"),
-        xaxis2=dict(gridcolor="#1e293b"),
+        yaxis=dict(title="", gridcolor="#1e293b"), yaxis2=dict(title="", gridcolor="#1e293b"), xaxis2=dict(gridcolor="#1e293b"),
     )
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, use_container_width=True, key="stock_chart")
 
-    st.markdown("---")
-
-    # ── TWO COLUMNS ──
     col_f, col_t = st.columns(2)
-
     with col_f:
-        st.markdown('<div class="info-card"><div class="card-label">FUNDAMENTALE CHECKLISTE (Kap. 3.4)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
         fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
         fok = sum(1 for _, ok, _ in fc if ok)
-        for label, ok, detail in fc: render_check(label, ok, detail)
+        for label, ok, detail in fc:
+            render_check(label, ok, detail)
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_t:
-        st.markdown('<div class="info-card"><div class="card-label">TECHNISCHE CHECKLISTE (Kap. 3.5 / 3.6)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-card"><div class="card-label">Technische Checkliste</div>', unsafe_allow_html=True)
         tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df)
         tok = sum(1 for _, ok, _ in tc if ok)
-        for label, ok, detail in tc: render_check(label, ok, detail)
+        for label, ok, detail in tc:
+            render_check(label, ok, detail)
         sc = "#22c55e" if tok >= 10 else "#f59e0b" if tok >= 6 else "#ef4444"
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(tc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("---")
-
-    # ── CHART SIGNS ──
-    st.markdown('<div class="card-label">CHARTVERHALTEN — POSITIVE / NEGATIVE / NEUTRALE ZEICHEN (Tabelle 28)</div>', unsafe_allow_html=True)
     signs = evaluate_chart_signs(df)
+    st.markdown('<div class="card-label">Chartverhalten</div>', unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns(3)
-    for col, key, label, color in [(sc1,"positiv","✓ POSITIV","#22c55e"),(sc2,"negativ","✗ NEGATIV","#ef4444"),(sc3,"neutral","○ NEUTRAL","#94a3b8")]:
+    for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
         with col:
-            st.markdown(f'<div class="info-card" style="border-color:{color}30;">'
-                        f'<div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
             if signs[key]:
                 for nm, dt in signs[key]:
-                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
-                                f'<div style="font-size:.8rem;color:{color};">{nm}</div>'
-                                f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div style="color:#4a5568;font-size:.8rem;">Keine Zeichen</div>', unsafe_allow_html=True)
+                st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
     np_ = len(signs["positiv"]); nn = len(signs["negativ"]); nu = len(signs["neutral"])
     score = np_ - nn
-    if score >= 3: verd = "Starkes Chartbild"; vc = "#22c55e"
-    elif score >= 1: verd = "Leicht positiv"; vc = "#22c55e"
-    elif score >= -1: verd = "Gemischt — Vorsicht"; vc = "#f59e0b"
-    else: verd = "Schwaches Chartbild"; vc = "#ef4444"
+    if score >= 3:
+        verd, vc = "Starkes Chartbild", "#22c55e"
+    elif score >= 1:
+        verd, vc = "Leicht positiv", "#22c55e"
+    elif score >= -1:
+        verd, vc = "Gemischt", "#f59e0b"
+    else:
+        verd, vc = "Schwaches Chartbild", "#ef4444"
     st.markdown(
-        f'<div style="text-align:center;padding:12px;background:#111827;border:1px solid #1e293b;border-radius:10px;">'
-        f'<div style="font-size:.7rem;color:#64748b;">GESAMTBEWERTUNG</div>'
-        f'<div style="font-size:1rem;font-weight:700;color:{vc};">{verd}</div>'
-        f'<div style="font-size:.75rem;color:#94a3b8;">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score: {score:+d}</div></div>',
-        unsafe_allow_html=True)
+        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{vc};">{verd}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {score:+d}</div></div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ═══════════════════════════════════════════════════════
 # TAB 4: NACH DEM KAUF (Book Ch.5.2 + 5.3)
 # ═══════════════════════════════════════════════════════
-def _tab_nach_kauf():
-    """Tab 4: Post-buy analysis — positive signs and warning signals."""
-    st.markdown("### 🎯 Nach dem Kauf — Halte- und Warnsignale")
-    st.caption("Prüfe ob sich deine Aktie nach dem Kauf gesund verhält (Kap. 5.2 / 5.3).")
 
-    ticker = st.text_input("Ticker eingeben", value="", placeholder="NVDA", key="nachkauf_ticker").upper().strip()
-    if not ticker: return
+def _tab_nach_kauf():
+    _init_workspace_state()
+    st.markdown("### 🎯 Nach dem Kauf")
+    st.caption("Überwache bestehende Positionen. Du kannst entweder eine gespeicherte Position wählen oder alles manuell eingeben.")
+
+    private_ok = _is_private_unlocked()
+    saved_positions = st.session_state.get("positions", []) if private_ok else []
+    if not private_ok:
+        st.info("Dein persönliches Depot ist gesperrt. Du kannst diesen Tab manuell nutzen oder den privaten Bereich entsperren, um gespeicherte Positionen zu laden und zu speichern.")
+    selected_saved = ""
+    if saved_positions:
+        selected_saved = st.selectbox(
+            "Gespeicherte Position wählen",
+            options=[""] + [p.get("ticker", "") for p in saved_positions],
+            format_func=lambda x: "Manuell eingeben" if x == "" else x,
+            key="nk_saved_pos",
+        )
+
+    default_ticker = selected_saved or st.session_state.get("nachkauf_ticker_query", "")
+    if default_ticker:
+        st.session_state["nachkauf_ticker_query"] = default_ticker
+    ticker = _render_ticker_picker("nachkauf_ticker", "Ticker oder Firmenname suchen", "NVDA oder Nvidia")
+    if not ticker:
+        return
 
     with st.spinner(f"Lade {ticker} …"):
-        df_raw = yf.Ticker(ticker).history(start=datetime.now()-timedelta(days=500), end=datetime.now(), auto_adjust=True)
-    if df_raw is None or len(df_raw) < 20:
-        st.error(f"Keine Daten für '{ticker}'."); return
-    df = df_raw.copy()
-    df.index = pd.to_datetime(df.index); df = df.sort_index()
-    for col in ["Open","High","Low","Close","Volume"]:
-        if col in df.columns: df[col] = pd.to_numeric(df[col], errors="coerce")
+        df, info, *_ = load_stock_full(ticker)
 
-    L = df.iloc[-1]; price = L["Close"]
-    info = yf.Ticker(ticker).info or {}
-    name = info.get("shortName", ticker)
+    if df is None or len(df) < 30:
+        st.error("Keine Kursdaten für diesen Ticker.")
+        return
 
-    prev_c = df["Close"].iloc[-2]; chg_col = "#22c55e" if price >= prev_c else "#ef4444"
-    st.markdown(f'<div style="font-size:1.2rem;font-weight:700;color:#e2e8f0;">{name} ({ticker})</div>'
-                f'<div style="font-size:1rem;color:{chg_col};font-weight:600;">'
-                f'${price:,.2f}</div>', unsafe_allow_html=True)
+    price = float(df["Close"].iloc[-1])
+    saved = next((p for p in saved_positions if p.get("ticker") == ticker), None)
 
-    # ── Inputs: Kaufkurs, Kaufdatum, Währung ──
-    bc1, bc2, bc3 = st.columns([2, 2, 1])
-    with bc2:
-        default_date = df.index[-10].date() if len(df) >= 10 else df.index[0].date()
-        buy_date = st.date_input("Kaufdatum", value=default_date, min_value=df.index[0].date(),
-                                 max_value=df.index[-1].date(), key="nk_date")
-    with bc3:
-        currency = st.selectbox("Währung", ["USD", "EUR"], index=0, key="nk_curr")
+    bc1, bc2, bc3, bc4 = st.columns(4)
     with bc1:
-        lbl = "Kaufkurs ($)" if currency == "USD" else "Kaufkurs (€)"
-        buy_price_input = st.number_input(lbl, min_value=0.01, value=round(float(price * 0.95), 2),
-                                          step=0.01, key="nk_price")
+        currency_default = "USD"
+        if saved and saved.get("currency") == "EUR":
+            currency_default = "EUR"
+        currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if currency_default == "USD" else 1, key="nk_curr")
+    with bc2:
+        default_buy = round(float(saved.get("buy_price", price * 0.95)) if saved else float(price * 0.95), 2)
+        label = "Kaufkurs ($)" if currency == "USD" else "Kaufkurs (€)"
+        buy_price_input = st.number_input(label, min_value=0.01, value=default_buy, step=0.01, key="nk_price")
+    with bc3:
+        if saved and saved.get("buy_date"):
+            try:
+                saved_date = pd.Timestamp(saved["buy_date"]).date()
+            except Exception:
+                saved_date = df.index[-1].date()
+        else:
+            saved_date = df.index[-1].date()
+        buy_date = st.date_input("Kaufdatum", value=saved_date, key="nk_date")
+    with bc4:
+        note_default = saved.get("note", "") if saved else ""
+        note = st.text_input("Notiz", value=note_default, key="nk_note")
 
-    if not (buy_price_input and buy_price_input > 0 and buy_date): return
+    if st.button("💾 Position speichern / aktualisieren", use_container_width=True, disabled=not private_ok):
+        buy_price_usd = float(buy_price_input)
+        eur_usd_rate = None
+        if currency == "EUR":
+            try:
+                fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
+                if fx is not None and len(fx) > 0:
+                    eur_usd_rate = float(fx["Close"].iloc[-1])
+                    buy_price_usd = buy_price_input * eur_usd_rate
+            except Exception:
+                eur_usd_rate = None
+            if eur_usd_rate is None:
+                eur_usd_rate = 1.08
+                buy_price_usd = buy_price_input * eur_usd_rate
+        _upsert_position({
+            "ticker": ticker,
+            "buy_price": float(buy_price_input),
+            "buy_price_usd": float(buy_price_usd),
+            "buy_date": str(buy_date),
+            "currency": currency,
+            "note": note,
+        })
+        st.success(f"Position {ticker} gespeichert.")
+    if not private_ok:
+        st.caption("Speichern ist gesperrt, bis dein privater Bereich entsperrt ist.")
 
-    # ── EUR → USD conversion ──
+    if not (buy_price_input and buy_price_input > 0 and buy_date):
+        return
+
     buy_price = buy_price_input
     eur_usd_rate = None
     if currency == "EUR":
         try:
-            fx = yf.Ticker("EURUSD=X").history(start=buy_date - timedelta(days=5),
-                                                end=buy_date + timedelta(days=3))
+            fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
             if fx is not None and len(fx) > 0:
                 eur_usd_rate = float(fx["Close"].iloc[-1])
                 buy_price = buy_price_input * eur_usd_rate
-        except: pass
+        except Exception:
+            pass
         if eur_usd_rate is None:
             eur_usd_rate = 1.08
             buy_price = buy_price_input * eur_usd_rate
 
-    # ── Timezone-safe slicing ──
     buy_ts = pd.Timestamp(buy_date)
     if df.index.tz is not None:
         buy_ts = buy_ts.tz_localize(df.index.tz)
     mask = df.index >= buy_ts
     if not mask.any():
-        st.warning("Kaufdatum liegt nach den verfügbaren Daten."); return
+        st.warning("Kaufdatum liegt nach den verfügbaren Daten.")
+        return
 
     df_since = df.loc[mask]
     days_held = len(df_since)
     window = min(20, days_held)
     df_window = df_since.tail(window)
     pnl_pct = (price / buy_price - 1) * 100
+    eur_note = f' · €{buy_price_input:,.2f} × {eur_usd_rate:.4f} = ${buy_price:,.2f}' if currency == "EUR" and eur_usd_rate else ""
 
-    eur_note = ""
-    if currency == "EUR" and eur_usd_rate:
-        eur_note = f' · €{buy_price_input:,.2f} × {eur_usd_rate:.4f} = ${buy_price:,.2f}'
+    if pnl_pct >= 3:
+        verdict_banner = ("Gesundes Verhalten", "hero-good")
+    elif pnl_pct >= -2:
+        verdict_banner = ("Gemischt, aber noch unkritisch", "hero-warn")
+    else:
+        verdict_banner = ("Schwächer als gewünscht", "hero-bad")
 
     st.markdown(
-        f'<div style="text-align:center;padding:10px;margin:8px 0;background:#111827;border:1px solid #1e293b;border-radius:8px;">'
-        f'<span style="color:{"#22c55e" if pnl_pct>=0 else "#ef4444"};font-size:1.2rem;font-weight:700;">'
-        f'{"+" if pnl_pct>=0 else ""}{pnl_pct:.1f}% seit Kauf</span>'
-        f'<span style="color:#64748b;font-size:.8rem;margin-left:12px;">'
-        f'Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note} → Aktuell: ${price:,.2f} · '
-        f'{days_held} Handelstage · Fenster: {window}T</span></div>',
-        unsafe_allow_html=True)
+        f'<div class="summary-hero"><div class="hero-title">{ticker} seit Kauf</div><div class="hero-subtitle">Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note}</div><div class="hero-action {verdict_banner[1]}">Aktuell ${price:,.2f} · {"+" if pnl_pct>=0 else ""}{pnl_pct:.1f}% · {days_held} Handelstage</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    # ── Compute metrics on the rolling window ──
     c = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
     pct_chg = c.pct_change()
     vol_avg = v.rolling(50).mean()
@@ -3320,9 +3908,6 @@ def _tab_nach_kauf():
     w_vol_avg = vol_avg.loc[df_window.index]
 
     pos_signs = []; neg_signs = []
-
-    # ══ 5.2 POSITIVE SIGNS ══
-
     if pnl_pct > 0:
         pos_signs.append(("Unmittelbare Stärke nach Kauf", f"+{pnl_pct:.1f}% Gewinn seit Einstieg ({days_held}T)"))
     elif pnl_pct < -3:
@@ -3373,14 +3958,6 @@ def _tab_nach_kauf():
         elif ratio < 0.8:
             neg_signs.append(("Verschlechterung Up/Down-Volume", f"Ratio: {ratio:.2f} ({window}T)"))
 
-    ema21_w = ema21.loc[df_window.index]; lows_w = l.loc[df_window.index]
-    touched = (lows_w <= ema21_w * 1.005).any()
-    bounced = touched and price > e21_val if not np.isnan(e21_val) else False
-    if bounced:
-        pos_signs.append(("Pullback an 21-EMA gehalten", "Kurs hat 21-EMA getestet und abgeprallt"))
-
-    # ══ 5.3 WARNING SIGNS ══
-
     stall_w = ((w_pct >= 0) & (w_pct < 0.005) & (w_vol > w_vol_avg * 0.95)).sum() if len(w_vol_avg.dropna()) > 0 else 0
     if stall_w >= 2:
         neg_signs.append(("Stau-Tage nahe Ausbruchspunkt", f"{stall_w} in {window}T"))
@@ -3402,50 +3979,51 @@ def _tab_nach_kauf():
             days_since_w = len(c.loc[worst_idx:]) - 1
             recovery = (c.iloc[-1] / c.loc[worst_idx] - 1) * 100
             if days_since_w >= 3 and recovery < abs(worst_day * 100) * 0.5:
-                neg_signs.append(("Schwache Erholungsversuche",
-                    f"Schlimmster Tag: {worst_day*100:.1f}% · Erholung nach {days_since_w}T: {recovery:+.1f}%"))
+                neg_signs.append(("Schwache Erholungsversuche", f"Schlimmster Tag: {worst_day*100:.1f}% · Erholung nach {days_since_w}T: {recovery:+.1f}%"))
 
     if pnl_pct < -7:
-        neg_signs.append(("⚠ STOP-LOSS: >7% Verlust", f"{pnl_pct:.1f}% — Sofort verkaufen"))
+        neg_signs.append(("⚠ Stop-Loss: >7% Verlust", f"{pnl_pct:.1f}% — Sofort verkaufen"))
 
-    # ── Display ──
+    summary_cards = [
+        {"title": "P&L", "value": f"{pnl_pct:+.1f}%", "detail": f"{days_held} Handelstage seit Kauf"},
+        {"title": "21-EMA", "value": "darüber" if not np.isnan(e21_val) and price > e21_val else "darunter", "detail": f"${e21_val:,.2f}" if not np.isnan(e21_val) else "—"},
+        {"title": "50-SMA", "value": "darüber" if not np.isnan(s50_val) and price > s50_val else "darunter", "detail": f"${s50_val:,.2f}" if not np.isnan(s50_val) else "—"},
+        {"title": "Warnzeichen", "value": str(len(neg_signs)), "detail": "Je mehr Warnzeichen, desto kleiner der Handlungsspielraum"},
+    ]
+    _render_change_cards(summary_cards)
+
     pc1, pc2 = st.columns(2)
     with pc1:
-        st.markdown('<div class="info-card" style="border-color:#22c55e30;">'
-                    '<div class="card-label" style="color:#22c55e;">✓ POSITIVE ZEICHEN (Kap. 5.2)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-card" style="border-color:#22c55e30;"><div class="card-label" style="color:#22c55e;">Positive Zeichen</div>', unsafe_allow_html=True)
         if pos_signs:
             for nm, dt in pos_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
-                            f'<div style="font-size:.8rem;color:#22c55e;">{nm}</div>'
-                            f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:#22c55e;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div style="color:#4a5568;font-size:.8rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
+            st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with pc2:
-        st.markdown('<div class="info-card" style="border-color:#ef444430;">'
-                    '<div class="card-label" style="color:#ef4444;">⚠ WARNZEICHEN (Kap. 5.3)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-card" style="border-color:#ef444430;"><div class="card-label" style="color:#ef4444;">Warnzeichen</div>', unsafe_allow_html=True)
         if neg_signs:
             for nm, dt in neg_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;">'
-                            f'<div style="font-size:.8rem;color:#ef4444;">{nm}</div>'
-                            f'<div style="font-size:.65rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:#ef4444;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div style="color:#4a5568;font-size:.8rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
+            st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     np2 = len(pos_signs); nn2 = len(neg_signs); score2 = np2 - nn2
-    if nn2 == 0 and np2 >= 3: verdict2 = "Gesundes Verhalten — Position halten"; vc2 = "#22c55e"
-    elif score2 >= 2: verdict2 = "Überwiegend positiv — beobachten"; vc2 = "#22c55e"
-    elif score2 >= 0: verdict2 = "Gemischt — erhöhte Aufmerksamkeit"; vc2 = "#f59e0b"
-    elif pnl_pct < -7: verdict2 = "STOP-LOSS erreicht — Position schließen"; vc2 = "#ef4444"
-    else: verdict2 = "Überwiegend negativ — Position überprüfen"; vc2 = "#ef4444"
-    st.markdown(
-        f'<div style="text-align:center;padding:12px;background:#111827;border:1px solid #1e293b;border-radius:10px;">'
-        f'<div style="font-size:.7rem;color:#64748b;">NACH-KAUF-BEWERTUNG</div>'
-        f'<div style="font-size:1rem;font-weight:700;color:{vc2};">{verdict2}</div>'
-        f'<div style="font-size:.75rem;color:#94a3b8;">{np2} Positiv · {nn2} Negativ · Score: {score2:+d}</div></div>',
-        unsafe_allow_html=True)
+    if nn2 == 0 and np2 >= 3:
+        verdict2, vc2 = "Gesundes Verhalten — Position halten", "#22c55e"
+    elif score2 >= 2:
+        verdict2, vc2 = "Überwiegend positiv — beobachten", "#22c55e"
+    elif score2 >= 0:
+        verdict2, vc2 = "Gemischt — erhöhte Aufmerksamkeit", "#f59e0b"
+    elif pnl_pct < -7:
+        verdict2, vc2 = "Stop-Loss erreicht — Position schließen", "#ef4444"
+    else:
+        verdict2, vc2 = "Überwiegend negativ — Position überprüfen", "#ef4444"
+
+    st.markdown(f'<div class="info-card"><div class="card-label">Nach-Kauf-Bewertung</div><div style="font-size:1rem;font-weight:700;color:{vc2};">{verdict2}</div><div class="mini-help">{np2} Positiv · {nn2} Negativ · Score {score2:+d}</div></div>', unsafe_allow_html=True)
 
 
 def _tab_sektoranalyse():
@@ -3563,459 +4141,575 @@ def _tab_sektoranalyse():
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+
 def _tab_marktanalyse():
-    """Tab 1: Full market analysis (original dashboard content)."""
+    """Tab 1: Markt-Dashboard mit klarer Führung, kompaktem Startblock und Technik im Expander."""
+    _init_workspace_state()
+    with st.spinner("Lade Marktdaten …"):
+        data = load_market_data()
+    if not data:
+        st.error("Keine Marktdaten.")
+        return
 
-    with st.spinner("Lade Marktdaten …"): data=load_market_data()
-    if not data: st.error("Keine Marktdaten.");return
-    available=[i for i in ["S&P 500","Nasdaq Composite","Russell 2000"] if i in data]
-    if not available: st.error("Keine Index-Daten.");return
+    available = [i for i in ["S&P 500", "Nasdaq Composite", "Russell 2000"] if i in data]
+    if not available:
+        st.error("Keine Index-Daten.")
+        return
 
-    c1,c2=st.columns([3,1])
-    with c1: selected=st.radio("Index",available,horizontal=True,label_visibility="collapsed")
-    with c2: sd=st.selectbox("Zeitraum",[60,90,130,200],index=1,format_func=lambda x:f"{x} Tage")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        selected = st.radio("Index", available, horizontal=True, label_visibility="collapsed")
+    with c2:
+        sd = st.selectbox("Zeitraum", [60, 90, 130, 200], index=1, format_func=lambda x: f"{x} Tage")
 
-    df=add_indicators(data[selected].copy());df=detect_distribution_days(df);df=compute_ampel(df)
+    df = add_indicators(data[selected].copy())
+    df = detect_distribution_days(df)
+    df = compute_ampel(df)
     benchmark_df = data["S&P 500"] if "S&P 500" in data else data[selected]
     vix_df = analyze_vix(data["VIX"].copy()) if "VIX" in data else None
     vixy_df = analyze_vixy(data["VIXY"].copy()) if "VIXY" in data else None
     vol_dashboard = build_volatility_dashboard(benchmark_df, vix_df, vixy_df)
     vol_summary = summarize_volatility_state(vol_dashboard)
-    vol_latest = vol_dashboard.iloc[-1]
-    L=df.iloc[-1];pct=L["Pct_Change"] if not np.isnan(L["Pct_Change"]) else 0.0
+    vol_latest = vol_dashboard.iloc[-1] if vol_dashboard is not None and len(vol_dashboard) else pd.Series(dtype=float)
+    L = df.iloc[-1]
+    pct = L["Pct_Change"] if not np.isnan(L["Pct_Change"]) else 0.0
 
-    # ── TRENDWENDE-AMPEL (eigene Kategorie) ──
-    st.markdown("---")
-    render_ampel_section(L)
-    st.markdown("")
+    rot, sd2, sp = detect_sector_rotation(data)
+    div_r = detect_intermarket_divergence(data)
+    ep = "RSP (Equal-Weight S&P)" if "S&P" in selected else "QQEW (Equal-Weight Nasdaq)"
+    es = "QQEW (Equal-Weight Nasdaq)" if "S&P" in selected else "RSP (Equal-Weight S&P)"
+    breadth_primary = compute_breadth_mode(data[ep].copy()) if ep in data else None
+    breadth_secondary = compute_breadth_mode(data[es].copy()) if es in data else None
+    breadth_label = breadth_primary.iloc[-1]["Breadth_Mode"].capitalize() if breadth_primary is not None and len(breadth_primary) else "—"
 
-    # ── METRICS ──
-    m1,m2,m3,m4,m5=st.columns(5);dc=int(L["Dist_Count_25"])
-    with m1: st.metric(selected,f"{L['Close']:,.2f}",f"{pct:+.2f}%")
-    with m2: st.metric("Dist.-Tage",dc,"⚠ Häufung" if dc>=4 else "OK")
-    d21=L["Dist_21EMA"]
-    with m3: st.metric("21-EMA",f"{d21:.1f} ATR" if not np.isnan(d21) else "—")
-    d50=L["Dist_50SMA_pct"]; t50=7.0 if "Nasdaq" in selected else 5.0
-    with m4: st.metric("50-SMA",f"{d50:+.1f}%" if not np.isnan(d50) else "—",f"⚠>{t50:.0f}%" if(not np.isnan(d50) and d50>t50) else "")
-    dd=L["Dist_52w_pct"]
-    with m5: st.metric("Drawdown",f"{dd:.1f}%" if not np.isnan(dd) else "—")
-
-    # ── CHARTS ──
-    st.plotly_chart(plot_price(df,sd),use_container_width=True,config={"displayModeBar":False})
-    st.plotly_chart(plot_volume(df,sd),use_container_width=True,config={"displayModeBar":False})
-
-    # ── WARNING SIGNALS ──
-    st.markdown("---")
-    st.markdown('<div class="info-card"><div class="card-label">FRÜHWARNZEICHEN & WARNZEICHEN</div>',unsafe_allow_html=True)
-    wc=0
-    def _w(label,ok,detail,check_warn=False):
-        nonlocal wc
-        if check_warn: wc+=1
-        render_check(label,ok,detail,warn=check_warn)
-    nr=int(L.get("Neg_Reversals_10d",0));w=nr>=3;_w("Intraday-Umkehrungen (10T)",nr<3,f"{nr} negative Umkehrungen",w)
-    lc=int(L.get("Low_CR_5d",0));w=lc>=3;_w("Closing Range Häufung (5T)",lc<3,f"{lc}/5 Tage Schluss im unteren 25%",w)
-    st10=int(df["Is_Stall"].tail(10).sum());w=st10>=3;_w("Stau-Tage (10T)",st10<3,f"{st10} Stau-Tage",w)
-    if not np.isnan(d50): w=d50>t50 or d50<0;_w(f"50-SMA Abstand",not w,f"{d50:+.1f}% ({'über' if d50>0 else 'unter'} 50-SMA, Schwelle: {t50:.0f}%)",w)
-    if not np.isnan(d21): w=d21>3.0 or d21<0;_w("21-EMA Abstand",not w,f"{d21:.1f} ATR ({'über' if d21>0 else 'unter'} 21-EMA, Schwelle: 3.0 ATR)",w)
-    u200=not np.isnan(L["SMA200"]) and L["Close"]<L["SMA200"];u50=not np.isnan(L["SMA50"]) and L["Close"]<L["SMA50"]
-    if u200: wc+=1
-    if u50: wc+=1
-    _w("Kurs über 200-SMA",not u200,"Unter 200-SMA" if u200 else "OK",u200)
-    _w("Kurs über 50-SMA",not u50,"Unter 50-SMA" if u50 else "OK",u50)
-    vd=bool(L.get("Up_Vol_Declining",False));_w("Volumen an Aufwärtstagen",not vd,"Abnehmendes Vol." if vd else "OK",vd)
-    div_r=detect_intermarket_divergence(data)
+    # Warning items
+    warning_items = []
+    wc = 0
+    nr = int(L.get("Neg_Reversals_10d", 0)); w = nr >= 3
+    warning_items.append(("Intraday-Umkehrungen (10T)", nr < 3, f"{nr} negative Umkehrungen", w)); wc += int(w)
+    lc = int(L.get("Low_CR_5d", 0)); w = lc >= 3
+    warning_items.append(("Closing Range Häufung (5T)", lc < 3, f"{lc}/5 Tage Schluss im unteren 25%", w)); wc += int(w)
+    st10 = int(df["Is_Stall"].tail(10).sum()); w = st10 >= 3
+    warning_items.append(("Stau-Tage (10T)", st10 < 3, f"{st10} Stau-Tage", w)); wc += int(w)
+    d21 = L["Dist_21EMA"]
+    d50 = L["Dist_50SMA_pct"]; t50 = 7.0 if "Nasdaq" in selected else 5.0
+    if not np.isnan(d50):
+        w = d50 > t50 or d50 < 0
+        warning_items.append(("50-SMA Abstand", not w, f"{d50:+.1f}% ({'über' if d50 > 0 else 'unter'} 50-SMA, Schwelle: {t50:.0f}%)", w)); wc += int(w)
+    if not np.isnan(d21):
+        w = d21 > 3.0 or d21 < 0
+        warning_items.append(("21-EMA Abstand", not w, f"{d21:.1f} ATR ({'über' if d21 > 0 else 'unter'} 21-EMA, Schwelle: 3.0 ATR)", w)); wc += int(w)
+    u200 = not np.isnan(L["SMA200"]) and L["Close"] < L["SMA200"]
+    u50 = not np.isnan(L["SMA50"]) and L["Close"] < L["SMA50"]
+    warning_items.append(("Kurs über 200-SMA", not u200, "Unter 200-SMA" if u200 else "OK", u200)); wc += int(u200)
+    warning_items.append(("Kurs über 50-SMA", not u50, "Unter 50-SMA" if u50 else "OK", u50)); wc += int(u50)
+    vd = bool(L.get("Up_Vol_Declining", False))
+    warning_items.append(("Volumen an Aufwärtstagen", not vd, "Abnehmendes Vol." if vd else "OK", vd)); wc += int(vd)
     if div_r:
-        ah=[r for r in div_r if r["at_20d_high"]];nh=[r for r in div_r if not r["at_20d_high"]];hd=len(ah)>0 and len(nh)>0
-        _w("Intermarket-Konvergenz",not hd," · ".join(f"{r['name']}: {r['pct']:+.1f}%" for r in div_r),hd)
-    rot,sd2,sp=detect_sector_rotation(data)
-    if rot is not None: _w("Keine Sektorrotation in Defensive",not rot,f"Spread: {sp:+.1f}%",rot)
-    rp,drp=detect_failing_rally(df)
-    if rp is not None and drp and drp>5: w=rp<50;_w("Erholungsquote ≥50%",not w,f"Rückgang {drp:.1f}%, Erholung {rp:.0f}%",w)
-    if wc==0: st.markdown('<div style="text-align:center;padding:8px;color:#22c55e;">✓ Keine aktiven Warnzeichen</div>',unsafe_allow_html=True)
-    elif wc<=2: st.markdown(f'<div style="text-align:center;padding:8px;color:#f59e0b;">⚠ {wc} Warnzeichen</div>',unsafe_allow_html=True)
-    else: st.markdown(f'<div style="text-align:center;padding:8px;color:#ef4444;">⚠ {wc} Warnzeichen — Risiko reduzieren</div>',unsafe_allow_html=True)
-    st.markdown("</div>",unsafe_allow_html=True)
+        ah = [r for r in div_r if r["at_20d_high"]]; nh = [r for r in div_r if not r["at_20d_high"]]; hd = len(ah) > 0 and len(nh) > 0
+        warning_items.append(("Intermarket-Konvergenz", not hd, " · ".join(f"{r['name']}: {r['pct']:+.1f}%" for r in div_r), hd)); wc += int(hd)
+    if rot is not None:
+        warning_items.append(("Keine Sektorrotation in Defensive", not rot, f"Spread: {sp:+.1f}%", bool(rot))); wc += int(bool(rot))
+    rp, drp = detect_failing_rally(df)
+    if rp is not None and drp and drp > 5:
+        w = rp < 50
+        warning_items.append(("Erholungsquote ≥50%", not w, f"Rückgang {drp:.1f}%, Erholung {rp:.0f}%", w)); wc += int(w)
 
-    # ── AUFWÄRTSTREND + AMPEL DETAILS (2 cols) ──
-    cl,cr_=st.columns(2)
-    with cl:
-        st.markdown('<div class="info-card"><div class="card-label">AUFWÄRTSTREND-PRÜFUNG</div>',unsafe_allow_html=True)
-        _c=L["Close"];_l=L["Low"];_e=L["EMA21"];_s5=L["SMA50"];_s2=L["SMA200"]
-        eo=not np.isnan(_e);so=not np.isnan(_s5);s2o=not np.isnan(_s2)
-        for nm,mv,ok,hk,ck in [("21-EMA",_e,eo,"EMA21_held","Consec_Low_above_21"),("50-SMA",_s5,so,"SMA50_held","Consec_Low_above_50"),("200-SMA",_s2,s2o,"SMA200_held","Consec_Low_above_200")]:
-            render_check(f"Schluss über {nm}",ok and _c>mv,f"{_c:,.0f} vs {mv:,.0f}" if ok else "")
-            render_check(f"Tief über {nm}",ok and _l>mv,f"{_l:,.0f} vs {mv:,.0f}" if ok else "")
-            render_check(f"{nm} gehalten",bool(L.get(hk,False)),"Schlusskurs darüber" if bool(L.get(hk,False)) else "Darunter")
-            cc=int(L.get(ck,0));render_check(f"3T Tief>{nm}",cc>=3,f"{cc} Tage")
-        st.markdown("</div>",unsafe_allow_html=True)
-        st.markdown('<div class="info-card"><div class="card-label">ORDNUNG</div>',unsafe_allow_html=True)
-        render_check("21-EMA > 50-SMA",eo and so and _e>_s5,f"{_e:,.0f} vs {_s5:,.0f}" if eo and so else "")
-        render_check("21-EMA > 200-SMA",eo and s2o and _e>_s2,f"{_e:,.0f} vs {_s2:,.0f}" if eo and s2o else "")
-        render_check("50-SMA > 200-SMA",so and s2o and _s5>_s2,f"{_s5:,.0f} vs {_s2:,.0f}" if so and s2o else "")
-        st.markdown("</div>",unsafe_allow_html=True)
-    with cr_:
-        # Sector rotation detail (if available)
-        rot,sd2,sp=detect_sector_rotation(data)
-        if rot is not None and sd2:
-            st.markdown('<div class="info-card"><div class="card-label">SEKTORROTATION (10T)</div>',unsafe_allow_html=True)
-            for group,items in sd2.items():
-                st.markdown(f"**{group}:**")
-                for name,perf in items:
-                    if perf is not None:
-                        c="#22c55e" if perf>0 else "#ef4444"
-                        st.markdown(f'<span style="color:{c};font-size:.85rem;">{name}: {perf:+.1f}%</span>',unsafe_allow_html=True)
-            st.markdown("</div>",unsafe_allow_html=True)
+    mode, tone, action = _market_action_and_tone(L.get("Ampel_Phase", ""), wc, breadth_label, str(vol_latest.get("VIX_Regime", "")))
+    reasons = _build_market_reasons(L, wc, breadth_label, vol_latest)
+    freshness = _format_data_freshness(selected, df, vol_dashboard)
+    changes = _build_market_changes(df, selected, wc, vol_dashboard, breadth_label)
+    _render_hero_card(mode, tone, reasons, action, freshness)
+    _render_change_cards(changes)
 
-    # ── MARKTBREITE (Equal-Weight) ──
-    st.markdown("---")
-    st.markdown('<div class="card-label">MARKTBREITE — EQUAL-WEIGHT (3-Tage-Stabilitätsregel)</div>',unsafe_allow_html=True)
-    ep="RSP (Equal-Weight S&P)" if "S&P" in selected else "QQEW (Equal-Weight Nasdaq)"
-    es="QQEW (Equal-Weight Nasdaq)" if "S&P" in selected else "RSP (Equal-Weight S&P)"
-    bc1,bc2=st.columns(2)
-    for col,etf in [(bc1,ep),(bc2,es)]:
-        with col:
-            if etf in data: dfe=compute_breadth_mode(data[etf].copy());render_breadth(dfe.iloc[-1]["Breadth_Mode"],float(dfe.iloc[-1]["Dist_52w_pct"]));st.caption(etf)
-            else: st.info(f"{etf} n/a")
+    # Compact metric layout
+    row1 = st.columns(3)
+    with row1[0]:
+        st.metric(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%")
+        st.caption("Tagesveränderung des gewählten Index")
+    with row1[1]:
+        st.metric("Dist.-Tage", int(L["Dist_Count_25"]), "⚠ Häufung" if int(L["Dist_Count_25"]) >= 4 else "OK")
+        st.caption("Institutioneller Abgabedruck im 25-Tage-Fenster")
+    with row1[2]:
+        st.metric("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—")
+        st.caption("Kurzfristige Überdehnung in ATR")
 
-    # ── VOLATILITÄT ──
-    st.markdown("---")
-    st.markdown('<div class="card-label">VOLATILITÄT & STIMMUNG</div>',unsafe_allow_html=True)
-    sc1, sc2, sc3, sc4 = st.columns(4)
-    for col, title in zip([sc1, sc2, sc3, sc4], ["VIX Regime", "VIXY Bestätigung", "Vol Regime", "Fragile Rally"]):
-        with col:
-            card = vol_summary[title]
-            render_signal_card(title, card["status"], card["detail"], card["tone"])
+    row2 = st.columns(2)
+    with row2[0]:
+        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠>{t50:.0f}%" if (not np.isnan(d50) and d50 > t50) else "")
+        st.caption("Mittelfristige Überdehnung")
+    with row2[1]:
+        dd = L["Dist_52w_pct"]
+        st.metric("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—")
+        st.caption("Abstand zum 52-Wochen-Hoch")
 
-    vc1, vc2 = st.columns(2)
-    with vc1:
-        if vix_df is not None:
-            st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color="#ef4444"), use_container_width=True, config={"displayModeBar": False})
+    with st.expander("Kennzahlen kurz erklärt", expanded=False):
+        _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
+
+    chart_tab1, chart_tab2 = st.tabs(["Preis", "Volumen"])
+    with chart_tab1:
+        st.plotly_chart(plot_price(df, sd), use_container_width=True, config={"displayModeBar": False})
+    with chart_tab2:
+        st.plotly_chart(plot_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
+
+    with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
+        st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
+        for label, ok, detail, warn in warning_items:
+            render_check(label, ok, detail, warn=warn)
+        if wc == 0:
+            st.markdown('<div style="text-align:center;padding:8px;color:#22c55e;">✓ Keine aktiven Warnzeichen</div>', unsafe_allow_html=True)
+        elif wc <= 2:
+            st.markdown(f'<div style="text-align:center;padding:8px;color:#f59e0b;">⚠ {wc} Warnzeichen</div>', unsafe_allow_html=True)
         else:
-            st.info("Keine VIX-Daten verfügbar")
-    with vc2:
-        if vixy_df is not None:
-            st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color="#f59e0b"), use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.info("Keine VIXY-Daten verfügbar")
+            st.markdown(f'<div style="text-align:center;padding:8px;color:#ef4444;">⚠ {wc} Warnzeichen — Risiko reduzieren</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    if pd.notna(vol_latest.get("VIX_Close")) or pd.notna(vol_latest.get("VIXY_Close")):
-        st.caption(
-            f"VIX {vol_latest.get('VIX_Close', np.nan):.1f} · "
-            f"VIXY {vol_latest.get('VIXY_Close', np.nan):.1f} · "
-            f"S&P 500 5T {vol_latest.get('SPX_Ret_5d', np.nan) * 100:+.1f}%"
-        )
+    with st.expander("Trendcheck, Ordnung und Sektorrotation", expanded=False):
+        cl, cr_ = st.columns(2)
+        with cl:
+            st.markdown('<div class="info-card"><div class="card-label">Trendprüfung</div>', unsafe_allow_html=True)
+            _c = L["Close"]; _l = L["Low"]; _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
+            eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
+            for nm, mv, ok, hk, ck in [("21-EMA", _e, eo, "EMA21_held", "Consec_Low_above_21"), ("50-SMA", _s5, so, "SMA50_held", "Consec_Low_above_50"), ("200-SMA", _s2, s2o, "SMA200_held", "Consec_Low_above_200")]:
+                render_check(f"Schluss über {nm}", ok and _c > mv, f"{_c:,.0f} vs {mv:,.0f}" if ok else "")
+                render_check(f"Tief über {nm}", ok and _l > mv, f"{_l:,.0f} vs {mv:,.0f}" if ok else "")
+                render_check(f"{nm} gehalten", bool(L.get(hk, False)), "Schlusskurs darüber" if bool(L.get(hk, False)) else "Darunter")
+                cc = int(L.get(ck, 0))
+                render_check(f"3T Tief>{nm}", cc >= 3, f"{cc} Tage")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    # ══════════════════════════════════════════════════
-    # TIEFENANALYSE (on-demand)
-    # ══════════════════════════════════════════════════
-    st.markdown("---")
-    st.markdown("### 🔬 Tiefenanalyse — Marktbreite & Makro")
-    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs und Deemer Ratio aus einem aktuellen NYSE-Aktienuniversum. Die Symbolbasis stammt primär aus Nasdaq Trader otherlisted.txt mit Exchange = N. Der S&P 500 dient weiter als Referenzindex für Divergenzen. Optional: Fed Funds Rate über FRED API.")
+            st.markdown('<div class="info-card"><div class="card-label">Ordnung</div>', unsafe_allow_html=True)
+            render_check("21-EMA > 50-SMA", eo and so and _e > _s5, f"{_e:,.0f} vs {_s5:,.0f}" if eo and so else "")
+            render_check("21-EMA > 200-SMA", eo and s2o and _e > _s2, f"{_e:,.0f} vs {_s2:,.0f}" if eo and s2o else "")
+            render_check("50-SMA > 200-SMA", so and s2o and _s5 > _s2, f"{_s5:,.0f} vs {_s2:,.0f}" if so and s2o else "")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    # FRED key: try secrets first, then environment, then manual input
-    fred_key = ""
-    try:
-        fred_key = st.secrets.get("FRED_API_KEY", "")
-    except Exception:
-        pass
-    if not fred_key:
-        fred_key = os.environ.get("FRED_API_KEY", "")
-    if not fred_key:
-        fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
+        with cr_:
+            if rot is not None and sd2:
+                st.markdown('<div class="info-card"><div class="card-label">Sektorrotation (10T)</div>', unsafe_allow_html=True)
+                for group, items in sd2.items():
+                    st.markdown(f"**{group}:**")
+                    for name, perf in items:
+                        if perf is not None:
+                            c = "#22c55e" if perf > 0 else "#ef4444"
+                            st.markdown(f'<span style="color:{c};font-size:.85rem;">{name}: {perf:+.1f}%</span>', unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
+            if div_r:
+                st.markdown('<div class="info-card"><div class="card-label">Intermarket-Bild</div>', unsafe_allow_html=True)
+                for r in div_r:
+                    tone_c = "#22c55e" if r["pct"] >= 0 else "#ef4444"
+                    st.markdown(f'<div style="padding:4px 0;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span> <span class="mini-help">{r["pct"]:+.1f}%</span></div>', unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    store = _get_price_store()
-    st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
-    if store["backend"] != "neon":
-        st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon die deutlich bessere Variante.")
+    with st.expander("Marktbreite und Volatilität", expanded=True):
+        st.markdown('<div class="card-label">Marktbreite — Equal-Weight</div>', unsafe_allow_html=True)
+        bc1, bc2 = st.columns(2)
+        for col, etf, dfe in [(bc1, ep, breadth_primary), (bc2, es, breadth_secondary)]:
+            with col:
+                if dfe is not None and len(dfe):
+                    render_breadth(dfe.iloc[-1]["Breadth_Mode"], float(dfe.iloc[-1]["Dist_52w_pct"]))
+                    st.caption(etf)
+                else:
+                    st.info(f"{etf} n/a")
 
-    current_requested = _get_cache_metadata(store, "last_refresh_requested_universe", "")
-    current_loaded = _get_cache_metadata(store, "last_refresh_loaded_universe", "")
-    current_rescue = _get_cache_metadata(store, "last_rescue_at", "")
-    current_auto_remap = _get_cache_metadata(store, "last_auto_remap_at", "")
-    status_bits = []
-    if current_loaded and current_requested:
+        st.markdown('<div class="card-label">Volatilität und Stimmung</div>', unsafe_allow_html=True)
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        for col, title in zip([sc1, sc2, sc3, sc4], ["VIX Regime", "VIXY Bestätigung", "Vol Regime", "Fragile Rally"]):
+            with col:
+                card = vol_summary[title]
+                render_signal_card(title, card["status"], card["detail"], card["tone"])
+
+        vc1, vc2 = st.columns(2)
+        with vc1:
+            if vix_df is not None:
+                st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color="#ef4444"), use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.info("Keine VIX-Daten verfügbar")
+        with vc2:
+            if vixy_df is not None:
+                st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color="#f59e0b"), use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.info("Keine VIXY-Daten verfügbar")
+
+        if pd.notna(vol_latest.get("VIX_Close")) or pd.notna(vol_latest.get("VIXY_Close")):
+            st.caption(
+                f"VIX {vol_latest.get('VIX_Close', np.nan):.1f} · "
+                f"VIXY {vol_latest.get('VIXY_Close', np.nan):.1f} · "
+                f"S&P 500 5T {vol_latest.get('SPX_Ret_5d', np.nan) * 100:+.1f}%"
+            )
+
+    with st.expander("Tägliche Checkliste", expanded=False):
+        st.markdown('<div class="info-card"><div class="card-label">Tägliche Checkliste</div>', unsafe_allow_html=True)
+        ddv = float(L["Dist_52w_pct"]) if not np.isnan(L["Dist_52w_pct"]) else 0
+        no_correction = ddv > -8
+        render_check("Kein substanzieller Drawdown (> -8%)", no_correction, f"Drawdown: {ddv:.1f}%" + (" — Korrektur läuft, Ampel aktiv" if not no_correction else " — Markt im Normalbereich"))
+        render_check("Stabilisierung?", L["Ampel_Phase"] not in ("rot",) or L["Anchor_Date"] is not None, f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein Zyklus" if L["Ampel_Phase"] in ("neutral", "aufwaertstrend") else "Noch keine")
+        render_check("Startschuss (≥Gelb)?", L["Ampel_Phase"] in ("gelb", "gruen", "aufwaertstrend"), f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND', 'AUFWÄRTSTREND')}")
+        if breadth_primary is not None and len(breadth_primary):
+            render_check("Marktbreite?", breadth_primary.iloc[-1]["Breadth_Mode"] != "schutz", f"Modus: {breadth_primary.iloc[-1]['Breadth_Mode'].capitalize()}")
+        render_check("VIX Regime nicht Stress?", vol_latest.get("VIX_Regime", "Neutral") != "Stress", f"Regime: {vol_latest.get('VIX_Regime', 'n/a')}")
+        render_check("Warnzeichen ≤2?", wc <= 2, f"{wc} aktiv")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with st.expander("Datenwartung und Tiefenanalyse", expanded=False):
+        st.caption("Der technische Bereich ist bewusst ausgelagert. Hier verwaltest du NYSE-Datenbank, Diagnose und die tiefe Marktbreitenanalyse.")
+        fred_key = ""
         try:
-            loaded_int = int(current_loaded)
-            requested_int = int(current_requested)
-            status_bits.append(f"Zuletzt bekannt: {loaded_int} von {requested_int} Titeln im Datenspeicher")
+            fred_key = st.secrets.get("FRED_API_KEY", "")
         except Exception:
             pass
-    if current_rescue:
-        status_bits.append(f"Letzter Rescue-Lauf: {current_rescue} UTC")
-    if current_auto_remap:
-        status_bits.append(f"Letztes Auto-Remap: {current_auto_remap} UTC")
-    if status_bits:
-        st.caption(" · ".join(status_bits))
+        if not fred_key:
+            fred_key = os.environ.get("FRED_API_KEY", "")
+        if not fred_key:
+            fred_key = st.text_input("FRED API Key (optional)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
 
-    btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
-    with btn_refresh:
-        refresh_clicked = st.button("🗄️ NYSE-Datenbank initial befüllen / aktualisieren", use_container_width=True)
-    with btn_rescue:
-        rescue_clicked = st.button("🩹 Fehlende NYSE-Ticker gezielt nachladen", use_container_width=True)
-    with btn_remap:
-        remap_clicked = st.button("🧭 Fehlende NYSE-Ticker automatisch remappen", use_container_width=True)
-    with btn_diag:
-        diagnose_clicked = st.button("🧪 Fehlende NYSE-Ticker bei Yahoo testen", use_container_width=True)
-    with btn_analyze:
-        analyze_clicked = st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True)
+        store = _get_price_store()
+        st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
+        if store["backend"] != "neon":
+            st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon meist stabiler.")
 
-    if refresh_clicked:
-        with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE-Aktienuniversum …"):
-            refresh_stats = refresh_nyse_price_store()
-            st.cache_data.clear()
-        if refresh_stats.get("ok"):
-            st.success(
-                f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} NYSE-Aktien verfügbar "
-                f"({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}"
-            )
-        else:
-            st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
+        current_requested = _get_cache_metadata(store, "last_refresh_requested_universe", "")
+        current_loaded = _get_cache_metadata(store, "last_refresh_loaded_universe", "")
+        current_rescue = _get_cache_metadata(store, "last_rescue_at", "")
+        current_auto_remap = _get_cache_metadata(store, "last_auto_remap_at", "")
+        status_bits = []
+        if current_loaded and current_requested:
+            try:
+                loaded_int = int(current_loaded)
+                requested_int = int(current_requested)
+                status_bits.append(f"Zuletzt bekannt: {loaded_int} von {requested_int} Titeln im Datenspeicher")
+            except Exception:
+                pass
+        if current_rescue:
+            status_bits.append(f"Letzter Rescue-Lauf: {current_rescue} UTC")
+        if current_auto_remap:
+            status_bits.append(f"Letztes Auto-Remap: {current_auto_remap} UTC")
+        if status_bits:
+            st.caption(" · ".join(status_bits))
 
-    if rescue_clicked:
-        with st.spinner("Suche fehlende NYSE-Ticker und lade sie gezielt nach …"):
-            rescue_stats = rescue_missing_nyse_price_store()
-            st.cache_data.clear()
-        if rescue_stats.get("ok"):
-            if rescue_stats.get("missing_before", 0) == 0:
-                st.success(rescue_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+        btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
+        with btn_refresh:
+            refresh_clicked = st.button("NYSE aktualisieren", use_container_width=True)
+        with btn_rescue:
+            rescue_clicked = st.button("Fehlende nachladen", use_container_width=True)
+        with btn_remap:
+            remap_clicked = st.button("Automatisch remappen", use_container_width=True)
+        with btn_diag:
+            diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True)
+        with btn_analyze:
+            analyze_clicked = st.button("Tiefenanalyse starten", type="primary", use_container_width=True)
+
+        if refresh_clicked:
+            with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE-Aktienuniversum …"):
+                refresh_stats = refresh_nyse_price_store()
+                st.cache_data.clear()
+            if refresh_stats.get("ok"):
+                st.success(f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} NYSE-Aktien verfügbar ({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}")
             else:
-                st.success(
-                    f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen "
-                    f"({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · "
-                    f"jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} NYSE-Aktien verfügbar "
-                    f"({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben"
-                )
-                if rescue_stats.get("missing_after", 0) > 0:
-                    st.info(
-                        f"Noch fehlend: {rescue_stats['missing_after']} Ticker. "
-                        f"Der Rescue-Lauf hat {rescue_stats['rescue_batches']} Mini-Batches und "
-                        f"{rescue_stats['single_attempts']} Einzelversuche genutzt, davon {rescue_stats['single_successes']} erfolgreich."
-                    )
-        else:
-            st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
+                st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
 
-    if remap_clicked:
-        with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden NYSE-Ticker …"):
-            remap_stats = auto_remap_missing_nyse_yahoo()
-            st.cache_data.clear()
-        if remap_stats.get("ok"):
-            if remap_stats.get("missing_before", 0) == 0:
-                st.success(remap_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
-            else:
-                counts = remap_stats.get("counts", {}) or {}
-                mapped_now = int(counts.get("Gemappt und geladen", 0) + counts.get("Gespeichertes Mapping erneut genutzt", 0))
-                no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
-                unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
-                mapping_errors = int(counts.get("Mappingfehler", 0))
-                st.success(
-                    f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen "
-                    f"({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} "
-                    f"NYSE-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben"
-                )
-                metric_cols = st.columns(4)
-                metric_cols[0].metric("Gemappt und geladen", mapped_now)
-                metric_cols[1].metric("Keine Historie trotz Lookup", no_hist)
-                metric_cols[2].metric("Yahoo kennt Symbol nicht", unknown)
-                metric_cols[3].metric("Mappingfehler", mapping_errors)
-                results_df = remap_stats.get("results_df")
-                if results_df is not None and not results_df.empty:
-                    st.caption("Die Tabelle zeigt für die bisher fehlenden Ticker, ob ein Yahoo-Kandidat gefunden und erfolgreich geladen wurde.")
-                    st.dataframe(results_df, use_container_width=True, hide_index=True)
-        else:
-            st.error(remap_stats.get("error", "Das automatische Remapping ist fehlgeschlagen."))
-
-    if diagnose_clicked:
-        with st.spinner("Teste eine Stichprobe der noch fehlenden NYSE-Ticker direkt gegen Yahoo …"):
-            diag_stats = diagnose_missing_nyse_yahoo()
-            st.cache_data.clear()
-        if diag_stats.get("ok"):
-            if diag_stats.get("missing_total", 0) == 0:
-                st.success(diag_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
-            else:
-                counts = diag_stats.get("counts", {}) or {}
-                hist_ok = int(counts.get("Historie vorhanden", 0))
-                lookup_no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
-                unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
-                errors = int(counts.get("Diagnosefehler", 0))
-
-                st.success(
-                    f"✓ Yahoo-Diagnose abgeschlossen · Stichprobe {diag_stats['sample_size']} von {diag_stats['missing_total']} fehlenden Tickern "
-                    f"· Historie vorhanden: {hist_ok} · Yahoo kennt Symbol, aber keine Historie: {lookup_no_hist} "
-                    f"· Yahoo kennt Symbol nicht: {unknown}" + (f" · Diagnosefehler: {errors}" if errors else "")
-                )
-
-                metric_cols = st.columns(4)
-                metric_cols[0].metric("Stichprobe", diag_stats["sample_size"])
-                metric_cols[1].metric("Historie vorhanden", hist_ok)
-                metric_cols[2].metric("Yahoo kennt Symbol, aber keine Historie", lookup_no_hist)
-                metric_cols[3].metric("Yahoo kennt Symbol nicht", unknown)
-
-                results_df = diag_stats.get("results_df")
-                if results_df is not None and not results_df.empty:
-                    st.caption("Die Tabelle zeigt eine Stichprobe der aktuell noch fehlenden Ticker und ob Yahoo das Symbol kennt bzw. Historie liefert.")
-                    st.dataframe(results_df, use_container_width=True, hide_index=True)
-        else:
-            st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
-
-    if analyze_clicked:
-        with st.spinner("Lese NYSE-Aktien aus dem persistenten Datenspeicher …"):
-            component_bundle = load_nyse_breadth_data()
-
-        if component_bundle is not None:
-            close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
-            if close_frame is None or len(close_frame) <= 50:
-                st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse.")
-                return
-            br = compute_breadth_from_components(component_bundle)
-            if br is not None and len(br) > 20:
-                # Determine last valid trading day (last row with actual data)
-                last_trading_date = br.index[-1].strftime("%d.%m.%Y")
-                today_str = datetime.now().strftime("%d.%m.%Y")
-                is_today = last_trading_date == today_str
-                date_note = f"Stand: {last_trading_date}" + ("" if is_today else " (letzter Handelstag)")
-
-                breadth_attrs = br.attrs
-                requested = breadth_attrs.get("requested_universe")
-                loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
-                coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
-                ratio_txt = f" / {requested}" if requested else ""
-                st.success(f"✓ {loaded} NYSE-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
-                if requested and loaded < requested * 0.8:
-                    st.warning(f"Hinweis: Es wurden nicht alle NYSE-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
-                if breadth_attrs.get("cache_used"):
-                    store_label = breadth_attrs.get("store_label", "Datenspeicher")
-                    cache_msg = f"Persistenter Datenspeicher aktiv · Daten gelesen aus {store_label}."
-                    cache_write = breadth_attrs.get("cache_prices_last_write_at", "")
-                    last_refresh = breadth_attrs.get("last_refresh_at", "")
-                    if cache_write:
-                        cache_msg += f" Letzter Schreibvorgang: {cache_write} UTC."
-                    if last_refresh:
-                        cache_msg += f" Letzte vollständige Aktualisierung: {last_refresh} UTC."
-                    st.info(cache_msg)
-
-                # ── Breadth Charts ──
-                st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
-
-                # ── Latest values (use last VALID row, not today) ──
-                # Drop rows where most indicators are NaN (non-trading days)
-                br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
-                if len(br_valid) == 0:
-                    st.warning("Keine gültigen Handelstage gefunden.")
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    return
-                bL = br_valid.iloc[-1]
-                bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
-
-                intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
-                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — NYSE ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
-
-                kb1, kb2, kb3, kb4, kb5 = st.columns(5)
-                with kb1:
-                    mc = bL["McClellan"]
-                    st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—",
-                              "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "Neutral" if not np.isnan(mc) else "")
-                with kb2:
-                    nhr = bL["NH_NL_Ratio"]
-                    nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0
-                    nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
-                    st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}",
-                              f"{nh_val} Hochs / {nl_val} Tiefs")
-                with kb3:
-                    p50 = bL["Pct_Above_50SMA"]
-                    st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—",
-                              "Überhitzt" if p50 > 70 else "Schwach" if p50 < 30 else "")
-                with kb4:
-                    p200 = bL["Pct_Above_200SMA"]
-                    st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
-                with kb5:
-                    dr = bL["Deemer_Ratio"]
-                    if not np.isnan(dr):
-                        if dr >= 1.97: dr_label = "🚀 Sehr gut"; dr_delta = "Breakaway Momentum!"
-                        elif dr >= 1.50: dr_label = f"{dr:.2f}"; dr_delta = "Gut — konstruktiv"
-                        elif dr >= 1.00: dr_label = f"{dr:.2f}"; dr_delta = "Neutral"
-                        else: dr_label = f"{dr:.2f}"; dr_delta = "Schlecht — schwache Breite"
-                    else: dr_label = "—"; dr_delta = ""
-                    st.metric("Deemer Ratio", dr_label, dr_delta)
-
-                # Breadth Thrust check
-                recent_thrust = br["Breadth_Thrust"].tail(20).any()
-                if recent_thrust:
-                    st.success("🚀 Breitenschub (Deemer Ratio > 1.97) in den letzten 20 Tagen erkannt! Seltenes bullisches Signal.")
-
-                # Divergence check: Index new high but A/D line not
-                if "S&P 500" in data:
-                    spx = data["S&P 500"]
-                    spx_at_high = spx["Close"].iloc[-1] >= spx["High"].rolling(20).max().iloc[-2] * 0.998
-                    ad_at_high = br["AD_Line"].iloc[-1] >= br["AD_Line"].rolling(20).max().iloc[-2] * 0.998
-                    if spx_at_high and not ad_at_high:
-                        st.warning("⚠ Divergenz: S&P 500 nahe 20T-Hoch, aber A/D-Linie nicht — Marktbreite lässt nach")
-                    elif spx_at_high and ad_at_high:
-                        st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
-
-                # Checklist items from deep analysis
-                render_check("McClellan > 0 (bullisches Momentum)", mc > 0, f"McClellan: {mc:.1f}")
-                render_check("% über 50-SMA > 50% (Mehrheit im Aufwärtstrend)", p50 > 50, f"{p50:.0f}%")
-                render_check("NH/NL Ratio > 1 (mehr Hochs als Tiefs)", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
-                render_check("Keine Divergenz Index vs. A/D-Linie",
-                             not (spx_at_high and not ad_at_high) if "S&P 500" in data else True,
-                             "A/D-Linie bestätigt" if "S&P 500" in data else "")
-                # Deemer with 4-level rating
-                if not np.isnan(dr):
-                    if dr >= 1.97: dr_status = "Sehr gut (≥1.97) — 🚀 Breakaway Momentum!"
-                    elif dr >= 1.50: dr_status = "Gut (1.50–1.96) — konstruktive Breite"
-                    elif dr >= 1.00: dr_status = "Neutral (1.00–1.49) — leicht positiv"
-                    else: dr_status = "Schlecht (<1.00) — mehr Decliners als Advancers"
-                    render_check("Deemer Ratio (Breitenschub)", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
+        if rescue_clicked:
+            with st.spinner("Suche fehlende NYSE-Ticker und lade sie gezielt nach …"):
+                rescue_stats = rescue_missing_nyse_price_store()
+                st.cache_data.clear()
+            if rescue_stats.get("ok"):
+                if rescue_stats.get("missing_before", 0) == 0:
+                    st.success(rescue_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
                 else:
-                    render_check("Deemer Ratio (Breitenschub)", False, "Nicht verfügbar")
+                    st.success(f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} NYSE-Aktien verfügbar ({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben")
+                    if rescue_stats.get("missing_after", 0) > 0:
+                        st.info(f"Noch fehlend: {rescue_stats['missing_after']} Ticker. Der Rescue-Lauf hat {rescue_stats['rescue_batches']} Mini-Batches und {rescue_stats['single_attempts']} Einzelversuche genutzt, davon {rescue_stats['single_successes']} erfolgreich.")
+            else:
+                st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
 
-                st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.error("Im persistenten Datenspeicher liegen noch nicht genug NYSE-Daten. Bitte zuerst auf 'NYSE-Datenbank initial befüllen / aktualisieren' klicken und danach bei Bedarf 'Fehlende NYSE-Ticker gezielt nachladen' ausführen.")
+        if remap_clicked:
+            with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden NYSE-Ticker …"):
+                remap_stats = auto_remap_missing_nyse_yahoo()
+                st.cache_data.clear()
+            if remap_stats.get("ok"):
+                if remap_stats.get("missing_before", 0) == 0:
+                    st.success(remap_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+                else:
+                    counts = remap_stats.get("counts", {}) or {}
+                    mapped_now = int(counts.get("Gemappt und geladen", 0) + counts.get("Gespeichertes Mapping erneut genutzt", 0))
+                    no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
+                    unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
+                    mapping_errors = int(counts.get("Mappingfehler", 0))
+                    st.success(f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} NYSE-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben")
+                    metric_cols = st.columns(4)
+                    metric_cols[0].metric("Gemappt und geladen", mapped_now)
+                    metric_cols[1].metric("Keine Historie trotz Lookup", no_hist)
+                    metric_cols[2].metric("Yahoo kennt Symbol nicht", unknown)
+                    metric_cols[3].metric("Mappingfehler", mapping_errors)
+                    results_df = remap_stats.get("results_df")
+                    if results_df is not None and not results_df.empty:
+                        st.dataframe(results_df, use_container_width=True, hide_index=True)
+            else:
+                st.error(remap_stats.get("error", "Das automatische Remapping ist fehlgeschlagen."))
 
-        # ── Fed Funds Rate ──
-        if fred_key:
-            with st.spinner("Lade Fed Funds Rate …"):
-                fed = load_fed_funds_rate(fred_key)
-            if fed is not None and len(fed) > 10:
-                st.markdown('<div class="info-card"><div class="card-label">FEDERAL FUNDS RATE (FRED)</div>', unsafe_allow_html=True)
-                st.plotly_chart(plot_fed_rate(fed), use_container_width=True, config={"displayModeBar": False})
-                current_rate = fed["FedRate"].iloc[-1]
-                prev_rate = fed["FedRate"].iloc[-30] if len(fed) > 30 else fed["FedRate"].iloc[0]
-                rate_trend = "steigend" if current_rate > prev_rate else "fallend" if current_rate < prev_rate else "stabil"
-                render_check("Zinstrend nicht steigend", rate_trend != "steigend",
-                             f"Fed Funds Rate: {current_rate:.2f}% ({rate_trend})",
-                             warn=(rate_trend == "steigend"))
-                st.markdown("</div>", unsafe_allow_html=True)
-            elif fred_key:
-                st.warning("FRED-Daten konnten nicht geladen werden. API-Key korrekt?")
+        if diagnose_clicked:
+            with st.spinner("Teste eine Stichprobe der noch fehlenden NYSE-Ticker direkt gegen Yahoo …"):
+                diag_stats = diagnose_missing_nyse_yahoo()
+                st.cache_data.clear()
+            if diag_stats.get("ok"):
+                if diag_stats.get("missing_total", 0) == 0:
+                    st.success(diag_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+                else:
+                    counts = diag_stats.get("counts", {}) or {}
+                    hist_ok = int(counts.get("Historie vorhanden", 0))
+                    lookup_no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
+                    unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
+                    errors = int(counts.get("Diagnosefehler", 0))
+                    st.success(f"✓ Yahoo-Diagnose abgeschlossen · Stichprobe {diag_stats['sample_size']} von {diag_stats['missing_total']} fehlenden Tickern · Historie vorhanden: {hist_ok} · Yahoo kennt Symbol, aber keine Historie: {lookup_no_hist} · Yahoo kennt Symbol nicht: {unknown}" + (f" · Diagnosefehler: {errors}" if errors else ""))
+                    metric_cols = st.columns(4)
+                    metric_cols[0].metric("Stichprobe", diag_stats["sample_size"])
+                    metric_cols[1].metric("Historie vorhanden", hist_ok)
+                    metric_cols[2].metric("Yahoo kennt Symbol, aber keine Historie", lookup_no_hist)
+                    metric_cols[3].metric("Yahoo kennt Symbol nicht", unknown)
+                    results_df = diag_stats.get("results_df")
+                    if results_df is not None and not results_df.empty:
+                        st.dataframe(results_df, use_container_width=True, hide_index=True)
+            else:
+                st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
-    # ── DAILY CHECKLIST ──
-    st.markdown("---")
-    st.markdown('<div class="info-card"><div class="card-label">TÄGLICHE CHECKLISTE</div>',unsafe_allow_html=True)
-    ddv=float(L["Dist_52w_pct"]) if not np.isnan(L["Dist_52w_pct"]) else 0
-    no_correction = ddv > -8  # True = no substantial correction = normal market
-    render_check("Kein substanzieller Drawdown (> -8%)", no_correction,
-                 f"Drawdown: {ddv:.1f}%" + (" — Korrektur läuft, Ampel aktiv" if not no_correction else " — Markt im Normalbereich"))
-    render_check("Stabilisierung?",L["Ampel_Phase"] not in ("rot",) or L["Anchor_Date"] is not None,
-                 f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein Zyklus" if L["Ampel_Phase"] in ("neutral","aufwaertstrend") else "Noch keine")
-    render_check("Startschuss (≥Gelb)?",L["Ampel_Phase"] in ("gelb","gruen","aufwaertstrend"),f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND','AUFWÄRTSTREND')}")
-    if ep in data: dfe=compute_breadth_mode(data[ep].copy());render_check("Marktbreite?",dfe.iloc[-1]["Breadth_Mode"]!="schutz",f"Modus: {dfe.iloc[-1]['Breadth_Mode'].capitalize()}")
-    render_check("VIX Regime nicht Stress?", vol_latest.get("VIX_Regime", "Neutral") != "Stress", f"Regime: {vol_latest.get('VIX_Regime', 'n/a')}")
-    render_check(f"Warnzeichen ≤2?",wc<=2,f"{wc} aktiv")
-    st.markdown("</div>",unsafe_allow_html=True)
+        if analyze_clicked:
+            with st.spinner("Lese NYSE-Aktien aus dem persistenten Datenspeicher …"):
+                component_bundle = load_nyse_breadth_data()
+            if component_bundle is not None:
+                close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
+                if close_frame is None or len(close_frame) <= 50:
+                    st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse.")
+                    return
+                br = compute_breadth_from_components(component_bundle)
+                if br is not None and len(br) > 20:
+                    last_trading_date = br.index[-1].strftime("%d.%m.%Y")
+                    breadth_attrs = br.attrs
+                    requested = breadth_attrs.get("requested_universe")
+                    loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
+                    coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
+                    ratio_txt = f" / {requested}" if requested else ""
+                    st.success(f"✓ {loaded} NYSE-Aktien geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
+                    if requested and loaded < requested * 0.8:
+                        st.warning(f"Hinweis: Es wurden nicht alle NYSE-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
+                    st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown("---")
-    st.caption(f"Börse ohne Bauchgefühl · v3.0 · Yahoo Finance + FRED · Stand: {L.name.strftime('%d.%m.%Y')}")
+                    br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
+                    if len(br_valid) == 0:
+                        st.warning("Keine gültigen Handelstage gefunden.")
+                        return
+                    bL = br_valid.iloc[-1]
+                    bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
+                    intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
+                    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
+
+                    kb1, kb2, kb3, kb4, kb5 = st.columns(5)
+                    mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
+                    p50 = bL["Pct_Above_50SMA"]; p200 = bL["Pct_Above_200SMA"]; dr = bL["Deemer_Ratio"]
+                    with kb1:
+                        st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—", "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "Neutral" if not np.isnan(mc) else "")
+                    with kb2:
+                        st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}", f"{nh_val} Hochs / {nl_val} Tiefs")
+                    with kb3:
+                        st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—", "Überhitzt" if p50 > 70 else "Schwach" if p50 < 30 else "")
+                    with kb4:
+                        st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
+                    with kb5:
+                        if not np.isnan(dr):
+                            if dr >= 1.97:
+                                dr_label, dr_delta = "🚀 Sehr gut", "Breakaway Momentum!"
+                            elif dr >= 1.50:
+                                dr_label, dr_delta = f"{dr:.2f}", "Gut — konstruktiv"
+                            elif dr >= 1.00:
+                                dr_label, dr_delta = f"{dr:.2f}", "Neutral"
+                            else:
+                                dr_label, dr_delta = f"{dr:.2f}", "Schlecht — schwache Breite"
+                        else:
+                            dr_label, dr_delta = "—", ""
+                        st.metric("Deemer Ratio", dr_label, dr_delta)
+
+                    with st.expander("Kennzahlen der Tiefenanalyse erklärt", expanded=False):
+                        _render_market_glossary(["McClellan Osc.", "NH/NL Ratio", "% > 50-SMA", "% > 200-SMA", "Deemer Ratio"])
+
+                    recent_thrust = br["Breadth_Thrust"].tail(20).any()
+                    if recent_thrust:
+                        st.success("🚀 Breitenschub (Deemer Ratio > 1.97) in den letzten 20 Tagen erkannt.")
+
+                    if "S&P 500" in data:
+                        spx = data["S&P 500"]
+                        spx_at_high = spx["Close"].iloc[-1] >= spx["High"].rolling(20).max().iloc[-2] * 0.998
+                        ad_at_high = br["AD_Line"].iloc[-1] >= br["AD_Line"].rolling(20).max().iloc[-2] * 0.998
+                        if spx_at_high and not ad_at_high:
+                            st.warning("⚠ Divergenz: S&P 500 nahe 20T-Hoch, aber A/D-Linie nicht — Marktbreite lässt nach")
+                        elif spx_at_high and ad_at_high:
+                            st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
+                        render_check("Keine Divergenz Index vs. A/D-Linie", not (spx_at_high and not ad_at_high), "A/D-Linie bestätigt" if ad_at_high else "Divergenz aktiv")
+                    render_check("McClellan > 0", mc > 0, f"McClellan: {mc:.1f}")
+                    render_check("% über 50-SMA > 50%", p50 > 50, f"{p50:.0f}%")
+                    render_check("NH/NL Ratio > 1", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
+                    if not np.isnan(dr):
+                        dr_status = "Sehr gut" if dr >= 1.97 else "Gut" if dr >= 1.50 else "Neutral" if dr >= 1.00 else "Schlecht"
+                        render_check("Deemer Ratio", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
+                    else:
+                        render_check("Deemer Ratio", False, "Nicht verfügbar")
+                    st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.error("Im persistenten Datenspeicher liegen noch nicht genug NYSE-Daten. Bitte zuerst den Kursbestand aktualisieren.")
+
+            if fred_key:
+                with st.spinner("Lade Fed Funds Rate …"):
+                    fed = load_fed_funds_rate(fred_key)
+                if fed is not None and len(fed) > 10:
+                    st.markdown('<div class="info-card"><div class="card-label">Federal Funds Rate (FRED)</div>', unsafe_allow_html=True)
+                    st.plotly_chart(plot_fed_rate(fed), use_container_width=True, config={"displayModeBar": False})
+                    current_rate = fed["FedRate"].iloc[-1]
+                    prev_rate = fed["FedRate"].iloc[-30] if len(fed) > 30 else fed["FedRate"].iloc[0]
+                    rate_trend = "steigend" if current_rate > prev_rate else "fallend" if current_rate < prev_rate else "stabil"
+                    render_check("Zinstrend nicht steigend", rate_trend != "steigend", f"Fed Funds Rate: {current_rate:.2f}% ({rate_trend})", warn=(rate_trend == "steigend"))
+                    st.markdown("</div>", unsafe_allow_html=True)
+                elif fred_key:
+                    st.warning("FRED-Daten konnten nicht geladen werden. API-Key korrekt?")
+
+    st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
+
 
 # ===== Main entry point =====
+
+
+def _tab_mein_bereich():
+    _init_workspace_state()
+    if not _render_private_gate("🔐 Mein Bereich"):
+        return
+
+    st.markdown("### 🔐 Mein Bereich")
+    st.caption(f"Persönlicher Arbeitsbereich mit persistentem Speicher über {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
+
+    top_left, top_right = st.columns([1.4, 0.8])
+    with top_left:
+        updated_at = _get_cache_metadata(_get_price_store(), _workspace_meta_key("updated_at"), "")
+        if updated_at:
+            st.caption(f"Letzte Speicherung: {updated_at} UTC")
+    with top_right:
+        if _private_area_enabled() and st.button("🔒 Bereich sperren", use_container_width=True, key="private_lock_btn"):
+            _lock_private_area()
+            st.rerun()
+
+    left, right = st.columns([1.05, 1.45])
+
+    with left:
+        st.markdown('<div class="workspace-card"><div class="card-label">Watchlist</div>', unsafe_allow_html=True)
+        watchlist = st.session_state.get("watchlist", [])
+        if watchlist:
+            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist) + '</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
+        add_watch = st.text_input("Ticker zur Watchlist hinzufügen", value="", placeholder="NVDA", key="watch_add_input").upper().strip()
+        col_add, col_remove = st.columns(2)
+        with col_add:
+            if st.button("Hinzufügen", use_container_width=True, key="watch_add_btn") and add_watch:
+                _add_watchlist_ticker(add_watch)
+                st.rerun()
+        with col_remove:
+            if watchlist:
+                rem = st.selectbox("Entfernen", options=watchlist, key="watch_remove_sel")
+                if st.button("Entfernen", use_container_width=True, key="watch_remove_btn"):
+                    _remove_watchlist_ticker(rem)
+                    st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="workspace-card"><div class="card-label">Heutige To-dos</div>', unsafe_allow_html=True)
+        todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=180, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
+        if st.button("To-dos speichern", use_container_width=True, key="save_todos"):
+            st.session_state["todos"] = todos
+            _sync_workspace()
+            st.success("To-dos gespeichert.")
+        st.markdown('<div class="workspace-note">Ideal für Tagesplan, offene Fragen und Beobachtungsliste.</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="workspace-card"><div class="card-label">Schnellzugriff</div>', unsafe_allow_html=True)
+        recents = st.session_state.get("recent_tickers", [])
+        if recents:
+            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in recents[:10]) + '</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="workspace-note">Noch keine zuletzt genutzten Ticker.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="workspace-note">Nutze diese Liste als tägliches Cockpit für deine wichtigsten Namen.</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="workspace-card"><div class="card-label">Privates Depot</div>', unsafe_allow_html=True)
+        pos_ticker = _render_ticker_picker("private_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia")
+        positions = st.session_state.get("positions", [])
+        selected_pos = next((p for p in positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
+        price_col, date_col, curr_col, note_col = st.columns([1, 1, 0.8, 1.2])
+        with price_col:
+            buy_price = st.number_input("Einstand", min_value=0.01, value=float(selected_pos.get("buy_price", 1.0)) if selected_pos else 1.0, step=0.01, key="private_buy_price")
+        with date_col:
+            try:
+                default_date = pd.Timestamp(selected_pos.get("buy_date")).date() if selected_pos and selected_pos.get("buy_date") else datetime.utcnow().date()
+            except Exception:
+                default_date = datetime.utcnow().date()
+            buy_date = st.date_input("Kaufdatum", value=default_date, key="private_buy_date")
+        with curr_col:
+            curr_default = (selected_pos or {}).get("currency", "USD")
+            currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if curr_default == "USD" else 1, key="private_currency")
+        with note_col:
+            note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="private_note")
+        if st.button("Depotposition speichern", use_container_width=True, key="private_save_position", disabled=not bool(pos_ticker)):
+            buy_price_usd = float(buy_price)
+            eur_usd_rate = None
+            if currency == "EUR":
+                try:
+                    fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
+                    if fx is not None and len(fx) > 0:
+                        eur_usd_rate = float(fx["Close"].iloc[-1])
+                        buy_price_usd = float(buy_price) * eur_usd_rate
+                except Exception:
+                    eur_usd_rate = None
+                if eur_usd_rate is None:
+                    buy_price_usd = float(buy_price) * 1.08
+            _upsert_position({
+                "ticker": pos_ticker,
+                "buy_price": float(buy_price),
+                "buy_price_usd": float(buy_price_usd),
+                "buy_date": str(buy_date),
+                "currency": currency,
+                "note": note,
+            })
+            st.success(f"{pos_ticker} gespeichert.")
+            st.rerun()
+
+        if positions:
+            rows = []
+            for pos in positions[:20]:
+                health = _simple_position_health(pos)
+                rows.append({
+                    "Ticker": pos.get("ticker", ""),
+                    "Kaufdatum": pos.get("buy_date", ""),
+                    "Einstand": pos.get("buy_price", np.nan),
+                    "Währung": pos.get("currency", "USD"),
+                    "Status": health.get("status", "") if health else "",
+                    "P&L %": round(float(health["pnl"]), 2) if health and health.get("pnl") is not None and not np.isnan(health.get("pnl")) else np.nan,
+                    "Notiz": pos.get("note", ""),
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            remove_pos = st.selectbox("Position entfernen", options=[""] + [p.get("ticker", "") for p in positions], key="pos_remove_sel")
+            if remove_pos and st.button("Position löschen", use_container_width=True, key="pos_remove_btn"):
+                _remove_position(remove_pos)
+                st.rerun()
+        else:
+            st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Du kannst sie hier oder im Tab „Nach dem Kauf“ anlegen.</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 
 configure_page()
 inject_css()
 
 def main():
+    _init_workspace_state()
+    _render_workspace_sidebar()
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf"])
+    st.caption("Oben Entscheidung, darunter Begründung und Details. Technik und Datenwartung sind bewusst ausgelagert.")
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"])
     with tab1:
         _tab_marktanalyse()
     with tab2:
@@ -4024,6 +4718,8 @@ def main():
         _tab_aktienbewertung()
     with tab4:
         _tab_nach_kauf()
+    with tab5:
+        _tab_mein_bereich()
 
 if __name__ == "__main__":
     main()
