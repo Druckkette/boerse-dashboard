@@ -108,32 +108,75 @@ def _normalize_ticker_list(values):
     return list(dict.fromkeys(tickers))
 
 
+def _extract_ticker_column(df):
+    for c in df.columns:
+        name = str(c).strip().lower()
+        if name in {"ticker", "issuer ticker"} or "ticker" in name:
+            return c
+    return None
+
+
 def _parse_ishares_holdings_csv(text):
     lines = text.splitlines()
-    header_idx = next((i for i, line in enumerate(lines[:120]) if "Ticker" in line and "Name" in line), None)
+    header_idx = next((i for i, line in enumerate(lines[:150]) if "Ticker" in line and "Name" in line), None)
     if header_idx is None:
         return []
-    holdings = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
-    ticker_col = next((c for c in holdings.columns if str(c).strip().lower() == "ticker"), None)
+    try:
+        holdings = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+    except Exception:
+        return []
+    ticker_col = _extract_ticker_column(holdings)
     if ticker_col is None:
         return []
     return _normalize_ticker_list(holdings[ticker_col])
 
 
+def _parse_ishares_holdings_html(html):
+    try:
+        tables = pd.read_html(io.StringIO(html))
+    except Exception:
+        return []
+    collected = []
+    for table in tables:
+        ticker_col = _extract_ticker_column(table)
+        if ticker_col is not None:
+            collected.extend(table[ticker_col].tolist())
+    return _normalize_ticker_list(collected)
+
+
 def _get_russell2000_from_ishares():
-    urls = [
+    csv_urls = [
         "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf?dataType=fund&fileName=IWM_holdings&fileType=csv",
         "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/?dataType=fund&fileName=IWM_holdings&fileType=csv",
+        "https://www.ishares.com/ch/professionals/en/products/239710/ishares-russell-2000-etf?dataType=fund&fileName=IWM_holdings&fileType=csv",
     ]
-    for url in urls:
+    page_urls = [
+        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf",
+        "https://www.ishares.com/us/products/239710/IWM",
+        "https://www.ishares.com/ch/professionals/en/products/239710/ishares-russell-2000-etf",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
+
+    for url in csv_urls:
         try:
-            resp = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(url, timeout=25, headers=headers)
             resp.raise_for_status()
             tickers = _parse_ishares_holdings_csv(resp.content.decode("utf-8", errors="ignore"))
-            if len(tickers) >= 1500:
+            if len(tickers) >= 1200:
                 return tickers
         except Exception:
             continue
+
+    for url in page_urls:
+        try:
+            resp = requests.get(url, timeout=25, headers=headers)
+            resp.raise_for_status()
+            tickers = _parse_ishares_holdings_html(resp.text)
+            if len(tickers) >= 1200:
+                return tickers
+        except Exception:
+            continue
+
     return []
 
 
@@ -176,11 +219,14 @@ def _get_russell2000_from_wikipedia_raw():
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_russell2000_tickers():
     """Load current Russell 2000 constituents with multiple robust fallbacks."""
+    best = []
     for loader in (_get_russell2000_from_ishares, _get_russell2000_from_wikipedia_tables, _get_russell2000_from_wikipedia_raw):
         tickers = loader()
-        if len(tickers) >= 900:
+        if len(tickers) > len(best):
+            best = tickers
+        if len(tickers) >= 1200:
             return tickers
-    return []
+    return best if len(best) >= 700 else []
 
 # ═══════════════════════════════════════════════════════
 # DATA LOADING
@@ -349,11 +395,12 @@ def _download_close_batch_fast(batch, start, end):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_russell2000_breadth_data(lookback_days=550, batch_size=200, retry_batch_size=75):
+def load_russell2000_breadth_data(lookback_days=550, batch_size=125, retry_batch_size=50, rescue_batch_size=25):
     """Download close prices for the Russell 2000 universe.
 
-    First pass uses the older fast bulk approach in larger batches.
-    Only if the hit rate is too low do we retry the missing symbols in smaller batches.
+    First pass uses fast bulk batches similar to the earlier 500-stock method.
+    If the hit rate is weak, retry missing tickers in smaller batches and finally
+    run a rescue pass in very small chunks before giving up.
     """
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = get_russell2000_tickers()
@@ -365,7 +412,6 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=200, retry_batch
     loaded_cols = set()
 
     try:
-        # Fast first pass: close to the old 500-stock method, just scaled to Russell 2000.
         for batch in _chunked(tickers, batch_size):
             closes = _download_close_batch_fast(batch, start, end)
             if closes is not None and closes.shape[1] > 0:
@@ -377,28 +423,42 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=200, retry_batch
 
         closes = pd.concat(fast_frames, axis=1)
         closes = closes.loc[:, ~closes.columns.duplicated()]
-        closes = closes.sort_index()
-        closes = closes.dropna(axis=1, how="all")
+        closes = closes.sort_index().dropna(axis=1, how="all")
 
-        # Retry only the symbols that are still missing, and only when the first pass was weak.
         missing = [t for t in tickers if t not in loaded_cols]
         success_ratio = len(closes.columns) / max(len(tickers), 1)
 
-        if missing and success_ratio < 0.85:
+        if missing and success_ratio < 0.90:
             retry_frames = []
             for batch in _chunked(missing, retry_batch_size):
                 rcloses = _download_close_batch_fast(batch, start, end)
                 if rcloses is not None and rcloses.shape[1] > 0:
                     retry_frames.append(rcloses)
+                    loaded_cols.update(rcloses.columns.tolist())
             if retry_frames:
                 closes = pd.concat([closes] + retry_frames, axis=1)
                 closes = closes.loc[:, ~closes.columns.duplicated()]
-                closes = closes.sort_index()
-                closes = closes.dropna(axis=1, how="all")
+                closes = closes.sort_index().dropna(axis=1, how="all")
 
-        thresh = max(60, int(len(closes) * 0.5))
+        missing = [t for t in tickers if t not in loaded_cols]
+        success_ratio = len(closes.columns) / max(len(tickers), 1)
+
+        if missing and success_ratio < 0.65:
+            rescue_frames = []
+            for batch in _chunked(missing, rescue_batch_size):
+                rcloses = _download_close_batch_fast(batch, start, end)
+                if rcloses is not None and rcloses.shape[1] > 0:
+                    rescue_frames.append(rcloses)
+            if rescue_frames:
+                closes = pd.concat([closes] + rescue_frames, axis=1)
+                closes = closes.loc[:, ~closes.columns.duplicated()]
+                closes = closes.sort_index().dropna(axis=1, how="all")
+
+        thresh = max(60, int(len(closes) * 0.45))
         closes = closes.dropna(axis=1, thresh=thresh)
-        return closes if closes.shape[1] >= max(900, int(len(tickers) * 0.55)) else None
+        closes.attrs["requested_universe"] = len(tickers)
+        closes.attrs["loaded_universe"] = closes.shape[1]
+        return closes if closes.shape[1] >= max(600, int(len(tickers) * 0.30)) else None
     except Exception as e:
         st.warning(f"Fehler beim Laden der Russell-2000-Daten: {e}")
         return None
@@ -2311,7 +2371,12 @@ def _tab_marktanalyse():
                 is_today = last_trading_date == today_str
                 date_note = f"Stand: {last_trading_date}" + ("" if is_today else " (letzter Handelstag)")
 
-                st.success(f"✓ {len(closes.columns)} Russell-2000-Aktien geladen, {len(br)} Handelstage · {date_note}")
+                requested = closes.attrs.get("requested_universe")
+                loaded = closes.attrs.get("loaded_universe", len(closes.columns))
+                ratio_txt = f" / {requested}" if requested else ""
+                st.success(f"✓ {loaded} Russell-2000-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
+                if requested and loaded < requested * 0.8:
+                    st.warning(f"Hinweis: Es wurden nicht alle Russell-2000-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien.")
 
                 # ── Breadth Charts ──
                 st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
@@ -2390,7 +2455,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte die Russell-2000-Daten nicht laden. Diese Version nutzt eine schnelle Bulk-Logik mit zusätzlichem Retry für fehlende Titel.")
+            st.error("Konnte keine ausreichende Russell-2000-Datenmenge laden. Die App versucht mehrere Quellen für die Tickerliste und lädt Kurse in Bulk-Batches mit zusätzlichem Fallback.")
 
         # ── Fed Funds Rate ──
         if fred_key:
