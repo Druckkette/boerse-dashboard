@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Streamlit secrets and local config artifacts
+.streamlit/secrets.toml
+
+# Local caches and databases
+.cache/
+*.sqlite
+*.sqlite3
+*.db
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
