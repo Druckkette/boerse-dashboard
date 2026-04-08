@@ -120,26 +120,26 @@ def _parse_ishares_holdings_csv(text):
     return _normalize_ticker_list(holdings[ticker_col])
 
 
-def _get_russell1000_from_ishares():
+def _get_russell2000_from_ishares():
     urls = [
-        "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf?dataType=fund&fileName=IWB_holdings&fileType=csv",
-        "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/?dataType=fund&fileName=IWB_holdings&fileType=csv",
+        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf?dataType=fund&fileName=IWM_holdings&fileType=csv",
+        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/?dataType=fund&fileName=IWM_holdings&fileType=csv",
     ]
     for url in urls:
         try:
             resp = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
             tickers = _parse_ishares_holdings_csv(resp.content.decode("utf-8", errors="ignore"))
-            if len(tickers) >= 900:
+            if len(tickers) >= 1500:
                 return tickers
         except Exception:
             continue
     return []
 
 
-def _get_russell1000_from_wikipedia_tables():
+def _get_russell2000_from_wikipedia_tables():
     try:
-        tables = pd.read_html("https://en.wikipedia.org/wiki/Russell_1000_Index")
+        tables = pd.read_html("https://en.wikipedia.org/wiki/Russell_2000_Index")
         collected = []
         for table in tables:
             lower_cols = {str(c).strip().lower(): c for c in table.columns}
@@ -147,17 +147,17 @@ def _get_russell1000_from_wikipedia_tables():
             if sym_col is not None:
                 collected.extend(table[sym_col].tolist())
         tickers = _normalize_ticker_list(collected)
-        if len(tickers) >= 900:
+        if len(tickers) >= 1500:
             return tickers
     except Exception:
         pass
     return []
 
 
-def _get_russell1000_from_wikipedia_raw():
+def _get_russell2000_from_wikipedia_raw():
     urls = [
-        "https://en.wikipedia.org/w/index.php?title=Russell_1000_Index&action=raw",
-        "https://en.wikipedia.org/wiki/Russell_1000_Index?action=raw",
+        "https://en.wikipedia.org/w/index.php?title=Russell_2000_Index&action=raw",
+        "https://en.wikipedia.org/wiki/Russell_2000_Index?action=raw",
     ]
     for url in urls:
         try:
@@ -166,7 +166,7 @@ def _get_russell1000_from_wikipedia_raw():
             raw = resp.content.decode("utf-8", errors="ignore")
             tickers = re.findall(r"\|\|\s*([A-Z]{1,5}(?:[.-][A-Z])?)\s*\|\|", raw)
             tickers = _normalize_ticker_list(tickers)
-            if len(tickers) >= 900:
+            if len(tickers) >= 1500:
                 return tickers
         except Exception:
             continue
@@ -174,9 +174,9 @@ def _get_russell1000_from_wikipedia_raw():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_russell1000_tickers():
-    """Load current Russell 1000 constituents with multiple robust fallbacks."""
-    for loader in (_get_russell1000_from_ishares, _get_russell1000_from_wikipedia_tables, _get_russell1000_from_wikipedia_raw):
+def get_russell2000_tickers():
+    """Load current Russell 2000 constituents with multiple robust fallbacks."""
+    for loader in (_get_russell2000_from_ishares, _get_russell2000_from_wikipedia_tables, _get_russell2000_from_wikipedia_raw):
         tickers = loader()
         if len(tickers) >= 900:
             return tickers
@@ -299,7 +299,7 @@ def build_sector_table(closes, mode="daily", n_periods=20):
     return result, latest_ranked
 
 # ═══════════════════════════════════════════════════════
-# DEEP ANALYSIS: Russell 1000 breadth + FRED
+# DEEP ANALYSIS: Russell 2000 breadth + FRED
 # ═══════════════════════════════════════════════════════
 def _chunked(seq, size):
     for i in range(0, len(seq), size):
@@ -349,14 +349,14 @@ def _download_close_batch_fast(batch, start, end):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_russell1000_breadth_data(lookback_days=550, batch_size=150, retry_batch_size=50):
-    """Download close prices for the Russell 1000 universe.
+def load_russell2000_breadth_data(lookback_days=550, batch_size=200, retry_batch_size=75):
+    """Download close prices for the Russell 2000 universe.
 
     First pass uses the older fast bulk approach in larger batches.
     Only if the hit rate is too low do we retry the missing symbols in smaller batches.
     """
     end = datetime.now(); start = end - timedelta(days=lookback_days)
-    tickers = get_russell1000_tickers()
+    tickers = get_russell2000_tickers()
     if not tickers:
         return None
 
@@ -365,7 +365,7 @@ def load_russell1000_breadth_data(lookback_days=550, batch_size=150, retry_batch
     loaded_cols = set()
 
     try:
-        # Fast first pass: close to the old 500-stock method, just scaled to Russell 1000.
+        # Fast first pass: close to the old 500-stock method, just scaled to Russell 2000.
         for batch in _chunked(tickers, batch_size):
             closes = _download_close_batch_fast(batch, start, end)
             if closes is not None and closes.shape[1] > 0:
@@ -398,9 +398,9 @@ def load_russell1000_breadth_data(lookback_days=550, batch_size=150, retry_batch
 
         thresh = max(60, int(len(closes) * 0.5))
         closes = closes.dropna(axis=1, thresh=thresh)
-        return closes if closes.shape[1] >= 500 else None
+        return closes if closes.shape[1] >= max(900, int(len(tickers) * 0.55)) else None
     except Exception as e:
-        st.warning(f"Fehler beim Laden der Russell-1000-Daten: {e}")
+        st.warning(f"Fehler beim Laden der Russell-2000-Daten: {e}")
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -2285,7 +2285,7 @@ def _tab_marktanalyse():
     # ══════════════════════════════════════════════════
     st.markdown("---")
     st.markdown("### 🔬 Tiefenanalyse — Marktbreite & Makro")
-    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs und Deemer Ratio aus dem Russell-1000-Universum. Der S&P 500 dient weiter als Referenzindex für Divergenzen. Optional: Fed Funds Rate über FRED API.")
+    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs und Deemer Ratio aus dem Russell-2000-Universum. Der S&P 500 dient weiter als Referenzindex für Divergenzen. Optional: Fed Funds Rate über FRED API.")
 
     # FRED key: try secrets first, then environment, then manual input
     fred_key = ""
@@ -2299,8 +2299,8 @@ def _tab_marktanalyse():
         fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfeed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
 
     if st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True):
-        with st.spinner("Lade Russell 1000 Aktien … (kann etwas dauern)"):
-            closes = load_russell1000_breadth_data()
+        with st.spinner("Lade Russell 2000 Aktien … (kann etwas dauern)"):
+            closes = load_russell2000_breadth_data()
 
         if closes is not None and len(closes) > 50:
             br = compute_breadth_from_components(closes)
@@ -2311,7 +2311,7 @@ def _tab_marktanalyse():
                 is_today = last_trading_date == today_str
                 date_note = f"Stand: {last_trading_date}" + ("" if is_today else " (letzter Handelstag)")
 
-                st.success(f"✓ {len(closes.columns)} Russell-1000-Aktien geladen, {len(br)} Handelstage · {date_note}")
+                st.success(f"✓ {len(closes.columns)} Russell-2000-Aktien geladen, {len(br)} Handelstage · {date_note}")
 
                 # ── Breadth Charts ──
                 st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
@@ -2326,7 +2326,7 @@ def _tab_marktanalyse():
                 bL = br_valid.iloc[-1]
                 bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
 
-                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — Russell 1000 ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — Russell 2000 ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
 
                 kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                 with kb1:
@@ -2390,7 +2390,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte die Russell-1000-Daten nicht laden. Diese Version nutzt eine schnelle Bulk-Logik mit zusätzlichem Retry für fehlende Titel.")
+            st.error("Konnte die Russell-2000-Daten nicht laden. Diese Version nutzt eine schnelle Bulk-Logik mit zusätzlichem Retry für fehlende Titel.")
 
         # ── Fed Funds Rate ──
         if fred_key:
