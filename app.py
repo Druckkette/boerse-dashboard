@@ -13,6 +13,12 @@ from datetime import datetime, timedelta
 import warnings, os, requests, io, re, time, sqlite3
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+try:
+    import psycopg2
+    from psycopg2.extras import execute_values
+except Exception:
+    psycopg2 = None
+    execute_values = None
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Börse ohne Bauchgefühl", page_icon="🚦", layout="wide", initial_sidebar_state="collapsed")
@@ -392,6 +398,29 @@ CACHE_DB_NAME = "market_data_cache.sqlite"
 CACHE_UNIVERSE_NAME = "russell2000"
 
 
+def _safe_get_secret(*path, default=None):
+    try:
+        cur = st.secrets
+        for key in path:
+            cur = cur[key]
+        return cur
+    except Exception:
+        return default
+
+
+def _get_neon_connection_url():
+    candidates = [
+        _safe_get_secret("connections", "neon", "url", default=""),
+        _safe_get_secret("NEON_DATABASE_URL", default=""),
+        os.environ.get("NEON_DATABASE_URL", ""),
+        os.environ.get("DATABASE_URL", ""),
+    ]
+    for value in candidates:
+        if value and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
 def _get_cache_db_path():
     base_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path(os.getcwd())
     cache_dir = base_dir / ".cache"
@@ -399,99 +428,186 @@ def _get_cache_db_path():
     return str(cache_dir / CACHE_DB_NAME)
 
 
-def _get_cache_conn(db_path):
-    conn = sqlite3.connect(db_path, timeout=30)
+def _get_price_store():
+    neon_url = _get_neon_connection_url()
+    if neon_url and psycopg2 is not None:
+        return {"backend": "neon", "dsn": neon_url, "label": "Neon Postgres"}
+    return {"backend": "sqlite", "db_path": _get_cache_db_path(), "label": "lokaler SQLite-Cache"}
+
+
+def _get_store_label(store):
+    return store.get("label", store.get("backend", "Datenspeicher"))
+
+
+def _get_cache_conn(store):
+    if store["backend"] == "neon":
+        if psycopg2 is None:
+            raise RuntimeError("psycopg2-binary ist nicht installiert. Bitte in requirements.txt ergänzen.")
+        return psycopg2.connect(store["dsn"], connect_timeout=15)
+    conn = sqlite3.connect(store["db_path"], timeout=30)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
 
 
-def _init_price_cache_db(db_path):
-    conn = _get_cache_conn(db_path)
+def _init_price_cache_db(store):
+    conn = _get_cache_conn(store)
     try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS prices (
-                symbol TEXT NOT NULL,
-                date TEXT NOT NULL,
-                close REAL,
-                PRIMARY KEY (symbol, date)
+        cur = conn.cursor() if store["backend"] == "neon" else conn
+        if store["backend"] == "neon":
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prices (
+                    symbol TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    close DOUBLE PRECISION,
+                    PRIMARY KEY (symbol, date)
+                )
+                """
             )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS universe_members (
-                universe TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (universe, symbol)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date)")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS universe_members (
+                    universe TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (universe, symbol)
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TEXT NOT NULL
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
             )
-            """
-        )
+        else:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prices (
+                    symbol TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    close REAL,
+                    PRIMARY KEY (symbol, date)
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date)")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS universe_members (
+                    universe TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (universe, symbol)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
         conn.commit()
     finally:
         conn.close()
 
 
-def _set_cache_metadata(db_path, key, value):
-    conn = _get_cache_conn(db_path)
+def _set_cache_metadata(store, key, value):
+    conn = _get_cache_conn(store)
     try:
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            """
-            INSERT INTO metadata(key, value, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (key, str(value), now),
-        )
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO app_metadata(key, value, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()
+                    """,
+                    (key, str(value)),
+                )
+        else:
+            conn.execute(
+                """
+                INSERT INTO app_metadata(key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (key, str(value), now),
+            )
         conn.commit()
     finally:
         conn.close()
 
 
-def _get_cache_metadata(db_path, key, default=None):
-    conn = _get_cache_conn(db_path)
+def _get_cache_metadata(store, key, default=None):
+    conn = _get_cache_conn(store)
     try:
-        row = conn.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute("SELECT value FROM app_metadata WHERE key=%s", (key,))
+                row = cur.fetchone()
+                return row[0] if row else default
+        row = conn.execute("SELECT value FROM app_metadata WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
     finally:
         conn.close()
 
 
-def _store_universe_members(db_path, universe, tickers):
+def _store_universe_members(store, universe, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
         return
-    conn = _get_cache_conn(db_path)
+    conn = _get_cache_conn(store)
     try:
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute("DELETE FROM universe_members WHERE universe=?", (universe,))
-        conn.executemany(
-            "INSERT OR REPLACE INTO universe_members(universe, symbol, updated_at) VALUES (?, ?, ?)",
-            [(universe, t, now) for t in tickers],
-        )
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM universe_members WHERE universe=%s", (universe,))
+                rows = [(universe, t, now) for t in tickers]
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO universe_members(universe, symbol, updated_at)
+                    VALUES %s
+                    ON CONFLICT (universe, symbol) DO UPDATE SET updated_at=EXCLUDED.updated_at
+                    """,
+                    rows,
+                    page_size=1000,
+                )
+        else:
+            conn.execute("DELETE FROM universe_members WHERE universe=?", (universe,))
+            conn.executemany(
+                "INSERT OR REPLACE INTO universe_members(universe, symbol, updated_at) VALUES (?, ?, ?)",
+                [(universe, t, now) for t in tickers],
+            )
         conn.commit()
     finally:
         conn.close()
-    _set_cache_metadata(db_path, f"{universe}_member_count", len(tickers))
-    _set_cache_metadata(db_path, f"{universe}_members_updated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+    _set_cache_metadata(store, f"{universe}_member_count", len(tickers))
+    _set_cache_metadata(store, f"{universe}_members_updated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-def _load_cached_universe_members(db_path, universe):
-    conn = _get_cache_conn(db_path)
+def _load_cached_universe_members(store, universe):
+    conn = _get_cache_conn(store)
     try:
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT symbol FROM universe_members WHERE universe=%s ORDER BY symbol",
+                    (universe,),
+                )
+                rows = cur.fetchall()
+                return [r[0] for r in rows]
         rows = conn.execute(
             "SELECT symbol FROM universe_members WHERE universe=? ORDER BY symbol",
             (universe,),
@@ -549,7 +665,7 @@ def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
         return None
 
 
-def _write_closes_to_cache(db_path, closes):
+def _write_closes_to_cache(store, closes):
     if closes is None or closes.empty:
         return 0
     long_df = closes.copy()
@@ -561,43 +677,73 @@ def _write_closes_to_cache(db_path, closes):
         return 0
     long_df["symbol"] = long_df["symbol"].astype(str).str.upper()
     records = list(long_df[["symbol", "date", "close"]].itertuples(index=False, name=None))
-    conn = _get_cache_conn(db_path)
+    conn = _get_cache_conn(store)
     try:
-        conn.executemany(
-            """
-            INSERT INTO prices(symbol, date, close)
-            VALUES (?, ?, ?)
-            ON CONFLICT(symbol, date) DO UPDATE SET close=excluded.close
-            """,
-            records,
-        )
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO prices(symbol, date, close)
+                    VALUES %s
+                    ON CONFLICT (symbol, date) DO UPDATE SET close=EXCLUDED.close
+                    """,
+                    records,
+                    page_size=10000,
+                )
+        else:
+            conn.executemany(
+                """
+                INSERT INTO prices(symbol, date, close)
+                VALUES (?, ?, ?)
+                ON CONFLICT(symbol, date) DO UPDATE SET close=excluded.close
+                """,
+                records,
+            )
         conn.commit()
     finally:
         conn.close()
-    _set_cache_metadata(db_path, "prices_last_write_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+    _set_cache_metadata(store, "prices_last_write_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
     return len(records)
 
 
-def _read_cached_closes(db_path, tickers, start_date, end_date):
+def _read_cached_closes(store, tickers, start_date, end_date):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
         return None
-    conn = _get_cache_conn(db_path)
+    conn = _get_cache_conn(store)
     try:
         frames = []
-        for batch in _chunked(tickers, 700):
-            placeholders = ",".join(["?"] * len(batch))
-            query = f"""
-                SELECT date, symbol, close
-                FROM prices
-                WHERE symbol IN ({placeholders})
-                  AND date >= ?
-                  AND date <= ?
-            """
-            params = list(batch) + [start_date, end_date]
-            frame = pd.read_sql_query(query, conn, params=params)
-            if not frame.empty:
-                frames.append(frame)
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                for batch in _chunked(tickers, 700):
+                    cur.execute(
+                        """
+                        SELECT date, symbol, close
+                        FROM prices
+                        WHERE symbol = ANY(%s)
+                          AND date >= %s
+                          AND date <= %s
+                        """,
+                        (batch, start_date, end_date),
+                    )
+                    rows = cur.fetchall()
+                    if rows:
+                        frames.append(pd.DataFrame(rows, columns=["date", "symbol", "close"]))
+        else:
+            for batch in _chunked(tickers, 700):
+                placeholders = ",".join(["?"] * len(batch))
+                query = f"""
+                    SELECT date, symbol, close
+                    FROM prices
+                    WHERE symbol IN ({placeholders})
+                      AND date >= ?
+                      AND date <= ?
+                """
+                params = list(batch) + [start_date, end_date]
+                frame = pd.read_sql_query(query, conn, params=params)
+                if not frame.empty:
+                    frames.append(frame)
         if not frames:
             return None
         raw = pd.concat(frames, ignore_index=True)
@@ -614,13 +760,28 @@ def _read_cached_closes(db_path, tickers, start_date, end_date):
     return closes if closes.shape[1] else None
 
 
-def _get_cached_last_dates(db_path, tickers):
+def _get_cached_last_dates(store, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
         return {}
-    conn = _get_cache_conn(db_path)
+    conn = _get_cache_conn(store)
     try:
         out = {}
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                for batch in _chunked(tickers, 700):
+                    cur.execute(
+                        """
+                        SELECT symbol, MAX(date) AS last_date
+                        FROM prices
+                        WHERE symbol = ANY(%s)
+                        GROUP BY symbol
+                        """,
+                        (batch,),
+                    )
+                    rows = cur.fetchall()
+                    out.update({str(symbol).upper(): pd.to_datetime(last_date) for symbol, last_date in rows if last_date})
+            return out
         for batch in _chunked(tickers, 700):
             placeholders = ",".join(["?"] * len(batch))
             query = f"SELECT symbol, MAX(date) AS last_date FROM prices WHERE symbol IN ({placeholders}) GROUP BY symbol"
@@ -631,12 +792,12 @@ def _get_cached_last_dates(db_path, tickers):
         conn.close()
 
 
-def _get_russell2000_tickers_with_cache(db_path):
+def _get_russell2000_tickers_with_cache(store):
     live = get_russell2000_tickers()
     if live and len(live) >= 1000:
-        _store_universe_members(db_path, CACHE_UNIVERSE_NAME, live)
+        _store_universe_members(store, CACHE_UNIVERSE_NAME, live)
         return live
-    cached = _load_cached_universe_members(db_path, CACHE_UNIVERSE_NAME)
+    cached = _load_cached_universe_members(store, CACHE_UNIVERSE_NAME)
     if cached:
         return cached
     return live
@@ -656,77 +817,118 @@ def _prepare_closes_for_breadth(closes):
     return closes if closes.shape[1] else None
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_russell2000_breadth_data(lookback_days=550, batch_size=160, retry_batch_size=70):
-    """Load Russell-2000 close prices with persistent local SQLite cache.
+def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, recent_batch_size=220, recent_refresh_days=15):
+    """Initial fill or incremental refresh for the persistent price store.
 
-    Workflow:
-    1. read existing local cache first
-    2. only request symbols with no history or stale recent data
-    3. upsert new rows into SQLite
-    4. build breadth input from local database
+    - symbols without history: fetch full lookback window
+    - existing symbols: refresh only a recent rolling window and upsert rows
     """
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
     end_date = pd.Timestamp(end).strftime("%Y-%m-%d")
-    recent_floor = (pd.Timestamp(end).normalize() - pd.offsets.BDay(3)).to_pydatetime()
-    db_path = _get_cache_db_path()
-    _init_price_cache_db(db_path)
+    store = _get_price_store()
+    _init_price_cache_db(store)
 
-    tickers = _get_russell2000_tickers_with_cache(db_path)
+    tickers = _get_russell2000_tickers_with_cache(store)
+    if not tickers:
+        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
+    _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
+
+    last_dates = _get_cached_last_dates(store, tickers)
+    missing_history = [t for t in tickers if t not in last_dates]
+    recent_targets = [t for t in tickers if t in last_dates]
+
+    rows_written = 0
+    history_batches = 0
+    recent_batches = 0
+
+    if missing_history:
+        for batch in _chunked(missing_history, history_batch_size):
+            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=40)
+            if closes is not None and not closes.empty:
+                rows_written += _write_closes_to_cache(store, closes)
+            history_batches += 1
+
+        refreshed_dates = _get_cached_last_dates(store, tickers)
+        still_missing = [t for t in tickers if t not in refreshed_dates]
+        if still_missing:
+            for batch in _chunked(still_missing, max(40, history_batch_size // 2)):
+                closes = _download_close_batch_fast(batch, start, end, threads=False, timeout=30)
+                if closes is not None and not closes.empty:
+                    rows_written += _write_closes_to_cache(store, closes)
+                history_batches += 1
+        recent_targets = [t for t in tickers if t in _get_cached_last_dates(store, tickers)]
+
+    recent_start = max(start, end - timedelta(days=recent_refresh_days))
+    for batch in _chunked(recent_targets, recent_batch_size):
+        closes = _download_close_batch_fast(batch, recent_start, end, threads=True, timeout=35)
+        if closes is not None and not closes.empty:
+            rows_written += _write_closes_to_cache(store, closes)
+        recent_batches += 1
+
+    closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
+    loaded = int(closes_final.shape[1]) if closes_final is not None else 0
+    requested = len(tickers)
+    coverage = loaded / max(requested, 1)
+
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    _set_cache_metadata(store, "last_refresh_at", now_str)
+    _set_cache_metadata(store, "last_refresh_rows_written", rows_written)
+    _set_cache_metadata(store, "last_refresh_loaded_universe", loaded)
+    _set_cache_metadata(store, "last_refresh_requested_universe", requested)
+
+    return {
+        "ok": loaded > 0,
+        "requested": requested,
+        "loaded": loaded,
+        "coverage": coverage,
+        "rows_written": rows_written,
+        "history_batches": history_batches,
+        "recent_batches": recent_batches,
+        "recent_refresh_days": recent_refresh_days,
+        "last_refresh_at": now_str,
+        "store": _get_store_label(store),
+        "backend": store["backend"],
+    }
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_russell2000_breadth_data(lookback_days=550):
+    """Read breadth data from the persistent store without triggering a large network refresh."""
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
+    end_date = pd.Timestamp(end).strftime("%Y-%m-%d")
+    store = _get_price_store()
+    _init_price_cache_db(store)
+
+    tickers = _get_russell2000_tickers_with_cache(store)
     if not tickers:
         return None
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
 
-    cached_before = _prepare_closes_for_breadth(_read_cached_closes(db_path, tickers, start_date, end_date))
-    last_dates = _get_cached_last_dates(db_path, tickers)
-
-    missing_history = [t for t in tickers if t not in last_dates]
-    stale_recent = [t for t, last_dt in last_dates.items() if last_dt.to_pydatetime() < recent_floor]
-    stale_recent = [t for t in stale_recent if t not in missing_history]
-
-    if missing_history:
-        for batch in _chunked(missing_history, batch_size):
-            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=35)
-            if closes is not None and not closes.empty:
-                _write_closes_to_cache(db_path, closes)
-
-    if stale_recent:
-        recent_start = max(start, end - timedelta(days=45))
-        for batch in _chunked(stale_recent, retry_batch_size):
-            closes = _download_close_batch_fast(batch, recent_start, end, threads=True, timeout=30)
-            if closes is not None and not closes.empty:
-                _write_closes_to_cache(db_path, closes)
-
-    # One compact retry pass only for symbols that still have no cached rows at all.
-    last_dates_after = _get_cached_last_dates(db_path, tickers)
-    still_missing = [t for t in tickers if t not in last_dates_after]
-    if still_missing:
-        for batch in _chunked(still_missing, retry_batch_size):
-            closes = _download_close_batch_fast(batch, start, end, threads=False, timeout=25)
-            if closes is not None and not closes.empty:
-                _write_closes_to_cache(db_path, closes)
-
-    closes = _prepare_closes_for_breadth(_read_cached_closes(db_path, tickers, start_date, end_date))
+    closes = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
     if closes is None or closes.empty:
         return None
 
     requested = len(tickers)
     loaded = int(closes.shape[1])
     coverage = loaded / max(requested, 1)
-    used_cache_only = bool(cached_before is not None and not missing_history and not stale_recent)
 
     closes.attrs["requested_universe"] = requested
     closes.attrs["loaded_universe"] = loaded
     closes.attrs["coverage_ratio"] = coverage
     closes.attrs["partial_universe"] = coverage < 0.75
-    closes.attrs["cache_db_path"] = db_path
     closes.attrs["cache_used"] = True
-    closes.attrs["cache_only_run"] = used_cache_only
-    closes.attrs["cache_member_count"] = int(_get_cache_metadata(db_path, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested)
-    closes.attrs["cache_members_updated_at"] = _get_cache_metadata(db_path, f"{CACHE_UNIVERSE_NAME}_members_updated_at", "")
-    closes.attrs["cache_prices_last_write_at"] = _get_cache_metadata(db_path, "prices_last_write_at", "")
+    closes.attrs["cache_only_run"] = True
+    closes.attrs["store_backend"] = store["backend"]
+    closes.attrs["store_label"] = _get_store_label(store)
+    closes.attrs["cache_member_count"] = int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested)
+    closes.attrs["cache_members_updated_at"] = _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", "")
+    closes.attrs["cache_prices_last_write_at"] = _get_cache_metadata(store, "prices_last_write_at", "")
+    closes.attrs["last_refresh_at"] = _get_cache_metadata(store, "last_refresh_at", "")
 
     min_required = max(350, int(requested * 0.18))
     return closes if loaded >= min_required else None
@@ -2627,8 +2829,31 @@ def _tab_marktanalyse():
     if not fred_key:
         fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfeed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
 
-    if st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True):
-        with st.spinner("Lade Russell 2000 Aktien … (kann etwas dauern)"):
+    store = _get_price_store()
+    st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
+    if store["backend"] != "neon":
+        st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon die deutlich bessere Variante.")
+
+    btn_refresh, btn_analyze = st.columns(2)
+    with btn_refresh:
+        refresh_clicked = st.button("🗄️ Datenbank initial befüllen / aktualisieren", use_container_width=True)
+    with btn_analyze:
+        analyze_clicked = st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True)
+
+    if refresh_clicked:
+        with st.spinner("Aktualisiere den persistenten Kursbestand für Russell 2000 …"):
+            refresh_stats = refresh_russell2000_price_store()
+            st.cache_data.clear()
+        if refresh_stats.get("ok"):
+            st.success(
+                f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} Russell-2000-Aktien verfügbar "
+                f"({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}"
+            )
+        else:
+            st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
+
+    if analyze_clicked:
+        with st.spinner("Lese Russell-2000-Aktien aus dem persistenten Datenspeicher …"):
             closes = load_russell2000_breadth_data()
 
         if closes is not None and len(closes) > 50:
@@ -2648,11 +2873,14 @@ def _tab_marktanalyse():
                 if requested and loaded < requested * 0.8:
                     st.warning(f"Hinweis: Es wurden nicht alle Russell-2000-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
                 if closes.attrs.get("cache_used"):
-                    cache_mode = "aus lokalem SQLite-Cache" if closes.attrs.get("cache_only_run") else "aus lokalem SQLite-Cache mit Nachladen fehlender Daten"
-                    cache_msg = f"Lokaler Kurs-Cache aktiv · Daten geladen {cache_mode}."
+                    store_label = closes.attrs.get("store_label", "Datenspeicher")
+                    cache_msg = f"Persistenter Datenspeicher aktiv · Daten gelesen aus {store_label}."
                     cache_write = closes.attrs.get("cache_prices_last_write_at", "")
+                    last_refresh = closes.attrs.get("last_refresh_at", "")
                     if cache_write:
-                        cache_msg += f" Letzte Cache-Aktualisierung: {cache_write} UTC."
+                        cache_msg += f" Letzter Schreibvorgang: {cache_write} UTC."
+                    if last_refresh:
+                        cache_msg += f" Letzte vollständige Aktualisierung: {last_refresh} UTC."
                     st.info(cache_msg)
 
                 # ── Breadth Charts ──
@@ -2732,7 +2960,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte nicht genug Russell-2000-Daten laden. Die App versucht iShares, Wikipedia und einen GitHub-Fallback für die Tickerliste und lädt Kurse anschließend in Bulk-Batches.")
+            st.error("Im persistenten Datenspeicher liegen noch nicht genug Russell-2000-Daten. Bitte zuerst auf 'Datenbank initial befüllen / aktualisieren' klicken.")
 
         # ── Fed Funds Rate ──
         if fred_key:
