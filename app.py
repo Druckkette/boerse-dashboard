@@ -1,33 +1,43 @@
 """
-Börse ohne Bauchgefühl — Modul 1: Markt-Dashboard & Trendwende-Ampel v3.0
-Basierend auf dem Handelssystem von Aljoscha Groos
-Inkl. Tiefenanalyse: A/D-Linie, McClellan, NH/NL, % über MAs, Fed Funds Rate
+Single-file Streamlit app.
+Merged back into one app.py while keeping the refactor improvements.
 """
-import streamlit as st
-import pandas as pd
-import numpy as np
-import yfinance as yf
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
-import warnings, os, requests, io, re, time, sqlite3
-from pathlib import Path
+
+import io
+import logging
+import os
+import re
+import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from ftplib import FTP
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+import yfinance as yf
+from plotly.subplots import make_subplots
+
 try:
     import psycopg2
     from psycopg2.extras import execute_values
 except Exception:
     psycopg2 = None
     execute_values = None
-warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="Börse ohne Bauchgefühl", page_icon="🚦", layout="wide", initial_sidebar_state="collapsed")
+# ===== From config.py =====
+PAGE_CONFIG = {
+    "page_title": "Börse ohne Bauchgefühl",
+    "page_icon": "🚦",
+    "layout": "wide",
+    "initial_sidebar_state": "collapsed",
+}
 
-# ═══════════════════════════════════════════════════════
-# CSS
-# ═══════════════════════════════════════════════════════
-st.markdown("""<style>
+APP_CSS = """<style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
 .stApp{background-color:#0a0e17;color:#e2e8f0;font-family:'JetBrains Mono',monospace}
 .main .block-container{padding-top:1.5rem;max-width:1200px}
@@ -50,13 +60,17 @@ h1{font-size:1.6rem!important;font-weight:800!important;background:linear-gradie
 .card-label{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 .breadth-track{height:10px;border-radius:5px;background:#1e293b;position:relative;overflow:hidden;margin:8px 0}
 .breadth-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444);transition:width .5s}
-</style>""", unsafe_allow_html=True)
+</style>"""
 
-# ═══════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════
-# S&P 500 COMPONENTS (full list for breadth calculation)
-# ═══════════════════════════════════════════════════════
-@st.cache_data(ttl=86400, show_spinner=False)
+def configure_page() -> None:
+    st.set_page_config(**PAGE_CONFIG)
+
+def inject_css() -> None:
+    st.markdown(APP_CSS, unsafe_allow_html=True)
+
+# ===== From market_data.py =====
+logger = logging.getLogger(__name__)
+
 def get_sp500_tickers():
     """Try to load current S&P 500 tickers from Wikipedia, fall back to hardcoded list."""
     try:
@@ -103,7 +117,6 @@ def get_sp500_tickers():
         'ZION','ZTS',
     ]
 
-
 def _normalize_ticker_list(values):
     tickers = []
     for raw in values:
@@ -117,14 +130,12 @@ def _normalize_ticker_list(values):
             tickers.append(t)
     return list(dict.fromkeys(tickers))
 
-
 def _extract_ticker_column(df):
     for c in df.columns:
         name = str(c).strip().lower()
         if name in {"ticker", "issuer ticker"} or "ticker" in name:
             return c
     return None
-
 
 def _parse_ishares_holdings_csv(text):
     lines = text.splitlines()
@@ -140,7 +151,6 @@ def _parse_ishares_holdings_csv(text):
         return []
     return _normalize_ticker_list(holdings[ticker_col])
 
-
 def _parse_ishares_holdings_html(html):
     try:
         tables = pd.read_html(io.StringIO(html))
@@ -152,8 +162,6 @@ def _parse_ishares_holdings_html(html):
         if ticker_col is not None:
             collected.extend(table[ticker_col].tolist())
     return _normalize_ticker_list(collected)
-
-
 
 def _parse_nasdaq_otherlisted_text(text):
     try:
@@ -231,7 +239,6 @@ def _parse_nasdaq_otherlisted_text(text):
 
     return _normalize_ticker_list(collected)
 
-
 def _get_nyse_stocks_from_nasdaq_trader_ftp():
     buf = io.BytesIO()
     ftp = None
@@ -252,7 +259,6 @@ def _get_nyse_stocks_from_nasdaq_trader_ftp():
         except Exception:
             pass
 
-
 def _get_nyse_stocks_from_nasdaq_trader_http():
     urls = [
         "https://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt",
@@ -270,7 +276,6 @@ def _get_nyse_stocks_from_nasdaq_trader_http():
         except Exception:
             continue
     return []
-
 
 def _get_nyse_stocks_from_github_fallback():
     urls = [
@@ -298,8 +303,6 @@ def _get_nyse_stocks_from_github_fallback():
             continue
     return []
 
-
-@st.cache_data(ttl=86400, show_spinner=False)
 def get_nyse_stock_tickers():
     """Load a current NYSE stock universe from Nasdaq Trader otherlisted.txt with fallbacks."""
     best = []
@@ -318,26 +321,33 @@ def get_nyse_stock_tickers():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_russell2000_tickers():
-    """Compatibility wrapper: now returns the current NYSE stock universe."""
+def get_nyse_breadth_tickers():
+    """Canonical helper for the current NYSE stock universe used in breadth calculations."""
     return get_nyse_stock_tickers()
 
 
-# ═══════════════════════════════════════════════════════
-# DATA LOADING
-# ═══════════════════════════════════════════════════════
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_russell2000_tickers():
+    """Backward-compatible wrapper kept for older code paths."""
+    return get_nyse_breadth_tickers()
+
+
 def _dl(symbol, start, end):
     try:
         df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=True)
-        if df is None or len(df) == 0: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        df.index = pd.to_datetime(df.index); df = df.sort_index()
-        for c in ["Open","High","Low","Close","Volume"]:
-            if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
+        if df is None or len(df) == 0:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        for c in ["Open", "High", "Low", "Close", "Volume"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.dropna(subset=["Close"])
-    except: return None
-
-@st.cache_data(ttl=900, show_spinner=False)
+    except Exception as exc:
+        logger.warning("Download failed for %s: %s", symbol, exc)
+        return None
 def load_market_data(lookback_days=400):
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = {
@@ -353,9 +363,6 @@ def load_market_data(lookback_days=400):
         if df is not None and len(df) > 20: data[name] = df
     return data
 
-# ═══════════════════════════════════════════════════════
-# SECTOR ANALYSIS DATA
-# ═══════════════════════════════════════════════════════
 SECTOR_ETFS = {
     "XLK": "Technology",
     "XLV": "Health Care",
@@ -370,7 +377,6 @@ SECTOR_ETFS = {
     "XLRE": "Real Estate",
 }
 
-@st.cache_data(ttl=900, show_spinner=False)
 def load_sector_data(lookback_days=200):
     """Load daily close prices for all sector ETFs."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
@@ -439,12 +445,126 @@ def build_sector_table(closes, mode="daily", n_periods=20):
 
     return result, latest_ranked
 
-# ═══════════════════════════════════════════════════════
-# DEEP ANALYSIS: NYSE breadth + FRED
-# ═══════════════════════════════════════════════════════
-CACHE_DB_NAME = "market_data_cache.sqlite"
-CACHE_UNIVERSE_NAME = "nyse_stocks"
 
+def _read_secret_value(name: str) -> str:
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+    if not value:
+        value = os.environ.get(name, "")
+    return value or ""
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_quarterly_fmp(ticker, fmp_key):
+    """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters)."""
+    if not fmp_key: return None, "Kein API-Key"
+    try:
+        import json
+        url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
+        params = {"period": "quarter", "limit": 12, "apikey": fmp_key}
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code == 429: return None, f"Rate Limited (429)"
+        if r.status_code == 403: return None, f"Zugriff verweigert (403) — Domain evtl. geblockt"
+        if r.status_code == 401: return None, f"API-Key ungültig (401)"
+        if r.status_code != 200: return None, f"HTTP {r.status_code}"
+        data = json.loads(r.text)
+        if isinstance(data, dict) and "Error Message" in data:
+            return None, f"FMP Fehler: {data['Error Message'][:80]}"
+        if not data or not isinstance(data, list): return None, f"Leere Antwort (Typ: {type(data).__name__})"
+        out = {}; eps_vals = {}; rev_vals = {}
+        for item in data:
+            date_str = item.get("date", "")
+            if not date_str: continue
+            dt = pd.Timestamp(date_str)
+            eps = item.get("epsdiluted", item.get("epsDiluted"))
+            rev = item.get("revenue")
+            if eps is not None: eps_vals[dt] = float(eps)
+            if rev is not None: rev_vals[dt] = float(rev)
+        if eps_vals: out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
+        if rev_vals: out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
+        return (out if out else None), None
+    except requests.exceptions.ConnectionError as e:
+        return None, f"Verbindungsfehler: {str(e)[:60]}"
+    except requests.exceptions.Timeout:
+        return None, "Timeout (>15s)"
+    except Exception as e:
+        return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_stock_full(ticker, lookback_days=500):
+    """Load price history plus the most important fundamental datasets for one ticker."""
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    empty_result = (None, None, None, None, None, None, None, None, None)
+    try:
+        t = yf.Ticker(ticker)
+        df = t.history(start=start, end=end, auto_adjust=True)
+        if df is None or len(df) < 20:
+            return empty_result
+
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        for c in ["Open", "High", "Low", "Close", "Volume"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        def _safe_attr(attr_name):
+            try:
+                return getattr(t, attr_name)
+            except Exception as exc:
+                logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
+                return None
+
+        info = _safe_attr("info") or {}
+        qi = _safe_attr("quarterly_income_stmt")
+        ai = _safe_attr("income_stmt")
+        ih = _safe_attr("institutional_holders")
+        qe = _safe_attr("quarterly_earnings")
+        try:
+            ed = t.get_earnings_dates(limit=12)
+        except Exception as exc:
+            logger.debug("earnings dates failed for %s: %s", ticker, exc)
+            ed = None
+
+        fmp_key = _read_secret_value("FMP_API_KEY")
+        qraw = None
+        fmp_err = None
+        if fmp_key:
+            result = _fetch_quarterly_fmp(ticker, fmp_key)
+            if isinstance(result, tuple):
+                qraw, fmp_err = result
+            else:
+                qraw = result
+
+        return df, info, qi, ai, ih, qe, ed, qraw, fmp_err
+    except Exception as exc:
+        logger.warning("load_stock_full failed for %s: %s", ticker, exc)
+        return empty_result
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sp500_for_rs(lookback_days=400):
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    return _dl("^GSPC", start, end)
+
+# ===== From cache_store.py =====
+try:
+    import psycopg2
+    from psycopg2.extras import execute_values
+except Exception:
+    psycopg2 = None
+    execute_values = None
+
+
+logger = logging.getLogger(__name__)
+
+CACHE_DB_NAME = "market_data_cache.sqlite"
+
+CACHE_UNIVERSE_NAME = "nyse_stocks"
 
 def _safe_get_secret(*path, default=None):
     try:
@@ -454,7 +574,6 @@ def _safe_get_secret(*path, default=None):
         return cur
     except Exception:
         return default
-
 
 def _get_neon_connection_url():
     candidates = [
@@ -468,13 +587,11 @@ def _get_neon_connection_url():
             return str(value).strip()
     return ""
 
-
 def _get_cache_db_path():
     base_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path(os.getcwd())
     cache_dir = base_dir / ".cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return str(cache_dir / CACHE_DB_NAME)
-
 
 def _get_price_store():
     neon_url = _get_neon_connection_url()
@@ -482,10 +599,8 @@ def _get_price_store():
         return {"backend": "neon", "dsn": neon_url, "label": "Neon Postgres"}
     return {"backend": "sqlite", "db_path": _get_cache_db_path(), "label": "lokaler SQLite-Cache"}
 
-
 def _get_store_label(store):
     return store.get("label", store.get("backend", "Datenspeicher"))
-
 
 def _get_cache_conn(store):
     if store["backend"] == "neon":
@@ -496,7 +611,6 @@ def _get_cache_conn(store):
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
-
 
 def _init_price_cache_db(store):
     conn = _get_cache_conn(store)
@@ -608,8 +722,9 @@ def _init_price_cache_db(store):
         conn.close()
 
 
-def _set_cache_metadata(store, key, value):
-    conn = _get_cache_conn(store)
+def _set_cache_metadata(store, key, value, *, conn=None):
+    own_conn = conn is None
+    conn = conn or _get_cache_conn(store)
     try:
         now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         if store["backend"] == "neon":
@@ -631,11 +746,21 @@ def _set_cache_metadata(store, key, value):
                 """,
                 (key, str(value), now),
             )
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _set_cache_metadata_many(store, values):
+    conn = _get_cache_conn(store)
+    try:
+        for key, value in values.items():
+            _set_cache_metadata(store, key, value, conn=conn)
         conn.commit()
     finally:
         conn.close()
-
-
 def _get_cache_metadata(store, key, default=None):
     conn = _get_cache_conn(store)
     try:
@@ -648,7 +773,6 @@ def _get_cache_metadata(store, key, default=None):
         return row[0] if row else default
     finally:
         conn.close()
-
 
 def _store_universe_members(store, universe, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
@@ -683,7 +807,6 @@ def _store_universe_members(store, universe, tickers):
     _set_cache_metadata(store, f"{universe}_member_count", len(tickers))
     _set_cache_metadata(store, f"{universe}_members_updated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
 
-
 def _load_cached_universe_members(store, universe):
     conn = _get_cache_conn(store)
     try:
@@ -703,10 +826,8 @@ def _load_cached_universe_members(store, universe):
     finally:
         conn.close()
 
-
 def _normalize_symbol(symbol):
     return str(symbol).strip().upper().replace("/", "-").replace(".", "-")
-
 
 def _upsert_symbol_mapping(store, universe, source_symbol, yahoo_symbol=None, status="unknown", note=""):
     source_symbol = _normalize_symbol(source_symbol)
@@ -746,7 +867,6 @@ def _upsert_symbol_mapping(store, universe, source_symbol, yahoo_symbol=None, st
     finally:
         conn.close()
 
-
 def _load_symbol_mappings(store, universe, status_filter=("mapped",)):
     conn = _get_cache_conn(store)
     try:
@@ -775,12 +895,9 @@ def _load_symbol_mappings(store, universe, status_filter=("mapped",)):
     finally:
         conn.close()
 
-
 def _chunked(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
-
-
 
 def _extract_price_field_frame(df, requested_batch, field_name):
     if df is None or len(df) == 0:
@@ -803,14 +920,12 @@ def _extract_price_field_frame(df, requested_batch, field_name):
     frame = frame.dropna(axis=1, how="all")
     return frame if frame.shape[1] else None
 
-
 def _extract_ohlc_bundle(df, requested_batch):
     return {
         "close": _extract_price_field_frame(df, requested_batch, "Close"),
         "high": _extract_price_field_frame(df, requested_batch, "High"),
         "low": _extract_price_field_frame(df, requested_batch, "Low"),
     }
-
 
 def _download_ohlc_batch_fast(batch, start, end, threads=True, timeout=30):
     """Bulk download helper returning Close/High/Low frames for breadth storage."""
@@ -833,13 +948,11 @@ def _download_ohlc_batch_fast(batch, start, end, threads=True, timeout=30):
     except Exception:
         return None
 
-
 def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
     bundle = _download_ohlc_batch_fast(batch, start, end, threads=threads, timeout=timeout)
     if not bundle:
         return None
     return bundle.get("close")
-
 
 def _rename_ohlc_bundle(bundle, rename_map):
     if not bundle:
@@ -855,7 +968,6 @@ def _rename_ohlc_bundle(bundle, rename_map):
         out[key] = renamed if renamed.shape[1] else None
     return out if any(v is not None and not v.empty for v in out.values()) else None
 
-
 def _bundle_loaded_symbols(bundle):
     if not bundle:
         return []
@@ -864,7 +976,6 @@ def _bundle_loaded_symbols(bundle):
         if frame is not None and not frame.empty:
             return [str(c).strip().upper() for c in frame.columns]
     return []
-
 
 def _download_ohlc_batch_mapped(symbols, symbol_map, start, end, threads=True, timeout=30):
     symbols = [_normalize_symbol(s) for s in list(dict.fromkeys(symbols)) if s]
@@ -891,14 +1002,12 @@ def _download_ohlc_batch_mapped(symbols, symbol_map, start, end, threads=True, t
     bundle = _rename_ohlc_bundle(bundle, rename_map)
     return bundle, collision_symbols
 
-
 def _download_close_batch_mapped(symbols, symbol_map, start, end, threads=True, timeout=30):
     bundle, collision_symbols = _download_ohlc_batch_mapped(symbols, symbol_map, start, end, threads=threads, timeout=timeout)
     if not bundle:
         return None, collision_symbols
     closes = bundle.get("close")
     return (closes if closes is not None and not closes.empty else None), collision_symbols
-
 
 def _download_single_ticker_ohlc(symbol, start, end, timeout=30):
     """Single-symbol fallback download for hard-to-fetch tickers."""
@@ -921,13 +1030,11 @@ def _download_single_ticker_ohlc(symbol, start, end, timeout=30):
     except Exception:
         return None
 
-
 def _download_single_ticker_close(symbol, start, end, timeout=30):
     bundle = _download_single_ticker_ohlc(symbol, start, end, timeout=timeout)
     if not bundle:
         return None
     return bundle.get("close")
-
 
 def _download_single_source_symbol(source_symbol, symbol_map, start, end, timeout=30):
     source_symbol = _normalize_symbol(source_symbol)
@@ -940,7 +1047,6 @@ def _download_single_source_symbol(source_symbol, symbol_map, start, end, timeou
         rename_map[symbol] = source_symbol
     bundle = _rename_ohlc_bundle(bundle, rename_map)
     return bundle
-
 
 def _search_yahoo_symbol_candidates(symbol, timeout=15):
     """Query Yahoo's public search endpoint to see whether a symbol is known there at all."""
@@ -966,7 +1072,6 @@ def _search_yahoo_symbol_candidates(symbol, timeout=15):
         return {"lookup_ok": len(candidates) > 0, "exact_match": exact_match, "candidates": candidates[:8]}
     except Exception:
         return {"lookup_ok": False, "exact_match": False, "candidates": []}
-
 
 def _probe_single_missing_symbol(symbol, start, end, timeout=25):
     """Diagnose whether Yahoo knows a symbol and whether history can actually be loaded."""
@@ -1009,7 +1114,6 @@ def _probe_single_missing_symbol(symbol, start, end, timeout=25):
         "status": status,
     }
 
-
 def _build_symbol_test_candidates(symbol, lookup_candidates=None, max_candidates=8):
     seen = set()
     out = []
@@ -1033,8 +1137,6 @@ def _build_symbol_test_candidates(symbol, lookup_candidates=None, max_candidates
         if len(out) >= max_candidates:
             break
     return out[:max_candidates]
-
-
 
 def _discover_yahoo_mapping(source_symbol, start, end, timeout=25, max_candidates=8):
     source_symbol = _normalize_symbol(source_symbol)
@@ -1071,9 +1173,7 @@ def _discover_yahoo_mapping(source_symbol, start, end, timeout=25, max_candidate
         "bundle": None,
     }
 
-
-
-def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_candidates=8):
+def auto_remap_missing_nyse_yahoo(lookback_days=550, max_workers=8, max_candidates=8):
     """Automatically test Yahoo candidate symbols for still-missing NYSE members and persist working mappings."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -1231,9 +1331,7 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
         "counts": counts,
     }
 
-
-
-def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_workers=8):
+def diagnose_missing_nyse_yahoo(sample_size=80, lookback_days=550, max_workers=8):
     """Diagnose a sample of still-missing NYSE symbols against Yahoo."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -1311,13 +1409,10 @@ def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_wo
         "last_diag_at": now_str,
     }
 
-
 def _get_missing_universe_tickers(store, universe_tickers):
     last_dates = _get_cached_last_dates(store, universe_tickers)
     missing = [t for t in universe_tickers if t not in last_dates]
     return missing, last_dates
-
-
 
 def _bundle_to_long_records(bundle):
     if not bundle:
@@ -1382,18 +1477,15 @@ def _write_price_bundle_to_cache(store, bundle):
                 """,
                 records,
             )
+        _set_cache_metadata(store, "prices_last_write_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), conn=conn)
         conn.commit()
     finally:
         conn.close()
-    _set_cache_metadata(store, "prices_last_write_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
     return len(records)
-
-
 def _write_closes_to_cache(store, closes):
     if closes is None or closes.empty:
         return 0
     return _write_price_bundle_to_cache(store, {"close": closes})
-
 
 def _read_cached_price_bundle(store, tickers, start_date, end_date):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
@@ -1451,13 +1543,11 @@ def _read_cached_price_bundle(store, tickers, start_date, end_date):
         out[field] = pivot if pivot.shape[1] else None
     return out if any(v is not None and not v.empty for v in out.values()) else None
 
-
 def _read_cached_closes(store, tickers, start_date, end_date):
     bundle = _read_cached_price_bundle(store, tickers, start_date, end_date)
     if not bundle:
         return None
     return bundle.get("close")
-
 
 def _get_cached_last_dates(store, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
@@ -1489,8 +1579,6 @@ def _get_cached_last_dates(store, tickers):
         return out
     finally:
         conn.close()
-
-
 
 def _get_cached_price_field_counts(store, tickers, start_date, end_date):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
@@ -1550,16 +1638,13 @@ def _get_cached_price_field_counts(store, tickers, start_date, end_date):
 
 
 def _get_nyse_stock_tickers_with_cache(store):
-    live = get_nyse_stock_tickers()
-    if live and len(live) >= 1000:
-        _store_universe_members(store, CACHE_UNIVERSE_NAME, live)
-        return live
     cached = _load_cached_universe_members(store, CACHE_UNIVERSE_NAME)
     if cached:
         return cached
-    return live
-
-
+    tickers = get_nyse_breadth_tickers()
+    if tickers:
+        _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
+    return tickers
 def _prepare_component_frame(frame):
     if frame is None or frame.empty:
         return None
@@ -1572,7 +1657,6 @@ def _prepare_component_frame(frame):
     frame = frame.dropna(axis=1, thresh=thresh)
     frame = frame.dropna(axis=1, how="all")
     return frame if frame.shape[1] else None
-
 
 def _prepare_component_bundle(bundle):
     if not bundle:
@@ -1599,8 +1683,7 @@ def _prepare_component_bundle(bundle):
     prepared["low"] = low_frame[shared] if low_frame is not None and not low_frame.empty else None
     return prepared
 
-
-def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, recent_batch_size=220, recent_refresh_days=15):
+def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_batch_size=220, recent_refresh_days=15):
     """Initial fill or incremental refresh for the persistent price store.
 
     - symbols without history: fetch full lookback window
@@ -1645,7 +1728,8 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
             history_batches += 1
 
         refreshed_dates = _get_cached_last_dates(store, tickers)
-        still_missing = [t for t in tickers if t not in refreshed_dates]
+        refreshed_symbol_set = set(refreshed_dates)
+        still_missing = [t for t in tickers if t not in refreshed_symbol_set]
         if still_missing:
             for batch in _chunked(still_missing, max(40, history_batch_size // 2)):
                 bundle = _download_ohlc_batch_fast(batch, start, end, threads=False, timeout=30)
@@ -1653,7 +1737,7 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
                 if close_frame is not None and not close_frame.empty:
                     rows_written += _write_price_bundle_to_cache(store, bundle)
                 history_batches += 1
-        recent_targets = [t for t in tickers if t in _get_cached_last_dates(store, tickers)]
+        recent_targets = [t for t in tickers if t in refreshed_symbol_set]
 
     recent_start = max(start, end - timedelta(days=recent_refresh_days))
     for batch in _chunked(recent_targets, recent_batch_size):
@@ -1670,10 +1754,7 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
     coverage = loaded / max(requested, 1)
 
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    _set_cache_metadata(store, "last_refresh_at", now_str)
-    _set_cache_metadata(store, "last_refresh_rows_written", rows_written)
-    _set_cache_metadata(store, "last_refresh_loaded_universe", loaded)
-    _set_cache_metadata(store, "last_refresh_requested_universe", requested)
+    _set_cache_metadata_many(store, {"last_refresh_at": now_str, "last_refresh_rows_written": rows_written, "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
 
     return {
         "ok": loaded > 0,
@@ -1689,8 +1770,7 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
         "backend": store["backend"],
     }
 
-
-def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=24, max_workers=8):
+def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max_workers=8):
     """Try to backfill still-missing NYSE symbols without manual ticker input."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -1776,12 +1856,7 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
     new_symbols_loaded = len(missing_before) - len(missing_after)
 
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    _set_cache_metadata(store, "last_rescue_at", now_str)
-    _set_cache_metadata(store, "last_rescue_rows_written", rows_written)
-    _set_cache_metadata(store, "last_rescue_missing_before", len(missing_before))
-    _set_cache_metadata(store, "last_rescue_missing_after", len(missing_after))
-    _set_cache_metadata(store, "last_refresh_loaded_universe", loaded)
-    _set_cache_metadata(store, "last_refresh_requested_universe", requested)
+    _set_cache_metadata_many(store, {"last_rescue_at": now_str, "last_rescue_rows_written": rows_written, "last_rescue_missing_before": len(missing_before), "last_rescue_missing_after": len(missing_after), "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
 
     return {
         "ok": loaded > 0,
@@ -1800,9 +1875,7 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
         "backend": store["backend"],
     }
 
-
-@st.cache_data(ttl=600, show_spinner=False)
-def load_russell2000_breadth_data(lookback_days=550):
+def load_nyse_breadth_data(lookback_days=550):
     """Read breadth data bundle from the persistent store without triggering a large network refresh."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -1848,11 +1921,12 @@ def load_russell2000_breadth_data(lookback_days=550):
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_fed_funds_rate(fred_key):
     """Load Federal Funds Rate from FRED API."""
-    if not fred_key: return None
+    if not fred_key:
+        return None
     try:
         url = "https://api.stlouisfed.org/fred/series/observations"
         params = {
-            "series_id": "DFEDTARU",  # Daily Fed Funds Target Rate Upper Limit
+            "series_id": "DFEDTARU",
             "api_key": fred_key,
             "file_type": "json",
             "sort_order": "desc",
@@ -1860,109 +1934,51 @@ def load_fed_funds_rate(fred_key):
             "observation_start": (datetime.now() - timedelta(days=800)).strftime("%Y-%m-%d"),
         }
         resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code != 200: return None
+        if resp.status_code != 200:
+            logger.warning("FRED request failed with status %s", resp.status_code)
+            return None
         obs = resp.json().get("observations", [])
-        if not obs: return None
+        if not obs:
+            return None
         df = pd.DataFrame(obs)
         df["date"] = pd.to_datetime(df["date"])
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
         df = df.dropna(subset=["value"]).set_index("date").sort_index()
         return df[["value"]].rename(columns={"value": "FedRate"})
-    except: return None
-
-def compute_breadth_from_components(components):
-    """From component price frames, compute breadth indicators daily."""
-    if components is None:
+    except Exception as exc:
+        logger.warning("FRED download failed: %s", exc)
         return None
 
-    if isinstance(components, dict):
-        closes = components.get("close")
-        highs = components.get("high")
-        lows = components.get("low")
-        attrs = components.get("attrs", {})
-    else:
-        closes = components
-        highs = None
-        lows = None
-        attrs = {}
 
-    if closes is None or len(closes) < 50:
-        return None
+# Backward-compatible wrappers for the old function names
+def refresh_russell2000_price_store(*args, **kwargs):
+    return refresh_nyse_price_store(*args, **kwargs)
 
-    common_cols = set(closes.columns)
-    if highs is not None and not highs.empty:
-        common_cols &= set(highs.columns)
-    if lows is not None and not lows.empty:
-        common_cols &= set(lows.columns)
-    common_cols = sorted(common_cols)
 
-    if common_cols:
-        closes = closes[common_cols]
-        if highs is not None and not highs.empty:
-            highs = highs[common_cols]
-        if lows is not None and not lows.empty:
-            lows = lows[common_cols]
+def rescue_missing_russell2000_price_store(*args, **kwargs):
+    return rescue_missing_nyse_price_store(*args, **kwargs)
 
-    pct = closes.pct_change()
-    results = pd.DataFrame(index=closes.index)
 
-    results["Advancers"] = (pct > 0).sum(axis=1)
-    results["Decliners"] = (pct < 0).sum(axis=1)
-    results["Net_Advances"] = results["Advancers"] - results["Decliners"]
-    results["AD_Ratio"] = results["Advancers"] / results["Decliners"].replace(0, np.nan)
-    results["AD_Line"] = results["Net_Advances"].cumsum()
+def auto_remap_missing_russell2000_yahoo(*args, **kwargs):
+    return auto_remap_missing_nyse_yahoo(*args, **kwargs)
 
-    breadth_base = (results["Advancers"] + results["Decliners"]).replace(0, np.nan)
-    results["RANA"] = (results["Net_Advances"] / breadth_base) * 1000.0
-    results["McC_19"] = results["RANA"].ewm(span=19, adjust=False).mean()
-    results["McC_39"] = results["RANA"].ewm(span=39, adjust=False).mean()
-    results["McClellan"] = results["McC_19"] - results["McC_39"]
 
-    avail = len(closes)
-    nh_window = min(252, avail - 2) if avail > 22 else 20
+def diagnose_missing_russell2000_yahoo(*args, **kwargs):
+    return diagnose_missing_nyse_yahoo(*args, **kwargs)
 
-    high_source = highs if highs is not None and not highs.empty else closes
-    low_source = lows if lows is not None and not lows.empty else closes
-    prev_highs = high_source.shift(1)
-    prev_lows = low_source.shift(1)
-    high_ref = prev_highs.rolling(nh_window, min_periods=20).max()
-    low_ref = prev_lows.rolling(nh_window, min_periods=20).min()
 
-    results["New_Highs"] = (high_source > high_ref).sum(axis=1)
-    results["New_Lows"] = (low_source < low_ref).sum(axis=1)
-    results["Net_New_Highs"] = results["New_Highs"] - results["New_Lows"]
-    results["NH_NL_Ratio"] = results["New_Highs"] / results["New_Lows"].replace(0, np.nan)
-    total_hl = (results["New_Highs"] + results["New_Lows"]).replace(0, np.nan)
-    results["High_Low_Pct"] = results["New_Highs"] / total_hl * 100.0
+def load_russell2000_breadth_data(*args, **kwargs):
+    return load_nyse_breadth_data(*args, **kwargs)
 
-    sma50 = closes.rolling(50, min_periods=50).mean()
-    sma200 = closes.rolling(200, min_periods=200).mean()
-    n_stocks = closes.count(axis=1)
-    results["Pct_Above_50SMA"] = (closes > sma50).sum(axis=1) / n_stocks * 100
-    results["Pct_Above_200SMA"] = (closes > sma200).sum(axis=1) / n_stocks * 100
-
-    adv_10 = results["Advancers"].rolling(10).sum()
-    dec_10 = results["Decliners"].rolling(10).sum()
-    results["Deemer_Ratio"] = adv_10 / dec_10.replace(0, np.nan)
-    results["Breadth_Thrust"] = results["Deemer_Ratio"] > 1.97
-
-    results["AD_Line_SMA21"] = results["AD_Line"].rolling(21, min_periods=5).mean()
-    results["McClellan_SMA10"] = results["McClellan"].rolling(10, min_periods=3).mean()
-
-    for k, v in attrs.items():
-        results.attrs[k] = v
-    results.attrs["breadth_universe_loaded"] = int(closes.shape[1])
-    results.attrs["nhnl_uses_intraday"] = highs is not None and lows is not None and not highs.empty and not lows.empty
-    return results
-
-# ═══════════════════════════════════════════════════════
-# TECHNICAL HELPERS
-# ═══════════════════════════════════════════════════════
+# ===== From analytics.py =====
 def _ema(s,p): return s.ewm(span=p,adjust=False).mean()
+
 def _sma(s,p): return s.rolling(window=p,min_periods=p).mean()
+
 def _atr(df,p=21):
     h,l,pc = df["High"],df["Low"],df["Close"].shift(1)
     return pd.concat([h-l,(h-pc).abs(),(l-pc).abs()],axis=1).max(axis=1).rolling(p,min_periods=p).mean()
+
 def _consec(s):
     o=np.zeros(len(s),dtype=int)
     for i in range(len(s)):
@@ -1999,9 +2015,6 @@ def detect_distribution_days(df):
     df["Dist_Count_25"]=df["Is_Distribution"].rolling(25,min_periods=1).sum().astype(int)
     return df
 
-# ═══════════════════════════════════════════════════════
-# TRENDWENDE-AMPEL v3
-# ═══════════════════════════════════════════════════════
 def compute_ampel(df):
     df=df.copy();n=len(df);phase="neutral"
     anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None
@@ -2039,9 +2052,6 @@ def compute_ampel(df):
     df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows
     return df
 
-# ═══════════════════════════════════════════════════════
-# BREADTH MODE (Equal-Weight, 3-day stability)
-# ═══════════════════════════════════════════════════════
 def compute_breadth_mode(df_ew):
     df_ew=df_ew.copy();df_ew["High_52w"]=df_ew["High"].rolling(252,min_periods=1).max()
     df_ew["Dist_52w_pct"]=(df_ew["Close"]-df_ew["High_52w"])/df_ew["High_52w"]*100
@@ -2065,14 +2075,13 @@ def _rolling_zscore(s, window=63):
 
 def _rolling_percentile(s, window=252):
     min_periods = max(60, window // 4)
-
-    def _pct_rank(x):
-        xs = pd.Series(x)
-        return xs.rank(pct=True).iloc[-1]
-
-    return s.rolling(window, min_periods=min_periods).apply(_pct_rank, raw=False)
-
-
+    try:
+        return s.rolling(window, min_periods=min_periods).rank(pct=True)
+    except Exception:
+        def _pct_rank(x):
+            xs = pd.Series(x)
+            return xs.rank(pct=True).iloc[-1]
+        return s.rolling(window, min_periods=min_periods).apply(_pct_rank, raw=False)
 def analyze_vix(dv):
     dv = dv.copy()
     dv["SMA10"] = _sma(dv["Close"], 10)
@@ -2098,7 +2107,6 @@ def analyze_vix(dv):
     )
     return dv
 
-
 def analyze_vixy(dx):
     dx = dx.copy()
     dx["EMA10"] = _ema(dx["Close"], 10)
@@ -2121,7 +2129,6 @@ def analyze_vixy(dx):
         default="Gemischt",
     )
     return dx
-
 
 def build_volatility_dashboard(spx_df, vix_df=None, vixy_df=None):
     out = pd.DataFrame(index=spx_df.index.copy())
@@ -2181,7 +2188,6 @@ def build_volatility_dashboard(spx_df, vix_df=None, vixy_df=None):
     ]
     out["Vol_Regime"] = np.select(conditions, labels, default="Neutral")
     return out
-
 
 def summarize_volatility_state(vol_df):
     latest = vol_df.iloc[-1]
@@ -2252,9 +2258,6 @@ def summarize_volatility_state(vol_df):
         "Fragile Rally": {"status": fragile_label, "detail": fragile_detail, "tone": fragile_tone},
     }
 
-# ═══════════════════════════════════════════════════════
-# INTERMARKET & SECTOR ROTATION & FAILING RALLY
-# ═══════════════════════════════════════════════════════
 def detect_intermarket_divergence(data):
     results=[]
     for name in ["S&P 500","Nasdaq Composite","Russell 2000"]:
@@ -2281,9 +2284,6 @@ def detect_failing_rally(df):
     if drop/hv<0.03: return None,None
     rec=(df["Close"].iloc[-1]-lv);return round(rec/drop*100,1),round(drop/hv*100,1)
 
-# ═══════════════════════════════════════════════════════
-# RENDER HELPERS
-# ═══════════════════════════════════════════════════════
 def render_ampel_section(L):
     """Render the full Trendwende-Ampel section with 3 lights, status, and Startschuss."""
     phase = L["Ampel_Phase"]
@@ -2437,10 +2437,8 @@ def render_breadth(mode,dist_pct):
     fp=min(100,abs(dist_pct)/12*100)
     st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div style="display:flex;justify-content:space-between;font-size:.65rem;color:#64748b;"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════
-# CHARTS
-# ═══════════════════════════════════════════════════════
 def _x(idx): return [d.strftime("%Y-%m-%d") for d in idx]
+
 def _y(s): return [None if pd.isna(v) else round(float(v),2) for v in s]
 
 def plot_price(df,sd=90):
@@ -2474,7 +2472,6 @@ def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
         fig.add_trace(go.Scatter(x=x, y=_y(d[ma_col]), name=ma_name, line=dict(color="#3b82f6", width=1, dash="dot")))
     fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=10, b=0), height=180, legend=dict(orientation="h", yanchor="top", y=1.15, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")))
     return fig
-
 
 def render_signal_card(title, status, detail, tone="#64748b"):
     st.markdown(
@@ -2523,128 +2520,96 @@ def plot_fed_rate(fed_df,sd=200):
     fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=150,showlegend=False,xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),title="% p.a.",title_font=dict(size=9,color="#64748b")))
     return fig
 
-# ═══════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════
-def main():
-    st.title("BÖRSE OHNE BAUCHGEFÜHL")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf"])
+def compute_breadth_from_components(components):
+    """From component price frames, compute breadth indicators daily."""
+    if components is None:
+        return None
 
-    # ═══════════════════════════════════════════════════════
-    # TAB 1: MARKTANALYSE (existing content)
-    # ═══════════════════════════════════════════════════════
-    with tab1:
-        _tab_marktanalyse()
+    if isinstance(components, dict):
+        closes = components.get("close")
+        highs = components.get("high")
+        lows = components.get("low")
+        attrs = components.get("attrs", {})
+    else:
+        closes = components
+        highs = None
+        lows = None
+        attrs = {}
 
-    # ═══════════════════════════════════════════════════════
-    # TAB 2: SEKTORANALYSE
-    # ═══════════════════════════════════════════════════════
-    with tab2:
-        _tab_sektoranalyse()
+    if closes is None or len(closes) < 50:
+        return None
 
-    # ═══════════════════════════════════════════════════════
-    # TAB 3: AKTIENBEWERTUNG
-    # ═══════════════════════════════════════════════════════
-    with tab3:
-        _tab_aktienbewertung()
+    common_cols = set(closes.columns)
+    if highs is not None and not highs.empty:
+        common_cols &= set(highs.columns)
+    if lows is not None and not lows.empty:
+        common_cols &= set(lows.columns)
+    common_cols = sorted(common_cols)
 
-    # ═══════════════════════════════════════════════════════
-    # TAB 4: NACH DEM KAUF
-    # ═══════════════════════════════════════════════════════
-    with tab4:
-        _tab_nach_kauf()
+    if common_cols:
+        closes = closes[common_cols]
+        if highs is not None and not highs.empty:
+            highs = highs[common_cols]
+        if lows is not None and not lows.empty:
+            lows = lows[common_cols]
 
+    pct = closes.pct_change()
+    results = pd.DataFrame(index=closes.index)
 
-# ═══════════════════════════════════════════════════════
-# TAB 3: AKTIENBEWERTUNG — Stock evaluation (Book Ch.3.4–4.7)
-# ═══════════════════════════════════════════════════════
-@st.cache_data(ttl=900, show_spinner=False)
-# ═══════════════════════════════════════════════════════
-# TAB 3: AKTIENBEWERTUNG (Book Ch.3.4–4.7)
-# ═══════════════════════════════════════════════════════
-@st.cache_data(ttl=900, show_spinner=False)
-def load_stock_full(ticker, lookback_days=500):
-    end = datetime.now(); start = end - timedelta(days=lookback_days)
-    try:
-        t = yf.Ticker(ticker)
-        df = t.history(start=start, end=end, auto_adjust=True)
-        if df is None or len(df) < 20: return None, None, None, None, None, None, None, None
-        df.index = pd.to_datetime(df.index); df = df.sort_index()
-        for c in ["Open","High","Low","Close","Volume"]:
-            if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
-        info = t.info or {}
-        qi = None; ai = None; ih = None; qe = None; ed = None
-        try: qi = t.quarterly_income_stmt
-        except: pass
-        try: ai = t.income_stmt
-        except: pass
-        try: ih = t.institutional_holders
-        except: pass
-        try: qe = t.quarterly_earnings
-        except: pass
-        try: ed = t.get_earnings_dates(limit=12)
-        except: pass
-        # FMP API: up to 12 quarters of EPS + Revenue (primary source)
-        fmp_key = ""
-        try: fmp_key = st.secrets["FMP_API_KEY"]
-        except: pass
-        if not fmp_key:
-            try: fmp_key = st.secrets.get("FMP_API_KEY", "")
-            except: pass
-        if not fmp_key: fmp_key = os.environ.get("FMP_API_KEY", "")
-        qraw = None; fmp_err = None
-        if fmp_key:
-            result = _fetch_quarterly_fmp(ticker, fmp_key)
-            if isinstance(result, tuple):
-                qraw, fmp_err = result
-            else:
-                qraw = result
-        return df, info, qi, ai, ih, qe, ed, qraw, fmp_err
-    except: return None, None, None, None, None, None, None, None, None
+    results["Advancers"] = (pct > 0).sum(axis=1)
+    results["Decliners"] = (pct < 0).sum(axis=1)
+    results["Net_Advances"] = results["Advancers"] - results["Decliners"]
+    results["AD_Ratio"] = results["Advancers"] / results["Decliners"].replace(0, np.nan)
+    results["AD_Line"] = results["Net_Advances"].cumsum()
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_quarterly_fmp(ticker, fmp_key):
-    """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters)."""
-    if not fmp_key: return None, "Kein API-Key"
-    try:
-        import json
-        url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
-        params = {"period": "quarter", "limit": 12, "apikey": fmp_key}
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code == 429: return None, f"Rate Limited (429)"
-        if r.status_code == 403: return None, f"Zugriff verweigert (403) — Domain evtl. geblockt"
-        if r.status_code == 401: return None, f"API-Key ungültig (401)"
-        if r.status_code != 200: return None, f"HTTP {r.status_code}"
-        data = json.loads(r.text)
-        if isinstance(data, dict) and "Error Message" in data:
-            return None, f"FMP Fehler: {data['Error Message'][:80]}"
-        if not data or not isinstance(data, list): return None, f"Leere Antwort (Typ: {type(data).__name__})"
-        out = {}; eps_vals = {}; rev_vals = {}
-        for item in data:
-            date_str = item.get("date", "")
-            if not date_str: continue
-            dt = pd.Timestamp(date_str)
-            eps = item.get("epsdiluted", item.get("epsDiluted"))
-            rev = item.get("revenue")
-            if eps is not None: eps_vals[dt] = float(eps)
-            if rev is not None: rev_vals[dt] = float(rev)
-        if eps_vals: out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
-        if rev_vals: out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
-        return (out if out else None), None
-    except requests.exceptions.ConnectionError as e:
-        return None, f"Verbindungsfehler: {str(e)[:60]}"
-    except requests.exceptions.Timeout:
-        return None, "Timeout (>15s)"
-    except Exception as e:
-        return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
+    breadth_base = (results["Advancers"] + results["Decliners"]).replace(0, np.nan)
+    results["RANA"] = (results["Net_Advances"] / breadth_base) * 1000.0
+    results["McC_19"] = results["RANA"].ewm(span=19, adjust=False).mean()
+    results["McC_39"] = results["RANA"].ewm(span=39, adjust=False).mean()
+    results["McClellan"] = results["McC_19"] - results["McC_39"]
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_sp500_for_rs(lookback_days=400):
-    end = datetime.now(); start = end - timedelta(days=lookback_days)
-    return _dl("^GSPC", start, end)
+    avail = len(closes)
+    nh_window = min(252, avail - 2) if avail > 22 else 20
 
-# ── HELPERS ──
+    high_source = highs if highs is not None and not highs.empty else closes
+    low_source = lows if lows is not None and not lows.empty else closes
+    prev_highs = high_source.shift(1)
+    prev_lows = low_source.shift(1)
+    high_ref = prev_highs.rolling(nh_window, min_periods=20).max()
+    low_ref = prev_lows.rolling(nh_window, min_periods=20).min()
+
+    results["New_Highs"] = (high_source > high_ref).sum(axis=1)
+    results["New_Lows"] = (low_source < low_ref).sum(axis=1)
+    results["Net_New_Highs"] = results["New_Highs"] - results["New_Lows"]
+    results["NH_NL_Ratio"] = results["New_Highs"] / results["New_Lows"].replace(0, np.nan)
+    total_hl = (results["New_Highs"] + results["New_Lows"]).replace(0, np.nan)
+    results["High_Low_Pct"] = results["New_Highs"] / total_hl * 100.0
+
+    sma50 = closes.rolling(50, min_periods=50).mean()
+    sma200 = closes.rolling(200, min_periods=200).mean()
+    valid50 = sma50.notna().sum(axis=1).replace(0, np.nan)
+    valid200 = sma200.notna().sum(axis=1).replace(0, np.nan)
+    results["Pct_Above_50SMA"] = (closes > sma50).sum(axis=1) / valid50 * 100
+    results["Pct_Above_200SMA"] = (closes > sma200).sum(axis=1) / valid200 * 100
+
+    adv_10 = results["Advancers"].rolling(10).sum()
+    dec_10 = results["Decliners"].rolling(10).sum()
+    results["Deemer_Ratio"] = adv_10 / dec_10.replace(0, np.nan)
+    results["Breadth_Thrust"] = results["Deemer_Ratio"] > 1.97
+
+    results["AD_Line_SMA21"] = results["AD_Line"].rolling(21, min_periods=5).mean()
+    results["McClellan_SMA10"] = results["McClellan"].rolling(10, min_periods=3).mean()
+
+    for k, v in attrs.items():
+        results.attrs[k] = v
+    results.attrs["breadth_universe_loaded"] = int(closes.shape[1])
+    results.attrs["breadth_valid_for_50sma"] = int(sma50.notna().iloc[-1].sum()) if len(sma50) else 0
+    results.attrs["breadth_valid_for_200sma"] = int(sma200.notna().iloc[-1].sum()) if len(sma200) else 0
+    results.attrs["nhnl_uses_intraday"] = highs is not None and lows is not None and not highs.empty and not lows.empty
+    return results
+
+# ===== From stock_analysis.py =====
 def _find_row(stmt, candidates):
     """Find a row in an income statement by trying multiple name variants."""
     if stmt is None or stmt.empty: return None
@@ -2827,9 +2792,6 @@ def _atr_category(pct):
     if pct <= 8.0: return "Stürmisch","#f59e0b"
     return "Explosiv","#ef4444"
 
-# ═══════════════════════════════════════════════════════
-# FUNDAMENTAL CHECKLIST
-# ═══════════════════════════════════════════════════════
 def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err=None):
     checks = []
     def _g(k, d=None):
@@ -2969,9 +2931,6 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
 
     return checks
 
-# ═══════════════════════════════════════════════════════
-# TECHNICAL CHECKLIST
-# ═══════════════════════════════════════════════════════
 def evaluate_technicals(df, info, spx_df=None):
     checks = []; L = df.iloc[-1]; price = L["Close"]
 
@@ -3034,9 +2993,6 @@ def evaluate_technicals(df, info, spx_df=None):
 
     return checks, cmf_val, rs
 
-# ═══════════════════════════════════════════════════════
-# CHART SIGNS (Table 28)
-# ═══════════════════════════════════════════════════════
 def evaluate_chart_signs(df):
     signs = {"positiv": [], "negativ": [], "neutral": []}
     if len(df) < 50: return signs
@@ -3112,9 +3068,7 @@ def evaluate_chart_signs(df):
     if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-SMA", ""))
     return signs
 
-# ═══════════════════════════════════════════════════════
-# TAB LAYOUT
-# ═══════════════════════════════════════════════════════
+# ===== From tabs.py =====
 def _tab_aktienbewertung():
     st.markdown("### 📋 Aktienbewertung — Einzelaktien-Check")
     st.caption("Fundamentale Checkliste (Kap. 3.4) · Technische Checkliste (Kap. 3.5/3.6) · Chartverhalten (Tab. 28)")
@@ -3767,7 +3721,7 @@ def _tab_marktanalyse():
     if not fred_key:
         fred_key = os.environ.get("FRED_API_KEY", "")
     if not fred_key:
-        fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfeed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
+        fred_key = st.text_input("FRED API Key (optional, kostenlos von fred.stlouisfed.org)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
 
     store = _get_price_store()
     st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
@@ -3807,7 +3761,7 @@ def _tab_marktanalyse():
 
     if refresh_clicked:
         with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE-Aktienuniversum …"):
-            refresh_stats = refresh_russell2000_price_store()
+            refresh_stats = refresh_nyse_price_store()
             st.cache_data.clear()
         if refresh_stats.get("ok"):
             st.success(
@@ -3819,7 +3773,7 @@ def _tab_marktanalyse():
 
     if rescue_clicked:
         with st.spinner("Suche fehlende NYSE-Ticker und lade sie gezielt nach …"):
-            rescue_stats = rescue_missing_russell2000_price_store()
+            rescue_stats = rescue_missing_nyse_price_store()
             st.cache_data.clear()
         if rescue_stats.get("ok"):
             if rescue_stats.get("missing_before", 0) == 0:
@@ -3842,7 +3796,7 @@ def _tab_marktanalyse():
 
     if remap_clicked:
         with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden NYSE-Ticker …"):
-            remap_stats = auto_remap_missing_russell2000_yahoo()
+            remap_stats = auto_remap_missing_nyse_yahoo()
             st.cache_data.clear()
         if remap_stats.get("ok"):
             if remap_stats.get("missing_before", 0) == 0:
@@ -3872,7 +3826,7 @@ def _tab_marktanalyse():
 
     if diagnose_clicked:
         with st.spinner("Teste eine Stichprobe der noch fehlenden NYSE-Ticker direkt gegen Yahoo …"):
-            diag_stats = diagnose_missing_russell2000_yahoo()
+            diag_stats = diagnose_missing_nyse_yahoo()
             st.cache_data.clear()
         if diag_stats.get("ok"):
             if diag_stats.get("missing_total", 0) == 0:
@@ -3905,7 +3859,7 @@ def _tab_marktanalyse():
 
     if analyze_clicked:
         with st.spinner("Lese NYSE-Aktien aus dem persistenten Datenspeicher …"):
-            component_bundle = load_russell2000_breadth_data()
+            component_bundle = load_nyse_breadth_data()
 
         if component_bundle is not None:
             close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
@@ -4054,4 +4008,22 @@ def _tab_marktanalyse():
     st.markdown("---")
     st.caption(f"Börse ohne Bauchgefühl · v3.0 · Yahoo Finance + FRED · Stand: {L.name.strftime('%d.%m.%Y')}")
 
-if __name__=="__main__": main()
+# ===== Main entry point =====
+
+configure_page()
+inject_css()
+
+def main():
+    st.title("BÖRSE OHNE BAUCHGEFÜHL")
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf"])
+    with tab1:
+        _tab_marktanalyse()
+    with tab2:
+        _tab_sektoranalyse()
+    with tab3:
+        _tab_aktienbewertung()
+    with tab4:
+        _tab_nach_kauf()
+
+if __name__ == "__main__":
+    main()
