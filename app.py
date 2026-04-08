@@ -509,6 +509,8 @@ def _init_price_cache_db(store):
                     symbol TEXT NOT NULL,
                     date DATE NOT NULL,
                     close DOUBLE PRECISION,
+                    high DOUBLE PRECISION,
+                    low DOUBLE PRECISION,
                     PRIMARY KEY (symbol, date)
                 )
                 """
@@ -553,6 +555,8 @@ def _init_price_cache_db(store):
                     symbol TEXT NOT NULL,
                     date TEXT NOT NULL,
                     close REAL,
+                    high REAL,
+                    low REAL,
                     PRIMARY KEY (symbol, date)
                 )
                 """
@@ -590,6 +594,15 @@ def _init_price_cache_db(store):
                 )
                 """
             )
+        if store["backend"] == "neon":
+            cur.execute("ALTER TABLE prices ADD COLUMN IF NOT EXISTS high DOUBLE PRECISION")
+            cur.execute("ALTER TABLE prices ADD COLUMN IF NOT EXISTS low DOUBLE PRECISION")
+        else:
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(prices)").fetchall()}
+            if "high" not in existing_cols:
+                conn.execute("ALTER TABLE prices ADD COLUMN high REAL")
+            if "low" not in existing_cols:
+                conn.execute("ALTER TABLE prices ADD COLUMN low REAL")
         conn.commit()
     finally:
         conn.close()
@@ -768,30 +781,39 @@ def _chunked(seq, size):
         yield seq[i:i + size]
 
 
-def _extract_close_frame(df, requested_batch):
+
+def _extract_price_field_frame(df, requested_batch, field_name):
     if df is None or len(df) == 0:
         return None
     if isinstance(df.columns, pd.MultiIndex):
-        if "Close" not in df.columns.get_level_values(0):
+        if field_name not in df.columns.get_level_values(0):
             return None
-        closes = df["Close"].copy()
+        frame = df[field_name].copy()
     else:
-        if "Close" not in df.columns:
+        if field_name not in df.columns:
             return None
-        closes = df[["Close"]].copy()
+        frame = df[[field_name]].copy()
         if len(requested_batch) == 1:
-            closes.columns = requested_batch
-    closes = closes.apply(pd.to_numeric, errors="coerce")
-    closes.index = pd.to_datetime(closes.index)
-    closes = closes.sort_index()
-    closes.columns = [str(c).strip().upper().replace(".", "-") for c in closes.columns]
-    closes = closes.loc[:, ~closes.columns.duplicated()]
-    closes = closes.dropna(axis=1, how="all")
-    return closes if closes.shape[1] else None
+            frame.columns = requested_batch
+    frame = frame.apply(pd.to_numeric, errors="coerce")
+    frame.index = pd.to_datetime(frame.index)
+    frame = frame.sort_index()
+    frame.columns = [str(c).strip().upper().replace(".", "-") for c in frame.columns]
+    frame = frame.loc[:, ~frame.columns.duplicated()]
+    frame = frame.dropna(axis=1, how="all")
+    return frame if frame.shape[1] else None
 
 
-def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
-    """Bulk download helper for medium-sized ticker batches."""
+def _extract_ohlc_bundle(df, requested_batch):
+    return {
+        "close": _extract_price_field_frame(df, requested_batch, "Close"),
+        "high": _extract_price_field_frame(df, requested_batch, "High"),
+        "low": _extract_price_field_frame(df, requested_batch, "Low"),
+    }
+
+
+def _download_ohlc_batch_fast(batch, start, end, threads=True, timeout=30):
+    """Bulk download helper returning Close/High/Low frames for breadth storage."""
     batch = [str(b).strip().upper().replace('/', '-') for b in list(dict.fromkeys(batch)) if b]
     if not batch:
         return None
@@ -806,12 +828,45 @@ def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
             group_by="column",
             timeout=timeout,
         )
-        return _extract_close_frame(df, batch)
+        bundle = _extract_ohlc_bundle(df, batch)
+        return bundle if any(v is not None and not v.empty for v in bundle.values()) else None
     except Exception:
         return None
 
 
-def _download_close_batch_mapped(symbols, symbol_map, start, end, threads=True, timeout=30):
+def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
+    bundle = _download_ohlc_batch_fast(batch, start, end, threads=threads, timeout=timeout)
+    if not bundle:
+        return None
+    return bundle.get("close")
+
+
+def _rename_ohlc_bundle(bundle, rename_map):
+    if not bundle:
+        return None
+    out = {}
+    for key, frame in bundle.items():
+        if frame is None or frame.empty:
+            out[key] = None
+            continue
+        renamed = frame.rename(columns=rename_map)
+        renamed = renamed.loc[:, ~renamed.columns.duplicated()]
+        renamed = renamed.dropna(axis=1, how="all")
+        out[key] = renamed if renamed.shape[1] else None
+    return out if any(v is not None and not v.empty for v in out.values()) else None
+
+
+def _bundle_loaded_symbols(bundle):
+    if not bundle:
+        return []
+    for key in ("close", "high", "low"):
+        frame = bundle.get(key)
+        if frame is not None and not frame.empty:
+            return [str(c).strip().upper() for c in frame.columns]
+    return []
+
+
+def _download_ohlc_batch_mapped(symbols, symbol_map, start, end, threads=True, timeout=30):
     symbols = [_normalize_symbol(s) for s in list(dict.fromkeys(symbols)) if s]
     if not symbols:
         return None, []
@@ -828,18 +883,24 @@ def _download_close_batch_mapped(symbols, symbol_map, start, end, threads=True, 
         query_to_original[query_norm] = original
         query_symbols.append(query_symbol)
 
-    closes = _download_close_batch_fast(query_symbols, start, end, threads=threads, timeout=timeout)
-    if closes is None or closes.empty:
+    bundle = _download_ohlc_batch_fast(query_symbols, start, end, threads=threads, timeout=timeout)
+    if not bundle:
         return None, collision_symbols
 
-    rename_map = {col: query_to_original.get(_normalize_symbol(col), col) for col in closes.columns}
-    closes = closes.rename(columns=rename_map)
-    closes = closes.loc[:, ~closes.columns.duplicated()]
-    closes = closes.dropna(axis=1, how="all")
-    return (closes if closes.shape[1] else None), collision_symbols
+    rename_map = {col: query_to_original.get(_normalize_symbol(col), col) for col in _bundle_loaded_symbols(bundle)}
+    bundle = _rename_ohlc_bundle(bundle, rename_map)
+    return bundle, collision_symbols
 
 
-def _download_single_ticker_close(symbol, start, end, timeout=30):
+def _download_close_batch_mapped(symbols, symbol_map, start, end, threads=True, timeout=30):
+    bundle, collision_symbols = _download_ohlc_batch_mapped(symbols, symbol_map, start, end, threads=threads, timeout=timeout)
+    if not bundle:
+        return None, collision_symbols
+    closes = bundle.get("close")
+    return (closes if closes is not None and not closes.empty else None), collision_symbols
+
+
+def _download_single_ticker_ohlc(symbol, start, end, timeout=30):
     """Single-symbol fallback download for hard-to-fetch tickers."""
     symbol = str(symbol).strip().upper().replace('/', '-')
     if not symbol:
@@ -855,20 +916,30 @@ def _download_single_ticker_close(symbol, start, end, timeout=30):
             group_by="column",
             timeout=timeout,
         )
-        return _extract_close_frame(df, [symbol])
+        bundle = _extract_ohlc_bundle(df, [symbol])
+        return bundle if any(v is not None and not v.empty for v in bundle.values()) else None
     except Exception:
         return None
+
+
+def _download_single_ticker_close(symbol, start, end, timeout=30):
+    bundle = _download_single_ticker_ohlc(symbol, start, end, timeout=timeout)
+    if not bundle:
+        return None
+    return bundle.get("close")
 
 
 def _download_single_source_symbol(source_symbol, symbol_map, start, end, timeout=30):
     source_symbol = _normalize_symbol(source_symbol)
     query_symbol = str(symbol_map.get(source_symbol, source_symbol)).strip().upper().replace('/', '-')
-    closes = _download_single_ticker_close(query_symbol, start, end, timeout=timeout)
-    if closes is None or closes.empty:
+    bundle = _download_single_ticker_ohlc(query_symbol, start, end, timeout=timeout)
+    if not bundle:
         return None
-    closes = closes.rename(columns={closes.columns[0]: source_symbol})
-    closes = closes.loc[:, ~closes.columns.duplicated()]
-    return closes if closes.shape[1] else None
+    rename_map = {}
+    for symbol in _bundle_loaded_symbols(bundle):
+        rename_map[symbol] = source_symbol
+    bundle = _rename_ohlc_bundle(bundle, rename_map)
+    return bundle
 
 
 def _search_yahoo_symbol_candidates(symbol, timeout=15):
@@ -970,20 +1041,22 @@ def _discover_yahoo_mapping(source_symbol, start, end, timeout=25, max_candidate
     lookup = _search_yahoo_symbol_candidates(source_symbol, timeout=max(10, timeout))
     candidates = _build_symbol_test_candidates(source_symbol, lookup.get("candidates", []), max_candidates=max_candidates)
     for candidate in candidates:
-        closes = _download_single_ticker_close(candidate, start, end, timeout=timeout)
-        if closes is not None and not closes.empty:
-            closes = closes.rename(columns={closes.columns[0]: source_symbol})
-            closes = closes.loc[:, ~closes.columns.duplicated()]
+        bundle = _download_single_ticker_ohlc(candidate, start, end, timeout=timeout)
+        if bundle:
+            rename_map = {sym: source_symbol for sym in _bundle_loaded_symbols(bundle)}
+            bundle = _rename_ohlc_bundle(bundle, rename_map)
+            close_frame = bundle.get("close") if bundle else None
+            history_rows = int(len(close_frame)) if close_frame is not None and not close_frame.empty else 0
             return {
                 "symbol": source_symbol,
                 "success": True,
                 "yahoo_symbol": candidate,
-                "history_rows": int(len(closes)),
+                "history_rows": history_rows,
                 "lookup_ok": bool(lookup.get("lookup_ok")),
                 "lookup_exact": bool(lookup.get("exact_match")),
                 "lookup_candidates": ", ".join(lookup.get("candidates", [])[:5]),
                 "status": "Gemappt und geladen",
-                "closes": closes,
+                "bundle": bundle,
             }
     status = "Yahoo kennt Symbol, aber keine Historie" if lookup.get("lookup_ok") else "Yahoo kennt Symbol nicht"
     return {
@@ -995,7 +1068,7 @@ def _discover_yahoo_mapping(source_symbol, start, end, timeout=25, max_candidate
         "lookup_exact": bool(lookup.get("exact_match")),
         "lookup_candidates": ", ".join(lookup.get("candidates", [])[:5]),
         "status": status,
-        "closes": None,
+        "bundle": None,
     }
 
 
@@ -1018,8 +1091,9 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
 
     missing_before, _ = _get_missing_universe_tickers(store, tickers)
     if not missing_before:
-        closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
-        loaded = int(closes_final.shape[1]) if closes_final is not None else len(tickers)
+        price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+        close_frame = price_bundle.get("close") if price_bundle else None
+        loaded = int(close_frame.shape[1]) if close_frame is not None else len(tickers)
         requested = len(tickers)
         return {
             "ok": True,
@@ -1047,18 +1121,19 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
     if saved_mappings:
         reusable = [s for s in missing_before if s in saved_mappings]
         for batch in _chunked(reusable, 40):
-            closes, collision_symbols = _download_close_batch_mapped(batch, saved_mappings, start, end, threads=False, timeout=45)
+            bundle, collision_symbols = _download_ohlc_batch_mapped(batch, saved_mappings, start, end, threads=False, timeout=45)
+            close_frame = bundle.get("close") if bundle else None
             loaded_symbols = []
-            if closes is not None and not closes.empty:
-                rows_written += _write_closes_to_cache(store, closes)
-                loaded_symbols = [str(c).strip().upper() for c in closes.columns]
+            if close_frame is not None and not close_frame.empty:
+                rows_written += _write_price_bundle_to_cache(store, bundle)
+                loaded_symbols = [str(c).strip().upper() for c in close_frame.columns]
             for symbol in loaded_symbols:
                 mapped_successes += 1
                 results.append({
                     "symbol": symbol,
                     "success": True,
                     "yahoo_symbol": saved_mappings.get(symbol, symbol),
-                    "history_rows": int(closes[symbol].dropna().shape[0]) if closes is not None and symbol in closes.columns else 0,
+                    "history_rows": int(close_frame[symbol].dropna().shape[0]) if close_frame is not None and symbol in close_frame.columns else 0,
                     "lookup_ok": True,
                     "lookup_exact": True,
                     "lookup_candidates": saved_mappings.get(symbol, symbol),
@@ -1090,11 +1165,12 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
                     "lookup_exact": False,
                     "lookup_candidates": "",
                     "status": "Mappingfehler",
-                    "closes": None,
+                    "bundle": None,
                 }
-            closes = item.pop("closes", None)
-            if item.get("success") and closes is not None and not closes.empty:
-                rows_written += _write_closes_to_cache(store, closes)
+            bundle = item.pop("bundle", None)
+            close_frame = bundle.get("close") if bundle else None
+            if item.get("success") and close_frame is not None and not close_frame.empty:
+                rows_written += _write_price_bundle_to_cache(store, bundle)
                 mapped_successes += 1
                 _upsert_symbol_mapping(
                     store,
@@ -1116,8 +1192,9 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
             results.append(item)
 
     missing_after, _ = _get_missing_universe_tickers(store, tickers)
-    closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
-    loaded = int(closes_final.shape[1]) if closes_final is not None else max(0, len(tickers) - len(missing_after))
+    price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+    close_frame = price_bundle.get("close") if price_bundle else None
+    loaded = int(close_frame.shape[1]) if close_frame is not None else max(0, len(tickers) - len(missing_after))
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
     new_symbols_loaded = len(missing_before) - len(missing_after)
@@ -1241,18 +1318,41 @@ def _get_missing_universe_tickers(store, universe_tickers):
     return missing, last_dates
 
 
-def _write_closes_to_cache(store, closes):
-    if closes is None or closes.empty:
+
+def _bundle_to_long_records(bundle):
+    if not bundle:
+        return []
+    merged = None
+    field_order = [("close", "close"), ("high", "high"), ("low", "low")]
+    for bundle_key, out_col in field_order:
+        frame = bundle.get(bundle_key)
+        if frame is None or frame.empty:
+            continue
+        long_df = frame.copy()
+        long_df.index = pd.to_datetime(long_df.index)
+        long_df = long_df.reset_index().rename(columns={long_df.index.name or "index": "date"})
+        long_df["date"] = pd.to_datetime(long_df["date"]).dt.strftime("%Y-%m-%d")
+        long_df = long_df.melt(id_vars="date", var_name="symbol", value_name=out_col).dropna(subset=[out_col])
+        if long_df.empty:
+            continue
+        long_df["symbol"] = long_df["symbol"].astype(str).str.upper()
+        if merged is None:
+            merged = long_df
+        else:
+            merged = merged.merge(long_df, on=["symbol", "date"], how="outer")
+    if merged is None or merged.empty:
+        return []
+    for col in ("close", "high", "low"):
+        if col not in merged.columns:
+            merged[col] = np.nan
+    merged = merged[["symbol", "date", "close", "high", "low"]]
+    return list(merged.itertuples(index=False, name=None))
+
+
+def _write_price_bundle_to_cache(store, bundle):
+    records = _bundle_to_long_records(bundle)
+    if not records:
         return 0
-    long_df = closes.copy()
-    long_df.index = pd.to_datetime(long_df.index)
-    long_df = long_df.reset_index().rename(columns={long_df.index.name or "index": "date"})
-    long_df["date"] = pd.to_datetime(long_df["date"]).dt.strftime("%Y-%m-%d")
-    long_df = long_df.melt(id_vars="date", var_name="symbol", value_name="close").dropna(subset=["close"])
-    if long_df.empty:
-        return 0
-    long_df["symbol"] = long_df["symbol"].astype(str).str.upper()
-    records = list(long_df[["symbol", "date", "close"]].itertuples(index=False, name=None))
     conn = _get_cache_conn(store)
     try:
         if store["backend"] == "neon":
@@ -1260,19 +1360,25 @@ def _write_closes_to_cache(store, closes):
                 execute_values(
                     cur,
                     """
-                    INSERT INTO prices(symbol, date, close)
+                    INSERT INTO prices(symbol, date, close, high, low)
                     VALUES %s
-                    ON CONFLICT (symbol, date) DO UPDATE SET close=EXCLUDED.close
+                    ON CONFLICT (symbol, date) DO UPDATE SET
+                        close=COALESCE(EXCLUDED.close, prices.close),
+                        high=COALESCE(EXCLUDED.high, prices.high),
+                        low=COALESCE(EXCLUDED.low, prices.low)
                     """,
                     records,
-                    page_size=10000,
+                    page_size=5000,
                 )
         else:
             conn.executemany(
                 """
-                INSERT INTO prices(symbol, date, close)
-                VALUES (?, ?, ?)
-                ON CONFLICT(symbol, date) DO UPDATE SET close=excluded.close
+                INSERT INTO prices(symbol, date, close, high, low)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, date) DO UPDATE SET
+                    close=COALESCE(excluded.close, prices.close),
+                    high=COALESCE(excluded.high, prices.high),
+                    low=COALESCE(excluded.low, prices.low)
                 """,
                 records,
             )
@@ -1283,7 +1389,13 @@ def _write_closes_to_cache(store, closes):
     return len(records)
 
 
-def _read_cached_closes(store, tickers, start_date, end_date):
+def _write_closes_to_cache(store, closes):
+    if closes is None or closes.empty:
+        return 0
+    return _write_price_bundle_to_cache(store, {"close": closes})
+
+
+def _read_cached_price_bundle(store, tickers, start_date, end_date):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
         return None
@@ -1295,7 +1407,7 @@ def _read_cached_closes(store, tickers, start_date, end_date):
                 for batch in _chunked(tickers, 700):
                     cur.execute(
                         """
-                        SELECT date, symbol, close
+                        SELECT date, symbol, close, high, low
                         FROM prices
                         WHERE symbol = ANY(%s)
                           AND date >= %s
@@ -1305,12 +1417,12 @@ def _read_cached_closes(store, tickers, start_date, end_date):
                     )
                     rows = cur.fetchall()
                     if rows:
-                        frames.append(pd.DataFrame(rows, columns=["date", "symbol", "close"]))
+                        frames.append(pd.DataFrame(rows, columns=["date", "symbol", "close", "high", "low"]))
         else:
             for batch in _chunked(tickers, 700):
                 placeholders = ",".join(["?"] * len(batch))
                 query = f"""
-                    SELECT date, symbol, close
+                    SELECT date, symbol, close, high, low
                     FROM prices
                     WHERE symbol IN ({placeholders})
                       AND date >= ?
@@ -1329,11 +1441,22 @@ def _read_cached_closes(store, tickers, start_date, end_date):
         return None
     raw["date"] = pd.to_datetime(raw["date"])
     raw["symbol"] = raw["symbol"].astype(str).str.upper()
-    closes = raw.pivot(index="date", columns="symbol", values="close").sort_index()
-    closes = closes.apply(pd.to_numeric, errors="coerce")
-    closes = closes.loc[:, ~closes.columns.duplicated()]
-    closes = closes.dropna(axis=1, how="all")
-    return closes if closes.shape[1] else None
+
+    out = {}
+    for field in ("close", "high", "low"):
+        pivot = raw.pivot(index="date", columns="symbol", values=field).sort_index()
+        pivot = pivot.apply(pd.to_numeric, errors="coerce")
+        pivot = pivot.loc[:, ~pivot.columns.duplicated()]
+        pivot = pivot.dropna(axis=1, how="all")
+        out[field] = pivot if pivot.shape[1] else None
+    return out if any(v is not None and not v.empty for v in out.values()) else None
+
+
+def _read_cached_closes(store, tickers, start_date, end_date):
+    bundle = _read_cached_price_bundle(store, tickers, start_date, end_date)
+    if not bundle:
+        return None
+    return bundle.get("close")
 
 
 def _get_cached_last_dates(store, tickers):
@@ -1368,6 +1491,64 @@ def _get_cached_last_dates(store, tickers):
         conn.close()
 
 
+
+def _get_cached_price_field_counts(store, tickers, start_date, end_date):
+    tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
+    if not tickers:
+        return {}
+    conn = _get_cache_conn(store)
+    try:
+        out = {}
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                for batch in _chunked(tickers, 700):
+                    cur.execute(
+                        """
+                        SELECT symbol,
+                               COUNT(close) AS close_count,
+                               COUNT(high) AS high_count,
+                               COUNT(low) AS low_count
+                        FROM prices
+                        WHERE symbol = ANY(%s)
+                          AND date >= %s
+                          AND date <= %s
+                        GROUP BY symbol
+                        """,
+                        (batch, start_date, end_date),
+                    )
+                    rows = cur.fetchall()
+                    for symbol, close_count, high_count, low_count in rows:
+                        out[str(symbol).upper()] = {
+                            "close": int(close_count or 0),
+                            "high": int(high_count or 0),
+                            "low": int(low_count or 0),
+                        }
+            return out
+        for batch in _chunked(tickers, 700):
+            placeholders = ",".join(["?"] * len(batch))
+            query = f"""
+                SELECT symbol,
+                       COUNT(close) AS close_count,
+                       COUNT(high) AS high_count,
+                       COUNT(low) AS low_count
+                FROM prices
+                WHERE symbol IN ({placeholders})
+                  AND date >= ?
+                  AND date <= ?
+                GROUP BY symbol
+            """
+            rows = conn.execute(query, list(batch) + [start_date, end_date]).fetchall()
+            for symbol, close_count, high_count, low_count in rows:
+                out[str(symbol).upper()] = {
+                    "close": int(close_count or 0),
+                    "high": int(high_count or 0),
+                    "low": int(low_count or 0),
+                }
+        return out
+    finally:
+        conn.close()
+
+
 def _get_nyse_stock_tickers_with_cache(store):
     live = get_nyse_stock_tickers()
     if live and len(live) >= 1000:
@@ -1379,18 +1560,44 @@ def _get_nyse_stock_tickers_with_cache(store):
     return live
 
 
-def _prepare_closes_for_breadth(closes):
-    if closes is None or closes.empty:
+def _prepare_component_frame(frame):
+    if frame is None or frame.empty:
         return None
-    closes = closes.copy()
-    closes.index = pd.to_datetime(closes.index)
-    closes = closes.sort_index()
-    closes = closes.apply(pd.to_numeric, errors="coerce")
-    closes = closes.loc[:, ~closes.columns.duplicated()]
-    thresh = max(120, int(len(closes) * 0.30))
-    closes = closes.dropna(axis=1, thresh=thresh)
-    closes = closes.dropna(axis=1, how="all")
-    return closes if closes.shape[1] else None
+    frame = frame.copy()
+    frame.index = pd.to_datetime(frame.index)
+    frame = frame.sort_index()
+    frame = frame.apply(pd.to_numeric, errors="coerce")
+    frame = frame.loc[:, ~frame.columns.duplicated()]
+    thresh = max(120, int(len(frame) * 0.30))
+    frame = frame.dropna(axis=1, thresh=thresh)
+    frame = frame.dropna(axis=1, how="all")
+    return frame if frame.shape[1] else None
+
+
+def _prepare_component_bundle(bundle):
+    if not bundle:
+        return None
+    prepared = {k: _prepare_component_frame(v) for k, v in bundle.items()}
+    close_frame = prepared.get("close")
+    high_frame = prepared.get("high")
+    low_frame = prepared.get("low")
+    if close_frame is None or close_frame.empty:
+        return None
+
+    shared = set(close_frame.columns)
+    if high_frame is not None and not high_frame.empty:
+        shared &= set(high_frame.columns)
+    if low_frame is not None and not low_frame.empty:
+        shared &= set(low_frame.columns)
+
+    if not shared:
+        return None
+
+    shared = sorted(shared)
+    prepared["close"] = close_frame[shared]
+    prepared["high"] = high_frame[shared] if high_frame is not None and not high_frame.empty else None
+    prepared["low"] = low_frame[shared] if low_frame is not None and not low_frame.empty else None
+    return prepared
 
 
 def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, recent_batch_size=220, recent_refresh_days=15):
@@ -1413,8 +1620,17 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
     _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
 
     last_dates = _get_cached_last_dates(store, tickers)
-    missing_history = [t for t in tickers if t not in last_dates]
-    recent_targets = [t for t in tickers if t in last_dates]
+    field_counts = _get_cached_price_field_counts(store, tickers, start_date, end_date)
+    min_history_rows = 180
+    needs_full_ohlc = [
+        t for t in tickers
+        if t not in last_dates
+        or field_counts.get(t, {}).get("close", 0) < min_history_rows
+        or field_counts.get(t, {}).get("high", 0) < min_history_rows
+        or field_counts.get(t, {}).get("low", 0) < min_history_rows
+    ]
+    missing_history = list(dict.fromkeys(needs_full_ohlc))
+    recent_targets = [t for t in tickers if t not in set(missing_history)]
 
     rows_written = 0
     history_batches = 0
@@ -1422,30 +1638,34 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
 
     if missing_history:
         for batch in _chunked(missing_history, history_batch_size):
-            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=40)
-            if closes is not None and not closes.empty:
-                rows_written += _write_closes_to_cache(store, closes)
+            bundle = _download_ohlc_batch_fast(batch, start, end, threads=True, timeout=40)
+            close_frame = bundle.get("close") if bundle else None
+            if close_frame is not None and not close_frame.empty:
+                rows_written += _write_price_bundle_to_cache(store, bundle)
             history_batches += 1
 
         refreshed_dates = _get_cached_last_dates(store, tickers)
         still_missing = [t for t in tickers if t not in refreshed_dates]
         if still_missing:
             for batch in _chunked(still_missing, max(40, history_batch_size // 2)):
-                closes = _download_close_batch_fast(batch, start, end, threads=False, timeout=30)
-                if closes is not None and not closes.empty:
-                    rows_written += _write_closes_to_cache(store, closes)
+                bundle = _download_ohlc_batch_fast(batch, start, end, threads=False, timeout=30)
+                close_frame = bundle.get("close") if bundle else None
+                if close_frame is not None and not close_frame.empty:
+                    rows_written += _write_price_bundle_to_cache(store, bundle)
                 history_batches += 1
         recent_targets = [t for t in tickers if t in _get_cached_last_dates(store, tickers)]
 
     recent_start = max(start, end - timedelta(days=recent_refresh_days))
     for batch in _chunked(recent_targets, recent_batch_size):
-        closes = _download_close_batch_fast(batch, recent_start, end, threads=True, timeout=35)
-        if closes is not None and not closes.empty:
-            rows_written += _write_closes_to_cache(store, closes)
+        bundle = _download_ohlc_batch_fast(batch, recent_start, end, threads=True, timeout=35)
+        close_frame = bundle.get("close") if bundle else None
+        if close_frame is not None and not close_frame.empty:
+            rows_written += _write_price_bundle_to_cache(store, bundle)
         recent_batches += 1
 
-    closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
-    loaded = int(closes_final.shape[1]) if closes_final is not None else 0
+    price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+    close_frame = price_bundle.get("close") if price_bundle else None
+    loaded = int(close_frame.shape[1]) if close_frame is not None else 0
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
 
@@ -1488,8 +1708,9 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
 
     missing_before, _ = _get_missing_universe_tickers(store, tickers)
     if not missing_before:
-        closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
-        loaded = int(closes_final.shape[1]) if closes_final is not None else len(tickers)
+        price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+        close_frame = price_bundle.get("close") if price_bundle else None
+        loaded = int(close_frame.shape[1]) if close_frame is not None else len(tickers)
         requested = len(tickers)
         return {
             "ok": True,
@@ -1513,14 +1734,16 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
     saved_mappings = _load_symbol_mappings(store, CACHE_UNIVERSE_NAME, status_filter=("mapped",))
 
     for batch in _chunked(missing_before, rescue_batch_size):
-        closes, collisions = _download_close_batch_mapped(batch, saved_mappings, start, end, threads=False, timeout=45)
-        if closes is not None and not closes.empty:
-            rows_written += _write_closes_to_cache(store, closes)
-        retry_symbols = list(dict.fromkeys((collisions or []) + [s for s in batch if closes is None or s not in closes.columns]))
+        bundle, collisions = _download_ohlc_batch_mapped(batch, saved_mappings, start, end, threads=False, timeout=45)
+        close_frame = bundle.get("close") if bundle else None
+        if close_frame is not None and not close_frame.empty:
+            rows_written += _write_price_bundle_to_cache(store, bundle)
+        retry_symbols = list(dict.fromkeys((collisions or []) + [s for s in batch if close_frame is None or s not in close_frame.columns]))
         for symbol in retry_symbols:
-            single = _download_single_source_symbol(symbol, saved_mappings, start, end, timeout=45)
-            if single is not None and not single.empty:
-                rows_written += _write_closes_to_cache(store, single)
+            single_bundle = _download_single_source_symbol(symbol, saved_mappings, start, end, timeout=45)
+            single_close = single_bundle.get("close") if single_bundle else None
+            if single_close is not None and not single_close.empty:
+                rows_written += _write_price_bundle_to_cache(store, single_bundle)
         rescue_batches += 1
 
     missing_after_batch, _ = _get_missing_universe_tickers(store, tickers)
@@ -1539,13 +1762,15 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
                     closes = future.result()
                 except Exception:
                     closes = None
-                if closes is not None and not closes.empty:
-                    rows_written += _write_closes_to_cache(store, closes)
+                close_frame = closes.get("close") if closes else None
+                if close_frame is not None and not close_frame.empty:
+                    rows_written += _write_price_bundle_to_cache(store, closes)
                     single_successes += 1
 
     missing_after, _ = _get_missing_universe_tickers(store, tickers)
-    closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
-    loaded = int(closes_final.shape[1]) if closes_final is not None else max(0, len(tickers) - len(missing_after))
+    price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+    close_frame = price_bundle.get("close") if price_bundle else None
+    loaded = int(close_frame.shape[1]) if close_frame is not None else max(0, len(tickers) - len(missing_after))
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
     new_symbols_loaded = len(missing_before) - len(missing_after)
@@ -1578,7 +1803,7 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_russell2000_breadth_data(lookback_days=550):
-    """Read breadth data from the persistent store without triggering a large network refresh."""
+    """Read breadth data bundle from the persistent store without triggering a large network refresh."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
@@ -1591,29 +1816,33 @@ def load_russell2000_breadth_data(lookback_days=550):
         return None
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
 
-    closes = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
-    if closes is None or closes.empty:
+    bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+    close_frame = bundle.get("close") if bundle else None
+    if close_frame is None or close_frame.empty:
         return None
 
     requested = len(tickers)
-    loaded = int(closes.shape[1])
+    loaded = int(close_frame.shape[1])
     coverage = loaded / max(requested, 1)
 
-    closes.attrs["requested_universe"] = requested
-    closes.attrs["loaded_universe"] = loaded
-    closes.attrs["coverage_ratio"] = coverage
-    closes.attrs["partial_universe"] = coverage < 0.75
-    closes.attrs["cache_used"] = True
-    closes.attrs["cache_only_run"] = True
-    closes.attrs["store_backend"] = store["backend"]
-    closes.attrs["store_label"] = _get_store_label(store)
-    closes.attrs["cache_member_count"] = int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested)
-    closes.attrs["cache_members_updated_at"] = _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", "")
-    closes.attrs["cache_prices_last_write_at"] = _get_cache_metadata(store, "prices_last_write_at", "")
-    closes.attrs["last_refresh_at"] = _get_cache_metadata(store, "last_refresh_at", "")
+    attrs = {
+        "requested_universe": requested,
+        "loaded_universe": loaded,
+        "coverage_ratio": coverage,
+        "partial_universe": coverage < 0.75,
+        "cache_used": True,
+        "cache_only_run": True,
+        "store_backend": store["backend"],
+        "store_label": _get_store_label(store),
+        "cache_member_count": int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested),
+        "cache_members_updated_at": _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", ""),
+        "cache_prices_last_write_at": _get_cache_metadata(store, "prices_last_write_at", ""),
+        "last_refresh_at": _get_cache_metadata(store, "last_refresh_at", ""),
+    }
+    bundle["attrs"] = attrs
 
     min_required = max(350, int(requested * 0.18))
-    return closes if loaded >= min_required else None
+    return bundle if loaded >= min_required else None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -1641,60 +1870,89 @@ def load_fed_funds_rate(fred_key):
         return df[["value"]].rename(columns={"value": "FedRate"})
     except: return None
 
-def compute_breadth_from_components(closes):
-    """From a DataFrame of stock closes, compute breadth indicators daily."""
-    if closes is None or len(closes) < 50: return None
+def compute_breadth_from_components(components):
+    """From component price frames, compute breadth indicators daily."""
+    if components is None:
+        return None
+
+    if isinstance(components, dict):
+        closes = components.get("close")
+        highs = components.get("high")
+        lows = components.get("low")
+        attrs = components.get("attrs", {})
+    else:
+        closes = components
+        highs = None
+        lows = None
+        attrs = {}
+
+    if closes is None or len(closes) < 50:
+        return None
+
+    common_cols = set(closes.columns)
+    if highs is not None and not highs.empty:
+        common_cols &= set(highs.columns)
+    if lows is not None and not lows.empty:
+        common_cols &= set(lows.columns)
+    common_cols = sorted(common_cols)
+
+    if common_cols:
+        closes = closes[common_cols]
+        if highs is not None and not highs.empty:
+            highs = highs[common_cols]
+        if lows is not None and not lows.empty:
+            lows = lows[common_cols]
+
     pct = closes.pct_change()
     results = pd.DataFrame(index=closes.index)
 
-    # Advancers / Decliners each day
     results["Advancers"] = (pct > 0).sum(axis=1)
     results["Decliners"] = (pct < 0).sum(axis=1)
     results["Net_Advances"] = results["Advancers"] - results["Decliners"]
     results["AD_Ratio"] = results["Advancers"] / results["Decliners"].replace(0, np.nan)
-
-    # A/D Line (cumulative)
     results["AD_Line"] = results["Net_Advances"].cumsum()
 
-    # McClellan Oscillator: 19-EMA minus 39-EMA of Net Advances
-    results["McC_19"] = results["Net_Advances"].ewm(span=19, adjust=False).mean()
-    results["McC_39"] = results["Net_Advances"].ewm(span=39, adjust=False).mean()
+    breadth_base = (results["Advancers"] + results["Decliners"]).replace(0, np.nan)
+    results["RANA"] = (results["Net_Advances"] / breadth_base) * 1000.0
+    results["McC_19"] = results["RANA"].ewm(span=19, adjust=False).mean()
+    results["McC_39"] = results["RANA"].ewm(span=39, adjust=False).mean()
     results["McClellan"] = results["McC_19"] - results["McC_39"]
 
-    # New 52-week Highs / Lows
-    # For each stock: is today's close above the highest close of the PRIOR trading days?
-    # Use min(252, available_days - 2) so it works even with less than a year of data
     avail = len(closes)
     nh_window = min(252, avail - 2) if avail > 22 else 20
 
-    # Build the reference: for each day, the max/min of the PREVIOUS nh_window days
-    # (excluding today). We do this by computing rolling on the shifted series.
-    prev_closes = closes.shift(1)
-    high_ref = prev_closes.rolling(nh_window, min_periods=20).max()
-    low_ref = prev_closes.rolling(nh_window, min_periods=20).min()
+    high_source = highs if highs is not None and not highs.empty else closes
+    low_source = lows if lows is not None and not lows.empty else closes
+    prev_highs = high_source.shift(1)
+    prev_lows = low_source.shift(1)
+    high_ref = prev_highs.rolling(nh_window, min_periods=20).max()
+    low_ref = prev_lows.rolling(nh_window, min_periods=20).min()
 
-    # A stock is at a new high if today's close > highest close of the prior window
-    results["New_Highs"] = (closes > high_ref).sum(axis=1)
-    results["New_Lows"] = (closes < low_ref).sum(axis=1)
+    results["New_Highs"] = (high_source > high_ref).sum(axis=1)
+    results["New_Lows"] = (low_source < low_ref).sum(axis=1)
+    results["Net_New_Highs"] = results["New_Highs"] - results["New_Lows"]
     results["NH_NL_Ratio"] = results["New_Highs"] / results["New_Lows"].replace(0, np.nan)
+    total_hl = (results["New_Highs"] + results["New_Lows"]).replace(0, np.nan)
+    results["High_Low_Pct"] = results["New_Highs"] / total_hl * 100.0
 
-    # % of stocks above 50-SMA and 200-SMA
     sma50 = closes.rolling(50, min_periods=50).mean()
     sma200 = closes.rolling(200, min_periods=200).mean()
     n_stocks = closes.count(axis=1)
     results["Pct_Above_50SMA"] = (closes > sma50).sum(axis=1) / n_stocks * 100
     results["Pct_Above_200SMA"] = (closes > sma200).sum(axis=1) / n_stocks * 100
 
-    # Deemer Breadth Thrust: 10-day sum Adv / 10-day sum Dec
     adv_10 = results["Advancers"].rolling(10).sum()
     dec_10 = results["Decliners"].rolling(10).sum()
     results["Deemer_Ratio"] = adv_10 / dec_10.replace(0, np.nan)
     results["Breadth_Thrust"] = results["Deemer_Ratio"] > 1.97
 
-    # Smooth for display
     results["AD_Line_SMA21"] = results["AD_Line"].rolling(21, min_periods=5).mean()
     results["McClellan_SMA10"] = results["McClellan"].rolling(10, min_periods=3).mean()
 
+    for k, v in attrs.items():
+        results.attrs[k] = v
+    results.attrs["breadth_universe_loaded"] = int(closes.shape[1])
+    results.attrs["nhnl_uses_intraday"] = highs is not None and lows is not None and not highs.empty and not lows.empty
     return results
 
 # ═══════════════════════════════════════════════════════
@@ -3647,10 +3905,14 @@ def _tab_marktanalyse():
 
     if analyze_clicked:
         with st.spinner("Lese NYSE-Aktien aus dem persistenten Datenspeicher …"):
-            closes = load_russell2000_breadth_data()
+            component_bundle = load_russell2000_breadth_data()
 
-        if closes is not None and len(closes) > 50:
-            br = compute_breadth_from_components(closes)
+        if component_bundle is not None:
+            close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
+            if close_frame is None or len(close_frame) <= 50:
+                st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse.")
+                return
+            br = compute_breadth_from_components(component_bundle)
             if br is not None and len(br) > 20:
                 # Determine last valid trading day (last row with actual data)
                 last_trading_date = br.index[-1].strftime("%d.%m.%Y")
@@ -3658,18 +3920,19 @@ def _tab_marktanalyse():
                 is_today = last_trading_date == today_str
                 date_note = f"Stand: {last_trading_date}" + ("" if is_today else " (letzter Handelstag)")
 
-                requested = closes.attrs.get("requested_universe")
-                loaded = closes.attrs.get("loaded_universe", len(closes.columns))
-                coverage = float(closes.attrs.get("coverage_ratio", 0.0) or 0.0)
+                breadth_attrs = br.attrs
+                requested = breadth_attrs.get("requested_universe")
+                loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
+                coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
                 ratio_txt = f" / {requested}" if requested else ""
                 st.success(f"✓ {loaded} NYSE-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
                 if requested and loaded < requested * 0.8:
                     st.warning(f"Hinweis: Es wurden nicht alle NYSE-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
-                if closes.attrs.get("cache_used"):
-                    store_label = closes.attrs.get("store_label", "Datenspeicher")
+                if breadth_attrs.get("cache_used"):
+                    store_label = breadth_attrs.get("store_label", "Datenspeicher")
                     cache_msg = f"Persistenter Datenspeicher aktiv · Daten gelesen aus {store_label}."
-                    cache_write = closes.attrs.get("cache_prices_last_write_at", "")
-                    last_refresh = closes.attrs.get("last_refresh_at", "")
+                    cache_write = breadth_attrs.get("cache_prices_last_write_at", "")
+                    last_refresh = breadth_attrs.get("last_refresh_at", "")
                     if cache_write:
                         cache_msg += f" Letzter Schreibvorgang: {cache_write} UTC."
                     if last_refresh:
@@ -3689,13 +3952,14 @@ def _tab_marktanalyse():
                 bL = br_valid.iloc[-1]
                 bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
 
-                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — NYSE ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
+                intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
+                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — NYSE ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
 
                 kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                 with kb1:
                     mc = bL["McClellan"]
                     st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—",
-                              "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "")
+                              "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "Neutral" if not np.isnan(mc) else "")
                 with kb2:
                     nhr = bL["NH_NL_Ratio"]
                     nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0
