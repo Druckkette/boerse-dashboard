@@ -686,6 +686,153 @@ def _download_single_ticker_close(symbol, start, end, timeout=30):
         return None
 
 
+def _search_yahoo_symbol_candidates(symbol, timeout=15):
+    """Query Yahoo's public search endpoint to see whether a symbol is known there at all."""
+    symbol = str(symbol).strip().upper()
+    if not symbol:
+        return {"lookup_ok": False, "exact_match": False, "candidates": []}
+    url = "https://query2.finance.yahoo.com/v1/finance/search"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+    params = {"q": symbol, "quotesCount": 10, "newsCount": 0, "listsCount": 0}
+    try:
+        resp = requests.get(url, params=params, timeout=timeout, headers=headers)
+        resp.raise_for_status()
+        payload = resp.json()
+        quotes = payload.get("quotes", []) or []
+        candidates = []
+        for q in quotes:
+            cand = str(q.get("symbol", "")).strip().upper()
+            if cand:
+                candidates.append(cand)
+        candidates = list(dict.fromkeys(candidates))
+        variants = {symbol, symbol.replace("-", "."), symbol.replace(".", "-")}
+        exact_match = any(c in variants for c in candidates)
+        return {"lookup_ok": len(candidates) > 0, "exact_match": exact_match, "candidates": candidates[:8]}
+    except Exception:
+        return {"lookup_ok": False, "exact_match": False, "candidates": []}
+
+
+def _probe_single_missing_symbol(symbol, start, end, timeout=25):
+    """Diagnose whether Yahoo knows a symbol and whether history can actually be loaded."""
+    symbol = str(symbol).strip().upper().replace("/", "-")
+    variants = [symbol]
+    dotted = symbol.replace("-", ".")
+    if dotted != symbol:
+        variants.append(dotted)
+    dashed = symbol.replace(".", "-")
+    if dashed not in variants:
+        variants.append(dashed)
+
+    lookup = _search_yahoo_symbol_candidates(symbol, timeout=max(10, timeout))
+    history_variant = ""
+    history_rows = 0
+
+    for variant in variants:
+        closes = _download_single_ticker_close(variant, start, end, timeout=timeout)
+        if closes is not None and not closes.empty:
+            history_variant = variant
+            history_rows = int(len(closes))
+            break
+
+    history_ok = history_rows > 0
+    if history_ok:
+        status = "Historie vorhanden"
+    elif lookup["lookup_ok"]:
+        status = "Yahoo kennt Symbol, aber keine Historie"
+    else:
+        status = "Yahoo kennt Symbol nicht"
+
+    return {
+        "symbol": symbol,
+        "lookup_ok": bool(lookup["lookup_ok"]),
+        "lookup_exact": bool(lookup["exact_match"]),
+        "lookup_candidates": ", ".join(lookup["candidates"][:5]),
+        "history_ok": history_ok,
+        "history_variant": history_variant,
+        "history_rows": history_rows,
+        "status": status,
+    }
+
+
+def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_workers=8):
+    """Diagnose a sample of still-missing Russell-2000 symbols against Yahoo."""
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
+    end_date = pd.Timestamp(end).strftime("%Y-%m-%d")
+    store = _get_price_store()
+    _init_price_cache_db(store)
+
+    tickers = _get_russell2000_tickers_with_cache(store)
+    if not tickers:
+        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+
+    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
+    missing, _ = _get_missing_universe_tickers(store, tickers)
+    loaded_count = len(tickers) - len(missing)
+
+    if not missing:
+        return {
+            "ok": True,
+            "store": _get_store_label(store),
+            "requested": len(tickers),
+            "loaded": loaded_count,
+            "missing_total": 0,
+            "sample_size": 0,
+            "results_df": pd.DataFrame(),
+            "counts": {},
+            "message": "Es fehlen aktuell keine Russell-2000-Ticker mehr im Datenspeicher.",
+        }
+
+    sample_size = max(1, min(int(sample_size), len(missing)))
+    sample = missing[:sample_size]
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_probe_single_missing_symbol, symbol, start, end, 25): symbol for symbol in sample}
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception:
+                symbol = futures[future]
+                results.append({
+                    "symbol": symbol,
+                    "lookup_ok": False,
+                    "lookup_exact": False,
+                    "lookup_candidates": "",
+                    "history_ok": False,
+                    "history_variant": "",
+                    "history_rows": 0,
+                    "status": "Diagnosefehler",
+                })
+
+    df = pd.DataFrame(results)
+    if not df.empty:
+        df = df.sort_values(["status", "symbol"]).reset_index(drop=True)
+
+    counts = df["status"].value_counts().to_dict() if not df.empty else {}
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    _set_cache_metadata(store, "last_yahoo_diag_at", now_str)
+    _set_cache_metadata(store, "last_yahoo_diag_sample", sample_size)
+    _set_cache_metadata(store, "last_yahoo_diag_missing_total", len(missing))
+    _set_cache_metadata(store, "last_yahoo_diag_history_ok", counts.get("Historie vorhanden", 0))
+    _set_cache_metadata(store, "last_yahoo_diag_lookup_no_history", counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
+    _set_cache_metadata(store, "last_yahoo_diag_unknown", counts.get("Yahoo kennt Symbol nicht", 0))
+    _set_cache_metadata(store, "last_yahoo_diag_errors", counts.get("Diagnosefehler", 0))
+
+    return {
+        "ok": True,
+        "store": _get_store_label(store),
+        "requested": len(tickers),
+        "loaded": loaded_count,
+        "missing_total": len(missing),
+        "sample_size": sample_size,
+        "results_df": df,
+        "counts": counts,
+        "last_diag_at": now_str,
+    }
+
+
 def _get_missing_universe_tickers(store, universe_tickers):
     last_dates = _get_cached_last_dates(store, universe_tickers)
     missing = [t for t in universe_tickers if t not in last_dates]
@@ -2977,11 +3124,13 @@ def _tab_marktanalyse():
     if status_bits:
         st.caption(" · ".join(status_bits))
 
-    btn_refresh, btn_rescue, btn_analyze = st.columns(3)
+    btn_refresh, btn_rescue, btn_diag, btn_analyze = st.columns(4)
     with btn_refresh:
         refresh_clicked = st.button("🗄️ Datenbank initial befüllen / aktualisieren", use_container_width=True)
     with btn_rescue:
         rescue_clicked = st.button("🩹 Fehlende Ticker gezielt nachladen", use_container_width=True)
+    with btn_diag:
+        diagnose_clicked = st.button("🧪 Fehlende Ticker bei Yahoo testen", use_container_width=True)
     with btn_analyze:
         analyze_clicked = st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True)
 
@@ -3019,6 +3168,39 @@ def _tab_marktanalyse():
                     )
         else:
             st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
+
+    if diagnose_clicked:
+        with st.spinner("Teste eine Stichprobe der noch fehlenden Russell-2000-Ticker direkt gegen Yahoo …"):
+            diag_stats = diagnose_missing_russell2000_yahoo()
+            st.cache_data.clear()
+        if diag_stats.get("ok"):
+            if diag_stats.get("missing_total", 0) == 0:
+                st.success(diag_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+            else:
+                counts = diag_stats.get("counts", {}) or {}
+                hist_ok = int(counts.get("Historie vorhanden", 0))
+                lookup_no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
+                unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
+                errors = int(counts.get("Diagnosefehler", 0))
+
+                st.success(
+                    f"✓ Yahoo-Diagnose abgeschlossen · Stichprobe {diag_stats['sample_size']} von {diag_stats['missing_total']} fehlenden Tickern "
+                    f"· Historie vorhanden: {hist_ok} · Yahoo kennt Symbol, aber keine Historie: {lookup_no_hist} "
+                    f"· Yahoo kennt Symbol nicht: {unknown}" + (f" · Diagnosefehler: {errors}" if errors else "")
+                )
+
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("Stichprobe", diag_stats["sample_size"])
+                metric_cols[1].metric("Historie vorhanden", hist_ok)
+                metric_cols[2].metric("Yahoo kennt Symbol, aber keine Historie", lookup_no_hist)
+                metric_cols[3].metric("Yahoo kennt Symbol nicht", unknown)
+
+                results_df = diag_stats.get("results_df")
+                if results_df is not None and not results_df.empty:
+                    st.caption("Die Tabelle zeigt eine Stichprobe der aktuell noch fehlenden Ticker und ob Yahoo das Symbol kennt bzw. Historie liefert.")
+                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+        else:
+            st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
     if analyze_clicked:
         with st.spinner("Lese Russell-2000-Aktien aus dem persistenten Datenspeicher …"):
