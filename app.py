@@ -216,17 +216,55 @@ def _get_russell2000_from_wikipedia_raw():
     return []
 
 
+def _get_russell2000_from_github_fallback():
+    """Last-resort community fallback for Russell-2000 tickers."""
+    urls = [
+        "https://raw.githubusercontent.com/ikoniaris/Russell2000/refs/heads/master/russell_2000_components.csv",
+        "https://raw.githubusercontent.com/ikoniaris/Russell2000/refs/heads/master/russell2000_tickers.txt",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,text/csv,*/*"}
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=25, headers=headers)
+            resp.raise_for_status()
+            text = resp.content.decode("utf-8", errors="ignore")
+            tickers = []
+            if url.endswith('.csv'):
+                try:
+                    df = pd.read_csv(io.StringIO(text))
+                    ticker_col = _extract_ticker_column(df)
+                    if ticker_col is not None:
+                        tickers = _normalize_ticker_list(df[ticker_col])
+                except Exception:
+                    tickers = []
+                if len(tickers) < 500:
+                    tickers = _normalize_ticker_list(re.findall(r"(?:^|[\s,])([A-Z]{1,5}(?:[.-][A-Z])?)(?=,|\s|$)", text, flags=re.MULTILINE))
+            else:
+                tickers = _normalize_ticker_list(re.split(r"[\s,;]+", text))
+            if len(tickers) >= 1000:
+                return tickers
+        except Exception:
+            continue
+    return []
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_russell2000_tickers():
-    """Load current Russell 2000 constituents with multiple robust fallbacks."""
+    """Load Russell 2000 constituents with multiple fallbacks."""
     best = []
-    for loader in (_get_russell2000_from_ishares, _get_russell2000_from_wikipedia_tables, _get_russell2000_from_wikipedia_raw):
+    loaders = (
+        _get_russell2000_from_ishares,
+        _get_russell2000_from_wikipedia_tables,
+        _get_russell2000_from_wikipedia_raw,
+        _get_russell2000_from_github_fallback,
+    )
+    for loader in loaders:
         tickers = loader()
         if len(tickers) > len(best):
             best = tickers
         if len(tickers) >= 1200:
             return tickers
-    return best if len(best) >= 700 else []
+    return best if len(best) >= 300 else []
 
 # ═══════════════════════════════════════════════════════
 # DATA LOADING
@@ -398,9 +436,9 @@ def _download_close_batch_fast(batch, start, end):
 def load_russell2000_breadth_data(lookback_days=550, batch_size=125, retry_batch_size=50, rescue_batch_size=25):
     """Download close prices for the Russell 2000 universe.
 
-    First pass uses fast bulk batches similar to the earlier 500-stock method.
-    If the hit rate is weak, retry missing tickers in smaller batches and finally
-    run a rescue pass in very small chunks before giving up.
+    Primary goal is speed via bulk downloads. If coverage is incomplete, the
+    function retries missing symbols in smaller chunks and returns a usable
+    partial universe instead of failing too aggressively.
     """
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = get_russell2000_tickers()
@@ -443,22 +481,35 @@ def load_russell2000_breadth_data(lookback_days=550, batch_size=125, retry_batch
         missing = [t for t in tickers if t not in loaded_cols]
         success_ratio = len(closes.columns) / max(len(tickers), 1)
 
-        if missing and success_ratio < 0.65:
+        if missing and success_ratio < 0.55:
             rescue_frames = []
             for batch in _chunked(missing, rescue_batch_size):
                 rcloses = _download_close_batch_fast(batch, start, end)
                 if rcloses is not None and rcloses.shape[1] > 0:
                     rescue_frames.append(rcloses)
+                    loaded_cols.update(rcloses.columns.tolist())
             if rescue_frames:
                 closes = pd.concat([closes] + rescue_frames, axis=1)
                 closes = closes.loc[:, ~closes.columns.duplicated()]
                 closes = closes.sort_index().dropna(axis=1, how="all")
 
-        thresh = max(60, int(len(closes) * 0.45))
+        # Keep a stock if it has a meaningful history, but do not demand nearly full coverage.
+        thresh = max(80, int(len(closes) * 0.20))
         closes = closes.dropna(axis=1, thresh=thresh)
-        closes.attrs["requested_universe"] = len(tickers)
-        closes.attrs["loaded_universe"] = closes.shape[1]
-        return closes if closes.shape[1] >= max(600, int(len(tickers) * 0.30)) else None
+        closes = closes.loc[:, ~closes.columns.duplicated()]
+
+        requested = len(tickers)
+        loaded = int(closes.shape[1])
+        coverage = loaded / max(requested, 1)
+
+        closes.attrs["requested_universe"] = requested
+        closes.attrs["loaded_universe"] = loaded
+        closes.attrs["coverage_ratio"] = coverage
+        closes.attrs["partial_universe"] = coverage < 0.75
+
+        # For breadth metrics a few hundred stocks are already usable; do not fail too hard.
+        min_required = max(200, int(requested * 0.10)) if requested >= 1000 else max(150, int(requested * 0.20))
+        return closes if loaded >= min_required else None
     except Exception as e:
         st.warning(f"Fehler beim Laden der Russell-2000-Daten: {e}")
         return None
@@ -2373,10 +2424,11 @@ def _tab_marktanalyse():
 
                 requested = closes.attrs.get("requested_universe")
                 loaded = closes.attrs.get("loaded_universe", len(closes.columns))
+                coverage = float(closes.attrs.get("coverage_ratio", 0.0) or 0.0)
                 ratio_txt = f" / {requested}" if requested else ""
                 st.success(f"✓ {loaded} Russell-2000-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
                 if requested and loaded < requested * 0.8:
-                    st.warning(f"Hinweis: Es wurden nicht alle Russell-2000-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien.")
+                    st.warning(f"Hinweis: Es wurden nicht alle Russell-2000-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
 
                 # ── Breadth Charts ──
                 st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
@@ -2455,7 +2507,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte keine ausreichende Russell-2000-Datenmenge laden. Die App versucht mehrere Quellen für die Tickerliste und lädt Kurse in Bulk-Batches mit zusätzlichem Fallback.")
+            st.error("Konnte nicht genug Russell-2000-Daten laden. Die App versucht iShares, Wikipedia und einen GitHub-Fallback für die Tickerliste und lädt Kurse anschließend in Bulk-Batches.")
 
         # ── Fed Funds Rate ──
         if fred_key:
