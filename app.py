@@ -108,26 +108,36 @@ def _normalize_ticker_list(values):
     return list(dict.fromkeys(tickers))
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def get_russell1000_tickers():
-    """Load current Russell 1000 constituents with robust fallbacks."""
-    official_url = "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/?dataType=fund&fileName=IWB_holdings&fileType=csv"
+def _parse_ishares_holdings_csv(text):
+    lines = text.splitlines()
+    header_idx = next((i for i, line in enumerate(lines[:120]) if "Ticker" in line and "Name" in line), None)
+    if header_idx is None:
+        return []
+    holdings = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+    ticker_col = next((c for c in holdings.columns if str(c).strip().lower() == "ticker"), None)
+    if ticker_col is None:
+        return []
+    return _normalize_ticker_list(holdings[ticker_col])
 
-    try:
-        resp = requests.get(official_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        lines = resp.text.splitlines()
-        header_idx = next((i for i, line in enumerate(lines[:80]) if "Ticker" in line and "Name" in line), None)
-        if header_idx is not None:
-            holdings = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
-            ticker_col = next((c for c in holdings.columns if str(c).strip().lower() == "ticker"), None)
-            if ticker_col is not None:
-                tickers = _normalize_ticker_list(holdings[ticker_col])
-                if len(tickers) >= 900:
-                    return tickers
-    except Exception:
-        pass
 
+def _get_russell1000_from_ishares():
+    urls = [
+        "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf?dataType=fund&fileName=IWB_holdings&fileType=csv",
+        "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/?dataType=fund&fileName=IWB_holdings&fileType=csv",
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            tickers = _parse_ishares_holdings_csv(resp.content.decode("utf-8", errors="ignore"))
+            if len(tickers) >= 900:
+                return tickers
+        except Exception:
+            continue
+    return []
+
+
+def _get_russell1000_from_wikipedia_tables():
     try:
         tables = pd.read_html("https://en.wikipedia.org/wiki/Russell_1000_Index")
         collected = []
@@ -141,7 +151,35 @@ def get_russell1000_tickers():
             return tickers
     except Exception:
         pass
+    return []
 
+
+def _get_russell1000_from_wikipedia_raw():
+    urls = [
+        "https://en.wikipedia.org/w/index.php?title=Russell_1000_Index&action=raw",
+        "https://en.wikipedia.org/wiki/Russell_1000_Index?action=raw",
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            raw = resp.content.decode("utf-8", errors="ignore")
+            tickers = re.findall(r"\|\|\s*([A-Z]{1,5}(?:[.-][A-Z])?)\s*\|\|", raw)
+            tickers = _normalize_ticker_list(tickers)
+            if len(tickers) >= 900:
+                return tickers
+        except Exception:
+            continue
+    return []
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_russell1000_tickers():
+    """Load current Russell 1000 constituents with multiple robust fallbacks."""
+    for loader in (_get_russell1000_from_ishares, _get_russell1000_from_wikipedia_tables, _get_russell1000_from_wikipedia_raw):
+        tickers = loader()
+        if len(tickers) >= 900:
+            return tickers
     return []
 
 # ═══════════════════════════════════════════════════════
@@ -268,9 +306,71 @@ def _chunked(seq, size):
         yield seq[i:i + size]
 
 
+def _extract_close_frame(df, requested_batch):
+    if df is None or len(df) == 0:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Close" not in df.columns.get_level_values(0):
+            return None
+        closes = df["Close"].copy()
+    else:
+        if "Close" not in df.columns:
+            return None
+        closes = df[["Close"]].copy()
+        if len(requested_batch) == 1:
+            closes.columns = requested_batch
+    closes = closes.apply(pd.to_numeric, errors="coerce")
+    closes.index = pd.to_datetime(closes.index)
+    closes = closes.sort_index()
+    closes.columns = [str(c).strip().upper().replace(".", "-") for c in closes.columns]
+    closes = closes.loc[:, ~closes.columns.duplicated()]
+    closes = closes.dropna(axis=1, how="all")
+    return closes if closes.shape[1] else None
+
+
+def _download_close_batch(batch, start, end):
+    batch = list(dict.fromkeys(batch))
+    if not batch:
+        return None
+
+    try:
+        df = yf.download(batch, start=start, end=end, progress=False, auto_adjust=True, threads=False, group_by="column")
+        closes = _extract_close_frame(df, batch)
+        if closes is not None and closes.shape[1] > 0:
+            return closes
+    except Exception:
+        pass
+
+    if len(batch) <= 10:
+        singles = []
+        for ticker in batch:
+            try:
+                sdf = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True, threads=False)
+                closes = _extract_close_frame(sdf, [ticker])
+                if closes is not None:
+                    singles.append(closes)
+            except Exception:
+                continue
+        if singles:
+            out = pd.concat(singles, axis=1)
+            out = out.loc[:, ~out.columns.duplicated()]
+            return out
+        return None
+
+    mid = len(batch) // 2
+    left = _download_close_batch(batch[:mid], start, end)
+    right = _download_close_batch(batch[mid:], start, end)
+    frames = [x for x in (left, right) if x is not None and x.shape[1] > 0]
+    if not frames:
+        return None
+    out = pd.concat(frames, axis=1)
+    out = out.loc[:, ~out.columns.duplicated()]
+    return out
+
+
 @st.cache_data(ttl=900, show_spinner=False)
-def load_russell1000_breadth_data(lookback_days=550, batch_size=125):
-    """Download close prices for the Russell 1000 universe in batches for stability."""
+def load_russell1000_breadth_data(lookback_days=550, batch_size=50):
+    """Download close prices for the Russell 1000 universe in smaller resilient batches."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = get_russell1000_tickers()
     if not tickers:
@@ -279,29 +379,20 @@ def load_russell1000_breadth_data(lookback_days=550, batch_size=125):
     close_batches = []
     try:
         for batch in _chunked(tickers, batch_size):
-            df = yf.download(batch, start=start, end=end, progress=False, auto_adjust=True, threads=True)
-            if df is None or len(df) == 0:
-                continue
-            if isinstance(df.columns, pd.MultiIndex):
-                closes = df["Close"].copy()
-            else:
-                closes = df[["Close"]].copy()
-                if len(batch) == 1:
-                    closes.columns = batch
-            closes = closes.apply(pd.to_numeric, errors="coerce")
-            closes.index = pd.to_datetime(closes.index)
-            closes = closes.sort_index()
-            close_batches.append(closes)
+            closes = _download_close_batch(batch, start, end)
+            if closes is not None and closes.shape[1] > 0:
+                close_batches.append(closes)
 
         if not close_batches:
             return None
 
         closes = pd.concat(close_batches, axis=1)
         closes = closes.loc[:, ~closes.columns.duplicated()]
-        thresh = len(closes) * 0.5
-        closes = closes.dropna(axis=1, thresh=int(thresh))
         closes = closes.sort_index()
-        return closes
+        closes = closes.dropna(axis=1, how="all")
+        thresh = max(60, int(len(closes) * 0.5))
+        closes = closes.dropna(axis=1, thresh=thresh)
+        return closes if closes.shape[1] >= 300 else None
     except Exception as e:
         st.warning(f"Fehler beim Laden der Russell-1000-Daten: {e}")
         return None
@@ -2293,7 +2384,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Konnte die Russell-1000-Daten nicht laden. Bitte erneut versuchen.")
+            st.error("Konnte die Russell-1000-Daten nicht laden. Diese Version nutzt mehrere Quellen und kleinere Download-Blöcke, um den Abruf robuster zu machen.")
 
         # ── Fed Funds Rate ──
         if fred_key:
