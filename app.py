@@ -665,6 +665,33 @@ def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
         return None
 
 
+def _download_single_ticker_close(symbol, start, end, timeout=30):
+    """Single-symbol fallback download for hard-to-fetch tickers."""
+    symbol = str(symbol).strip().upper().replace('.', '-').replace('/', '-')
+    if not symbol:
+        return None
+    try:
+        df = yf.download(
+            symbol,
+            start=start,
+            end=end,
+            progress=False,
+            auto_adjust=True,
+            threads=False,
+            group_by="column",
+            timeout=timeout,
+        )
+        return _extract_close_frame(df, [symbol])
+    except Exception:
+        return None
+
+
+def _get_missing_universe_tickers(store, universe_tickers):
+    last_dates = _get_cached_last_dates(store, universe_tickers)
+    missing = [t for t in universe_tickers if t not in last_dates]
+    return missing, last_dates
+
+
 def _write_closes_to_cache(store, closes):
     if closes is None or closes.empty:
         return 0
@@ -889,6 +916,106 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
         "recent_batches": recent_batches,
         "recent_refresh_days": recent_refresh_days,
         "last_refresh_at": now_str,
+        "store": _get_store_label(store),
+        "backend": store["backend"],
+    }
+
+
+def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=24, max_workers=8):
+    """Try to backfill still-missing Russell-2000 symbols without manual ticker input."""
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
+    end_date = pd.Timestamp(end).strftime("%Y-%m-%d")
+    store = _get_price_store()
+    _init_price_cache_db(store)
+
+    tickers = _get_russell2000_tickers_with_cache(store)
+    if not tickers:
+        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+
+    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
+    _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
+
+    missing_before, _ = _get_missing_universe_tickers(store, tickers)
+    if not missing_before:
+        closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
+        loaded = int(closes_final.shape[1]) if closes_final is not None else len(tickers)
+        requested = len(tickers)
+        return {
+            "ok": True,
+            "requested": requested,
+            "loaded": loaded,
+            "coverage": loaded / max(requested, 1),
+            "missing_before": 0,
+            "missing_after": 0,
+            "new_symbols_loaded": 0,
+            "rows_written": 0,
+            "rescue_batches": 0,
+            "single_attempts": 0,
+            "single_successes": 0,
+            "store": _get_store_label(store),
+            "backend": store["backend"],
+            "message": "Es fehlen aktuell keine Russell-2000-Ticker mehr im Datenspeicher.",
+        }
+
+    rows_written = 0
+    rescue_batches = 0
+
+    for batch in _chunked(missing_before, rescue_batch_size):
+        closes = _download_close_batch_fast(batch, start, end, threads=False, timeout=45)
+        if closes is not None and not closes.empty:
+            rows_written += _write_closes_to_cache(store, closes)
+        rescue_batches += 1
+
+    missing_after_batch, _ = _get_missing_universe_tickers(store, tickers)
+    single_attempts = len(missing_after_batch)
+    single_successes = 0
+
+    if missing_after_batch:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_download_single_ticker_close, symbol, start, end, 45): symbol
+                for symbol in missing_after_batch
+            }
+            for future in as_completed(futures):
+                closes = None
+                try:
+                    closes = future.result()
+                except Exception:
+                    closes = None
+                if closes is not None and not closes.empty:
+                    rows_written += _write_closes_to_cache(store, closes)
+                    single_successes += 1
+
+    missing_after, _ = _get_missing_universe_tickers(store, tickers)
+    closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
+    loaded = int(closes_final.shape[1]) if closes_final is not None else max(0, len(tickers) - len(missing_after))
+    requested = len(tickers)
+    coverage = loaded / max(requested, 1)
+    new_symbols_loaded = len(missing_before) - len(missing_after)
+
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    _set_cache_metadata(store, "last_rescue_at", now_str)
+    _set_cache_metadata(store, "last_rescue_rows_written", rows_written)
+    _set_cache_metadata(store, "last_rescue_missing_before", len(missing_before))
+    _set_cache_metadata(store, "last_rescue_missing_after", len(missing_after))
+    _set_cache_metadata(store, "last_refresh_loaded_universe", loaded)
+    _set_cache_metadata(store, "last_refresh_requested_universe", requested)
+
+    return {
+        "ok": loaded > 0,
+        "requested": requested,
+        "loaded": loaded,
+        "coverage": coverage,
+        "missing_before": len(missing_before),
+        "missing_after": len(missing_after),
+        "new_symbols_loaded": new_symbols_loaded,
+        "rows_written": rows_written,
+        "rescue_batches": rescue_batches,
+        "single_attempts": single_attempts,
+        "single_successes": single_successes,
+        "last_rescue_at": now_str,
         "store": _get_store_label(store),
         "backend": store["backend"],
     }
@@ -2834,9 +2961,27 @@ def _tab_marktanalyse():
     if store["backend"] != "neon":
         st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon die deutlich bessere Variante.")
 
-    btn_refresh, btn_analyze = st.columns(2)
+    current_requested = _get_cache_metadata(store, "last_refresh_requested_universe", "")
+    current_loaded = _get_cache_metadata(store, "last_refresh_loaded_universe", "")
+    current_rescue = _get_cache_metadata(store, "last_rescue_at", "")
+    status_bits = []
+    if current_loaded and current_requested:
+        try:
+            loaded_int = int(current_loaded)
+            requested_int = int(current_requested)
+            status_bits.append(f"Zuletzt bekannt: {loaded_int} von {requested_int} Titeln im Datenspeicher")
+        except Exception:
+            pass
+    if current_rescue:
+        status_bits.append(f"Letzter Rescue-Lauf: {current_rescue} UTC")
+    if status_bits:
+        st.caption(" · ".join(status_bits))
+
+    btn_refresh, btn_rescue, btn_analyze = st.columns(3)
     with btn_refresh:
         refresh_clicked = st.button("🗄️ Datenbank initial befüllen / aktualisieren", use_container_width=True)
+    with btn_rescue:
+        rescue_clicked = st.button("🩹 Fehlende Ticker gezielt nachladen", use_container_width=True)
     with btn_analyze:
         analyze_clicked = st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True)
 
@@ -2851,6 +2996,29 @@ def _tab_marktanalyse():
             )
         else:
             st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
+
+    if rescue_clicked:
+        with st.spinner("Suche fehlende Russell-2000-Ticker und lade sie gezielt nach …"):
+            rescue_stats = rescue_missing_russell2000_price_store()
+            st.cache_data.clear()
+        if rescue_stats.get("ok"):
+            if rescue_stats.get("missing_before", 0) == 0:
+                st.success(rescue_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+            else:
+                st.success(
+                    f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen "
+                    f"({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · "
+                    f"jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} Russell-2000-Aktien verfügbar "
+                    f"({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben"
+                )
+                if rescue_stats.get("missing_after", 0) > 0:
+                    st.info(
+                        f"Noch fehlend: {rescue_stats['missing_after']} Ticker. "
+                        f"Der Rescue-Lauf hat {rescue_stats['rescue_batches']} Mini-Batches und "
+                        f"{rescue_stats['single_attempts']} Einzelversuche genutzt, davon {rescue_stats['single_successes']} erfolgreich."
+                    )
+        else:
+            st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
 
     if analyze_clicked:
         with st.spinner("Lese Russell-2000-Aktien aus dem persistenten Datenspeicher …"):
@@ -2960,7 +3128,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Im persistenten Datenspeicher liegen noch nicht genug Russell-2000-Daten. Bitte zuerst auf 'Datenbank initial befüllen / aktualisieren' klicken.")
+            st.error("Im persistenten Datenspeicher liegen noch nicht genug Russell-2000-Daten. Bitte zuerst auf 'Datenbank initial befüllen / aktualisieren' klicken und danach bei Bedarf 'Fehlende Ticker gezielt nachladen' ausführen.")
 
         # ── Fed Funds Rate ──
         if fred_key:
