@@ -10,7 +10,8 @@ import yfinance as yf
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import warnings, os, requests, io, re, time
+import warnings, os, requests, io, re, time, sqlite3
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 
@@ -387,6 +388,119 @@ def build_sector_table(closes, mode="daily", n_periods=20):
 # ═══════════════════════════════════════════════════════
 # DEEP ANALYSIS: Russell 2000 breadth + FRED
 # ═══════════════════════════════════════════════════════
+CACHE_DB_NAME = "market_data_cache.sqlite"
+CACHE_UNIVERSE_NAME = "russell2000"
+
+
+def _get_cache_db_path():
+    base_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path(os.getcwd())
+    cache_dir = base_dir / ".cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return str(cache_dir / CACHE_DB_NAME)
+
+
+def _get_cache_conn(db_path):
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
+
+def _init_price_cache_db(db_path):
+    conn = _get_cache_conn(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prices (
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,
+                close REAL,
+                PRIMARY KEY (symbol, date)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS universe_members (
+                universe TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (universe, symbol)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _set_cache_metadata(db_path, key, value):
+    conn = _get_cache_conn(db_path)
+    try:
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            """
+            INSERT INTO metadata(key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, str(value), now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _get_cache_metadata(db_path, key, default=None):
+    conn = _get_cache_conn(db_path)
+    try:
+        row = conn.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+    finally:
+        conn.close()
+
+
+def _store_universe_members(db_path, universe, tickers):
+    tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
+    if not tickers:
+        return
+    conn = _get_cache_conn(db_path)
+    try:
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("DELETE FROM universe_members WHERE universe=?", (universe,))
+        conn.executemany(
+            "INSERT OR REPLACE INTO universe_members(universe, symbol, updated_at) VALUES (?, ?, ?)",
+            [(universe, t, now) for t in tickers],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _set_cache_metadata(db_path, f"{universe}_member_count", len(tickers))
+    _set_cache_metadata(db_path, f"{universe}_members_updated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def _load_cached_universe_members(db_path, universe):
+    conn = _get_cache_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT symbol FROM universe_members WHERE universe=? ORDER BY symbol",
+            (universe,),
+        ).fetchall()
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
+
+
 def _chunked(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
@@ -435,97 +549,188 @@ def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
         return None
 
 
-def _download_single_close(symbol, start, end, timeout=20):
-    """More reliable single-ticker fallback for missing symbols."""
+def _write_closes_to_cache(db_path, closes):
+    if closes is None or closes.empty:
+        return 0
+    long_df = closes.copy()
+    long_df.index = pd.to_datetime(long_df.index)
+    long_df = long_df.reset_index().rename(columns={long_df.index.name or "index": "date"})
+    long_df["date"] = pd.to_datetime(long_df["date"]).dt.strftime("%Y-%m-%d")
+    long_df = long_df.melt(id_vars="date", var_name="symbol", value_name="close").dropna(subset=["close"])
+    if long_df.empty:
+        return 0
+    long_df["symbol"] = long_df["symbol"].astype(str).str.upper()
+    records = list(long_df[["symbol", "date", "close"]].itertuples(index=False, name=None))
+    conn = _get_cache_conn(db_path)
     try:
-        df = yf.Ticker(symbol).history(
-            start=start,
-            end=end,
-            auto_adjust=True,
-            timeout=timeout,
-            raise_errors=False,
+        conn.executemany(
+            """
+            INSERT INTO prices(symbol, date, close)
+            VALUES (?, ?, ?)
+            ON CONFLICT(symbol, date) DO UPDATE SET close=excluded.close
+            """,
+            records,
         )
-        if df is None or len(df) == 0 or "Close" not in df.columns:
-            return None
-        s = pd.to_numeric(df["Close"], errors="coerce").dropna()
-        if s.empty:
-            return None
-        out = pd.DataFrame({symbol: s})
-        out.index = pd.to_datetime(out.index)
-        out = out.sort_index()
-        return out
-    except Exception:
-        return None
+        conn.commit()
+    finally:
+        conn.close()
+    _set_cache_metadata(db_path, "prices_last_write_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+    return len(records)
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_russell2000_breadth_data(lookback_days=550, batch_size=140, retry_batch_size=50):
-    """Download close prices for the Russell 2000 universe.
-
-    Pragmatic fast mode:
-    1. larger bulk batches for speed
-    2. one smaller bulk retry pass for missing symbols
-    3. no slow single-ticker rescue because that added a lot of runtime
-       without materially improving the final coverage in practice
-    """
-    end = datetime.now(); start = end - timedelta(days=lookback_days)
-    tickers = get_russell2000_tickers()
+def _read_cached_closes(db_path, tickers, start_date, end_date):
+    tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
         return None
-
-    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
-    fast_frames = []
-    loaded_cols = set()
-
+    conn = _get_cache_conn(db_path)
     try:
-        # First pass: larger bulk batches to stay close to the older faster behaviour
-        for batch in _chunked(tickers, batch_size):
-            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=35)
-            if closes is not None and closes.shape[1] > 0:
-                fast_frames.append(closes)
-                loaded_cols.update(closes.columns.tolist())
-
-        if not fast_frames:
+        frames = []
+        for batch in _chunked(tickers, 700):
+            placeholders = ",".join(["?"] * len(batch))
+            query = f"""
+                SELECT date, symbol, close
+                FROM prices
+                WHERE symbol IN ({placeholders})
+                  AND date >= ?
+                  AND date <= ?
+            """
+            params = list(batch) + [start_date, end_date]
+            frame = pd.read_sql_query(query, conn, params=params)
+            if not frame.empty:
+                frames.append(frame)
+        if not frames:
             return None
-
-        closes = pd.concat(fast_frames, axis=1)
-        closes = closes.loc[:, ~closes.columns.duplicated()]
-        closes = closes.sort_index().dropna(axis=1, how="all")
-
-        # Second pass: one compact retry pass for unresolved symbols
-        missing = [t for t in tickers if t not in loaded_cols]
-        if missing:
-            retry_frames = []
-            for batch in _chunked(missing, retry_batch_size):
-                rcloses = _download_close_batch_fast(batch, start, end, threads=False, timeout=25)
-                if rcloses is not None and rcloses.shape[1] > 0:
-                    retry_frames.append(rcloses)
-                    loaded_cols.update(rcloses.columns.tolist())
-            if retry_frames:
-                closes = pd.concat([closes] + retry_frames, axis=1)
-                closes = closes.loc[:, ~closes.columns.duplicated()]
-                closes = closes.sort_index().dropna(axis=1, how="all")
-
-        # Keep stocks with meaningful history. For breadth we do not need perfect completeness.
-        thresh = max(120, int(len(closes) * 0.30))
-        closes = closes.dropna(axis=1, thresh=thresh)
-        closes = closes.loc[:, ~closes.columns.duplicated()]
-
-        requested = len(tickers)
-        loaded = int(closes.shape[1])
-        coverage = loaded / max(requested, 1)
-
-        closes.attrs["requested_universe"] = requested
-        closes.attrs["loaded_universe"] = loaded
-        closes.attrs["coverage_ratio"] = coverage
-        closes.attrs["partial_universe"] = coverage < 0.75
-
-        # Russell 2000 via Yahoo is often incomplete. Continue with a usable subset.
-        min_required = max(350, int(requested * 0.18))
-        return closes if loaded >= min_required else None
-    except Exception as e:
-        st.warning(f"Fehler beim Laden der Russell-2000-Daten: {e}")
+        raw = pd.concat(frames, ignore_index=True)
+    finally:
+        conn.close()
+    if raw.empty:
         return None
+    raw["date"] = pd.to_datetime(raw["date"])
+    raw["symbol"] = raw["symbol"].astype(str).str.upper()
+    closes = raw.pivot(index="date", columns="symbol", values="close").sort_index()
+    closes = closes.apply(pd.to_numeric, errors="coerce")
+    closes = closes.loc[:, ~closes.columns.duplicated()]
+    closes = closes.dropna(axis=1, how="all")
+    return closes if closes.shape[1] else None
+
+
+def _get_cached_last_dates(db_path, tickers):
+    tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
+    if not tickers:
+        return {}
+    conn = _get_cache_conn(db_path)
+    try:
+        out = {}
+        for batch in _chunked(tickers, 700):
+            placeholders = ",".join(["?"] * len(batch))
+            query = f"SELECT symbol, MAX(date) AS last_date FROM prices WHERE symbol IN ({placeholders}) GROUP BY symbol"
+            rows = conn.execute(query, batch).fetchall()
+            out.update({str(symbol).upper(): pd.to_datetime(last_date) for symbol, last_date in rows if last_date})
+        return out
+    finally:
+        conn.close()
+
+
+def _get_russell2000_tickers_with_cache(db_path):
+    live = get_russell2000_tickers()
+    if live and len(live) >= 1000:
+        _store_universe_members(db_path, CACHE_UNIVERSE_NAME, live)
+        return live
+    cached = _load_cached_universe_members(db_path, CACHE_UNIVERSE_NAME)
+    if cached:
+        return cached
+    return live
+
+
+def _prepare_closes_for_breadth(closes):
+    if closes is None or closes.empty:
+        return None
+    closes = closes.copy()
+    closes.index = pd.to_datetime(closes.index)
+    closes = closes.sort_index()
+    closes = closes.apply(pd.to_numeric, errors="coerce")
+    closes = closes.loc[:, ~closes.columns.duplicated()]
+    thresh = max(120, int(len(closes) * 0.30))
+    closes = closes.dropna(axis=1, thresh=thresh)
+    closes = closes.dropna(axis=1, how="all")
+    return closes if closes.shape[1] else None
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_russell2000_breadth_data(lookback_days=550, batch_size=160, retry_batch_size=70):
+    """Load Russell-2000 close prices with persistent local SQLite cache.
+
+    Workflow:
+    1. read existing local cache first
+    2. only request symbols with no history or stale recent data
+    3. upsert new rows into SQLite
+    4. build breadth input from local database
+    """
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
+    end_date = pd.Timestamp(end).strftime("%Y-%m-%d")
+    recent_floor = (pd.Timestamp(end).normalize() - pd.offsets.BDay(3)).to_pydatetime()
+    db_path = _get_cache_db_path()
+    _init_price_cache_db(db_path)
+
+    tickers = _get_russell2000_tickers_with_cache(db_path)
+    if not tickers:
+        return None
+    tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
+
+    cached_before = _prepare_closes_for_breadth(_read_cached_closes(db_path, tickers, start_date, end_date))
+    last_dates = _get_cached_last_dates(db_path, tickers)
+
+    missing_history = [t for t in tickers if t not in last_dates]
+    stale_recent = [t for t, last_dt in last_dates.items() if last_dt.to_pydatetime() < recent_floor]
+    stale_recent = [t for t in stale_recent if t not in missing_history]
+
+    if missing_history:
+        for batch in _chunked(missing_history, batch_size):
+            closes = _download_close_batch_fast(batch, start, end, threads=True, timeout=35)
+            if closes is not None and not closes.empty:
+                _write_closes_to_cache(db_path, closes)
+
+    if stale_recent:
+        recent_start = max(start, end - timedelta(days=45))
+        for batch in _chunked(stale_recent, retry_batch_size):
+            closes = _download_close_batch_fast(batch, recent_start, end, threads=True, timeout=30)
+            if closes is not None and not closes.empty:
+                _write_closes_to_cache(db_path, closes)
+
+    # One compact retry pass only for symbols that still have no cached rows at all.
+    last_dates_after = _get_cached_last_dates(db_path, tickers)
+    still_missing = [t for t in tickers if t not in last_dates_after]
+    if still_missing:
+        for batch in _chunked(still_missing, retry_batch_size):
+            closes = _download_close_batch_fast(batch, start, end, threads=False, timeout=25)
+            if closes is not None and not closes.empty:
+                _write_closes_to_cache(db_path, closes)
+
+    closes = _prepare_closes_for_breadth(_read_cached_closes(db_path, tickers, start_date, end_date))
+    if closes is None or closes.empty:
+        return None
+
+    requested = len(tickers)
+    loaded = int(closes.shape[1])
+    coverage = loaded / max(requested, 1)
+    used_cache_only = bool(cached_before is not None and not missing_history and not stale_recent)
+
+    closes.attrs["requested_universe"] = requested
+    closes.attrs["loaded_universe"] = loaded
+    closes.attrs["coverage_ratio"] = coverage
+    closes.attrs["partial_universe"] = coverage < 0.75
+    closes.attrs["cache_db_path"] = db_path
+    closes.attrs["cache_used"] = True
+    closes.attrs["cache_only_run"] = used_cache_only
+    closes.attrs["cache_member_count"] = int(_get_cache_metadata(db_path, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested)
+    closes.attrs["cache_members_updated_at"] = _get_cache_metadata(db_path, f"{CACHE_UNIVERSE_NAME}_members_updated_at", "")
+    closes.attrs["cache_prices_last_write_at"] = _get_cache_metadata(db_path, "prices_last_write_at", "")
+
+    min_required = max(350, int(requested * 0.18))
+    return closes if loaded >= min_required else None
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_fed_funds_rate(fred_key):
@@ -2442,6 +2647,13 @@ def _tab_marktanalyse():
                 st.success(f"✓ {loaded} Russell-2000-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
                 if requested and loaded < requested * 0.8:
                     st.warning(f"Hinweis: Es wurden nicht alle Russell-2000-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
+                if closes.attrs.get("cache_used"):
+                    cache_mode = "aus lokalem SQLite-Cache" if closes.attrs.get("cache_only_run") else "aus lokalem SQLite-Cache mit Nachladen fehlender Daten"
+                    cache_msg = f"Lokaler Kurs-Cache aktiv · Daten geladen {cache_mode}."
+                    cache_write = closes.attrs.get("cache_prices_last_write_at", "")
+                    if cache_write:
+                        cache_msg += f" Letzte Cache-Aktualisierung: {cache_write} UTC."
+                    st.info(cache_msg)
 
                 # ── Breadth Charts ──
                 st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
