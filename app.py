@@ -114,7 +114,7 @@ def load_market_data(lookback_days=400):
     tickers = {
         "S&P 500":"^GSPC","Nasdaq Composite":"^IXIC","Russell 2000":"^RUT",
         "RSP (Equal-Weight S&P)":"RSP","QQEW (Equal-Weight Nasdaq)":"QQEW",
-        "VIX":"^VIX","VXX":"VIXY",
+        "VIX":"^VIX","VIXY":"VIXY",
         "XLU (Utilities)":"XLU","XLP (Consumer Staples)":"XLP",
         "XLK (Technology)":"XLK","XLY (Consumer Discr.)":"XLY",
     }
@@ -418,8 +418,201 @@ def compute_breadth_mode(df_ew):
         else: stable.append(modes[i]);pending=None;pc=0
     df_ew["Breadth_Mode"]=stable;return df_ew
 
+def _rolling_zscore(s, window=63):
+    min_periods = max(20, window // 3)
+    mean = s.rolling(window, min_periods=min_periods).mean()
+    std = s.rolling(window, min_periods=min_periods).std().replace(0, np.nan)
+    return (s - mean) / std
+
+
+def _rolling_percentile(s, window=252):
+    min_periods = max(60, window // 4)
+
+    def _pct_rank(x):
+        xs = pd.Series(x)
+        return xs.rank(pct=True).iloc[-1]
+
+    return s.rolling(window, min_periods=min_periods).apply(_pct_rank, raw=False)
+
+
 def analyze_vix(dv):
-    dv=dv.copy();dv["SMA10"]=_sma(dv["Close"],10);dv["Pct_Above_SMA10"]=(dv["Close"]-dv["SMA10"])/dv["SMA10"]*100;dv["Is_Panic"]=dv["Pct_Above_SMA10"]>20;return dv
+    dv = dv.copy()
+    dv["SMA10"] = _sma(dv["Close"], 10)
+    dv["EMA10"] = _ema(dv["Close"], 10)
+    dv["EMA21"] = _ema(dv["Close"], 21)
+    dv["Ret_5d"] = dv["Close"].pct_change(5)
+    dv["Ret_20d"] = dv["Close"].pct_change(20)
+    dv["Z63"] = _rolling_zscore(dv["Close"], 63)
+    dv["PctRank252"] = _rolling_percentile(dv["Close"], 252)
+    dv["Pct_Above_SMA10"] = (dv["Close"] - dv["SMA10"]) / dv["SMA10"] * 100
+
+    panic_rule = (dv["PctRank252"] >= 0.85) & (dv["Z63"] >= 1.5)
+    fallback_panic = (dv["Close"] > 20) & (dv["Close"] > dv["EMA10"])
+    calm_rule = (dv["PctRank252"] <= 0.25) & (dv["Z63"] <= -0.5)
+    fallback_calm = (dv["Close"] < 16) & (dv["Close"] < dv["EMA10"])
+
+    dv["Is_Panic"] = panic_rule.fillna(False) | fallback_panic.fillna(False)
+    dv["Is_Calm"] = calm_rule.fillna(False) | fallback_calm.fillna(False)
+    dv["VIX_Regime"] = np.select(
+        [dv["Is_Panic"], dv["Is_Calm"]],
+        ["Stress", "Ruhig"],
+        default="Neutral",
+    )
+    return dv
+
+
+def analyze_vixy(dx):
+    dx = dx.copy()
+    dx["EMA10"] = _ema(dx["Close"], 10)
+    dx["EMA21"] = _ema(dx["Close"], 21)
+    dx["EMA50"] = _ema(dx["Close"], 50)
+    dx["Ret_5d"] = dx["Close"].pct_change(5)
+    dx["Ret_20d"] = dx["Close"].pct_change(20)
+    dx["Z63"] = _rolling_zscore(dx["Close"], 63)
+    dx["PctRank252"] = _rolling_percentile(dx["Close"], 252)
+
+    trend_up = (dx["Close"] > dx["EMA21"]) & (dx["EMA21"] > dx["EMA21"].shift(5))
+    dx["Stress_Confirmation"] = (
+        ((dx["Ret_5d"] > 0.08) & (dx["PctRank252"] > 0.70) & trend_up)
+        | ((dx["Ret_5d"] > 0.05) & trend_up)
+    ).fillna(False)
+    dx["Carry_Decay"] = ((dx["Close"] < dx["EMA21"]) & (dx["Ret_20d"] < 0)).fillna(False)
+    dx["VIXY_State"] = np.select(
+        [dx["Stress_Confirmation"], dx["Carry_Decay"]],
+        ["Bestätigt", "Abbau"],
+        default="Gemischt",
+    )
+    return dx
+
+
+def build_volatility_dashboard(spx_df, vix_df=None, vixy_df=None):
+    out = pd.DataFrame(index=spx_df.index.copy())
+    out["SPX_Close"] = spx_df["Close"]
+    out["SPX_Ret_5d"] = spx_df["Close"].pct_change(5)
+
+    if vix_df is not None and len(vix_df) > 0:
+        v = vix_df.reindex(out.index).ffill()
+        out["VIX_Close"] = v["Close"]
+        out["VIX_Ret_5d"] = v.get("Ret_5d")
+        out["VIX_PctRank252"] = v.get("PctRank252")
+        out["VIX_Is_Panic"] = v.get("Is_Panic", False).fillna(False)
+        out["VIX_Is_Calm"] = v.get("Is_Calm", False).fillna(False)
+        out["VIX_Regime"] = v.get("VIX_Regime", "Neutral")
+    else:
+        out["VIX_Close"] = np.nan
+        out["VIX_Ret_5d"] = np.nan
+        out["VIX_PctRank252"] = np.nan
+        out["VIX_Is_Panic"] = False
+        out["VIX_Is_Calm"] = False
+        out["VIX_Regime"] = "n/a"
+
+    if vixy_df is not None and len(vixy_df) > 0:
+        x = vixy_df.reindex(out.index).ffill()
+        out["VIXY_Close"] = x["Close"]
+        out["VIXY_Ret_5d"] = x.get("Ret_5d")
+        out["VIXY_Stress_Confirmation"] = x.get("Stress_Confirmation", False).fillna(False)
+        out["VIXY_Carry_Decay"] = x.get("Carry_Decay", False).fillna(False)
+        out["VIXY_State"] = x.get("VIXY_State", "Gemischt")
+    else:
+        out["VIXY_Close"] = np.nan
+        out["VIXY_Ret_5d"] = np.nan
+        out["VIXY_Stress_Confirmation"] = False
+        out["VIXY_Carry_Decay"] = False
+        out["VIXY_State"] = "n/a"
+
+    out["Fragile_Rally"] = (
+        (out["SPX_Ret_5d"] > 0)
+        & (
+            out["VIXY_Stress_Confirmation"]
+            | (out["VIX_Ret_5d"] > 0)
+            | ((out["VIXY_Ret_5d"] > 0.03) & (out["VIX_PctRank252"] > 0.55))
+        )
+    ).fillna(False)
+
+    conditions = [
+        out["VIX_Is_Panic"] & out["VIXY_Stress_Confirmation"],
+        out["VIX_Is_Panic"] & ~out["VIXY_Stress_Confirmation"],
+        out["Fragile_Rally"],
+        out["VIX_Is_Calm"] & out["VIXY_Carry_Decay"] & (out["SPX_Ret_5d"] > 0),
+    ]
+    labels = [
+        "Risk Off bestätigt",
+        "Kurzer Volatilitätsschock",
+        "Fragile Rally",
+        "Risk On / ruhig",
+    ]
+    out["Vol_Regime"] = np.select(conditions, labels, default="Neutral")
+    return out
+
+
+def summarize_volatility_state(vol_df):
+    latest = vol_df.iloc[-1]
+
+    vix_regime = latest.get("VIX_Regime", "n/a")
+    if vix_regime == "Stress":
+        vix_tone = "#ef4444"
+        vix_detail = f"VIX {latest['VIX_Close']:.1f} · erhöht gegenüber der eigenen Historie"
+    elif vix_regime == "Ruhig":
+        vix_tone = "#22c55e"
+        vix_detail = f"VIX {latest['VIX_Close']:.1f} · wenig Angst im Optionsmarkt"
+    elif pd.notna(latest.get("VIX_Close")):
+        vix_tone = "#f59e0b"
+        vix_detail = f"VIX {latest['VIX_Close']:.1f} · keine Extremzone"
+    else:
+        vix_tone = "#64748b"
+        vix_detail = "Keine VIX-Daten verfügbar"
+
+    if latest.get("VIXY_Stress_Confirmation", False):
+        vixy_label = "Bestätigt"
+        vixy_tone = "#ef4444"
+        vixy_detail = f"VIXY {latest['VIXY_Close']:.1f} · Futures-Stress wird getragen"
+    elif latest.get("VIXY_Carry_Decay", False):
+        vixy_label = "Kein Stress"
+        vixy_tone = "#22c55e"
+        vixy_detail = f"VIXY {latest['VIXY_Close']:.1f} · eher normales Carry-Umfeld"
+    elif pd.notna(latest.get("VIXY_Close")):
+        vixy_label = "Gemischt"
+        vixy_tone = "#f59e0b"
+        vixy_detail = f"VIXY {latest['VIXY_Close']:.1f} · keine klare Bestätigung"
+    else:
+        vixy_label = "n/a"
+        vixy_tone = "#64748b"
+        vixy_detail = "Keine VIXY-Daten verfügbar"
+
+    vol_regime = latest.get("Vol_Regime", "Neutral")
+    tone_map = {
+        "Risk Off bestätigt": "#ef4444",
+        "Kurzer Volatilitätsschock": "#f59e0b",
+        "Fragile Rally": "#f59e0b",
+        "Risk On / ruhig": "#22c55e",
+        "Neutral": "#64748b",
+    }
+    vol_tone = tone_map.get(vol_regime, "#64748b")
+    if vol_regime == "Risk Off bestätigt":
+        vol_detail = "VIX und VIXY ziehen gleichzeitig an"
+    elif vol_regime == "Kurzer Volatilitätsschock":
+        vol_detail = "VIX springt an, Futures bestätigen aber nicht voll"
+    elif vol_regime == "Fragile Rally":
+        vol_detail = "Aktienmarkt steigt, Volatilität bleibt aber zu fest"
+    elif vol_regime == "Risk On / ruhig":
+        vol_detail = "Ruhiges Umfeld mit abbauendem VIXY"
+    else:
+        vol_detail = "Keine klare Volatilitätslage"
+
+    fragile = bool(latest.get("Fragile_Rally", False))
+    fragile_label = "Warnung" if fragile else "Keine"
+    fragile_tone = "#f59e0b" if fragile else "#22c55e"
+    if fragile:
+        fragile_detail = "S&P 500 steigt, aber VIX oder VIXY bleiben zu stark"
+    else:
+        fragile_detail = "Keine belastbare Divergenz zwischen Rally und Volatilität"
+
+    return {
+        "VIX Regime": {"status": vix_regime, "detail": vix_detail, "tone": vix_tone},
+        "VIXY Bestätigung": {"status": vixy_label, "detail": vixy_detail, "tone": vixy_tone},
+        "Vol Regime": {"status": vol_regime, "detail": vol_detail, "tone": vol_tone},
+        "Fragile Rally": {"status": fragile_label, "detail": fragile_detail, "tone": fragile_tone},
+    }
 
 # ═══════════════════════════════════════════════════════
 # INTERMARKET & SECTOR ROTATION & FAILING RALLY
@@ -632,12 +825,28 @@ def plot_volume(df,sd=90):
     fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#1e293b",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
     return fig
 
-def plot_vix(dv,sd=90):
-    d=dv.tail(sd);x=_x(d.index);fig=go.Figure()
-    fig.add_trace(go.Scatter(x=x,y=_y(d["Close"]),name="VIX",line=dict(color="#ef4444",width=1.5)))
-    if "SMA10" in d: fig.add_trace(go.Scatter(x=x,y=_y(d["SMA10"]),name="10-SMA",line=dict(color="#3b82f6",width=1,dash="dot")))
-    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=160,legend=dict(orientation="h",yanchor="top",y=1.15,font=dict(size=9,color="#94a3b8")),xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")))
+def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
+    d = dv.tail(sd)
+    x = _x(d.index)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=_y(d["Close"]), name=title, line=dict(color=price_color, width=1.6)))
+    ma_col = "EMA10" if "EMA10" in d.columns else "SMA10" if "SMA10" in d.columns else None
+    ma_name = "10-EMA" if ma_col == "EMA10" else "10-SMA"
+    if ma_col is not None:
+        fig.add_trace(go.Scatter(x=x, y=_y(d[ma_col]), name=ma_name, line=dict(color="#3b82f6", width=1, dash="dot")))
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=10, b=0), height=180, legend=dict(orientation="h", yanchor="top", y=1.15, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")))
     return fig
+
+
+def render_signal_card(title, status, detail, tone="#64748b"):
+    st.markdown(
+        f'<div class="info-card" style="height:100%; border-left:4px solid {tone};">'
+        f'<div class="card-label">{title}</div>'
+        f'<div style="font-size:1.0rem;font-weight:700;color:{tone};margin-bottom:8px;">{status}</div>'
+        f'<div style="font-size:.78rem;color:#94a3b8;line-height:1.45;">{detail}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 def plot_breadth_deep(br,sd=90):
     """5 subplots: A/D Line, McClellan, NH/NL, % above MAs, Deemer Ratio."""
@@ -1775,6 +1984,12 @@ def _tab_marktanalyse():
     with c2: sd=st.selectbox("Zeitraum",[60,90,130,200],index=1,format_func=lambda x:f"{x} Tage")
 
     df=add_indicators(data[selected].copy());df=detect_distribution_days(df);df=compute_ampel(df)
+    benchmark_df = data["S&P 500"] if "S&P 500" in data else data[selected]
+    vix_df = analyze_vix(data["VIX"].copy()) if "VIX" in data else None
+    vixy_df = analyze_vixy(data["VIXY"].copy()) if "VIXY" in data else None
+    vol_dashboard = build_volatility_dashboard(benchmark_df, vix_df, vixy_df)
+    vol_summary = summarize_volatility_state(vol_dashboard)
+    vol_latest = vol_dashboard.iloc[-1]
     L=df.iloc[-1];pct=L["Pct_Change"] if not np.isnan(L["Pct_Change"]) else 0.0
 
     # ── TRENDWENDE-AMPEL (eigene Kategorie) ──
@@ -1870,27 +2085,33 @@ def _tab_marktanalyse():
             if etf in data: dfe=compute_breadth_mode(data[etf].copy());render_breadth(dfe.iloc[-1]["Breadth_Mode"],float(dfe.iloc[-1]["Dist_52w_pct"]));st.caption(etf)
             else: st.info(f"{etf} n/a")
 
-    # ── VIX ──
+    # ── VOLATILITÄT ──
     st.markdown("---")
     st.markdown('<div class="card-label">VOLATILITÄT & STIMMUNG</div>',unsafe_allow_html=True)
-    vc1,vc2=st.columns([2,1])
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    for col, title in zip([sc1, sc2, sc3, sc4], ["VIX Regime", "VIXY Bestätigung", "Vol Regime", "Fragile Rally"]):
+        with col:
+            card = vol_summary[title]
+            render_signal_card(title, card["status"], card["detail"], card["tone"])
+
+    vc1, vc2 = st.columns(2)
     with vc1:
-        if "VIX" in data: st.plotly_chart(plot_vix(analyze_vix(data["VIX"].copy()),sd),use_container_width=True,config={"displayModeBar":False})
+        if vix_df is not None:
+            st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color="#ef4444"), use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Keine VIX-Daten verfügbar")
     with vc2:
-        if "VIX" in data:
-            dv=analyze_vix(data["VIX"].copy());vl=dv.iloc[-1];st.metric("VIX",f"{vl['Close']:.1f}")
-            if not np.isnan(vl["SMA10"]):
-                pab=vl["Pct_Above_SMA10"]
-                if not np.isnan(pab):
-                    if pab>20: st.error(f"⚠ {pab:.0f}% über SMA → Panik")
-                    elif vl["Close"]>20: st.warning(f"Erhöht ({pab:+.0f}%)")
-                    else: st.success(f"Ruhig ({pab:+.0f}%)")
-        if "VXX" in data:
-            dx=data["VXX"].copy();dx["EMA21"]=_ema(dx["Close"],21);xl=dx.iloc[-1]
-            ab=xl["Close"]>xl["EMA21"];ri=dx["EMA21"].iloc[-1]>dx["EMA21"].iloc[-5] if len(dx)>5 else False
-            if ab and ri: st.warning("VIXY Risk-Off")
-            elif not ab and not ri: st.success("VIXY Risk-On")
-            else: st.info("VIXY gemischt")
+        if vixy_df is not None:
+            st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color="#f59e0b"), use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Keine VIXY-Daten verfügbar")
+
+    if pd.notna(vol_latest.get("VIX_Close")) or pd.notna(vol_latest.get("VIXY_Close")):
+        st.caption(
+            f"VIX {vol_latest.get('VIX_Close', np.nan):.1f} · "
+            f"VIXY {vol_latest.get('VIXY_Close', np.nan):.1f} · "
+            f"S&P 500 5T {vol_latest.get('SPX_Ret_5d', np.nan) * 100:+.1f}%"
+        )
 
     # ══════════════════════════════════════════════════
     # TIEFENANALYSE (on-demand)
@@ -2032,7 +2253,7 @@ def _tab_marktanalyse():
                  f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein Zyklus" if L["Ampel_Phase"] in ("neutral","aufwaertstrend") else "Noch keine")
     render_check("Startschuss (≥Gelb)?",L["Ampel_Phase"] in ("gelb","gruen","aufwaertstrend"),f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND','AUFWÄRTSTREND')}")
     if ep in data: dfe=compute_breadth_mode(data[ep].copy());render_check("Marktbreite?",dfe.iloc[-1]["Breadth_Mode"]!="schutz",f"Modus: {dfe.iloc[-1]['Breadth_Mode'].capitalize()}")
-    if "VIX" in data: dv=analyze_vix(data["VIX"].copy());render_check("VIX nicht Panik?",not bool(dv.iloc[-1].get("Is_Panic",False)),f"VIX: {data['VIX'].iloc[-1]['Close']:.1f}")
+    render_check("VIX Regime nicht Stress?", vol_latest.get("VIX_Regime", "Neutral") != "Stress", f"Regime: {vol_latest.get('VIX_Regime', 'n/a')}")
     render_check(f"Warnzeichen ≤2?",wc<=2,f"{wc} aktiv")
     st.markdown("</div>",unsafe_allow_html=True)
 
