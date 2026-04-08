@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import warnings, os, requests, io, re, time, sqlite3
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from ftplib import FTP
 try:
     import psycopg2
     from psycopg2.extras import execute_values
@@ -153,83 +154,127 @@ def _parse_ishares_holdings_html(html):
     return _normalize_ticker_list(collected)
 
 
-def _get_russell2000_from_ishares():
-    csv_urls = [
-        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf?dataType=fund&fileName=IWM_holdings&fileType=csv",
-        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/?dataType=fund&fileName=IWM_holdings&fileType=csv",
-        "https://www.ishares.com/ch/professionals/en/products/239710/ishares-russell-2000-etf?dataType=fund&fileName=IWM_holdings&fileType=csv",
-    ]
-    page_urls = [
-        "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf",
-        "https://www.ishares.com/us/products/239710/IWM",
-        "https://www.ishares.com/ch/professionals/en/products/239710/ishares-russell-2000-etf",
-    ]
-    headers = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.9"}
 
-    for url in csv_urls:
-        try:
-            resp = requests.get(url, timeout=25, headers=headers)
-            resp.raise_for_status()
-            tickers = _parse_ishares_holdings_csv(resp.content.decode("utf-8", errors="ignore"))
-            if len(tickers) >= 1200:
-                return tickers
-        except Exception:
-            continue
-
-    for url in page_urls:
-        try:
-            resp = requests.get(url, timeout=25, headers=headers)
-            resp.raise_for_status()
-            tickers = _parse_ishares_holdings_html(resp.text)
-            if len(tickers) >= 1200:
-                return tickers
-        except Exception:
-            continue
-
-    return []
-
-
-def _get_russell2000_from_wikipedia_tables():
+def _parse_nasdaq_otherlisted_text(text):
     try:
-        tables = pd.read_html("https://en.wikipedia.org/wiki/Russell_2000_Index")
-        collected = []
-        for table in tables:
-            lower_cols = {str(c).strip().lower(): c for c in table.columns}
-            sym_col = lower_cols.get("symbol") or lower_cols.get("ticker")
-            if sym_col is not None:
-                collected.extend(table[sym_col].tolist())
-        tickers = _normalize_ticker_list(collected)
-        if len(tickers) >= 1500:
-            return tickers
+        df = pd.read_csv(io.StringIO(text), sep="|", dtype=str, engine="python")
     except Exception:
-        pass
-    return []
+        return []
+    if df is None or df.empty:
+        return []
+    df.columns = [str(c).strip() for c in df.columns]
+    first_col = df.columns[0]
+    df = df[~df[first_col].fillna("").str.startswith("File Creation Time", na=False)].copy()
+    df = df.dropna(how="all")
+    lower_cols = {str(c).strip().lower(): c for c in df.columns}
+
+    exchange_col = lower_cols.get("exchange")
+    etf_col = lower_cols.get("etf")
+    test_col = lower_cols.get("test issue")
+    name_col = lower_cols.get("security name")
+    cqs_col = lower_cols.get("cqs symbol")
+    nasdaq_col = lower_cols.get("nasdaq symbol")
+    act_col = lower_cols.get("act symbol")
+
+    if exchange_col is None:
+        return []
+
+    df[exchange_col] = df[exchange_col].fillna("").astype(str).str.strip().str.upper()
+    df = df[df[exchange_col] == "N"]
+
+    if etf_col is not None:
+        df[etf_col] = df[etf_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[etf_col] != "Y"]
+
+    if test_col is not None:
+        df[test_col] = df[test_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[test_col] != "Y"]
+
+    def _looks_like_equity_name(name):
+        name = str(name or "").strip()
+        if not name:
+            return False
+        low = f" {name.lower()} "
+        reject_patterns = (
+            r"\bpreferred\b",
+            r"\bdepositary\b",
+            r"\bwarrants?\b",
+            r"\brights?\b",
+            r"\bunits?\b",
+            r"\bnotes?\b",
+            r"\bbonds?\b",
+            r"\bdebentures?\b",
+            r"\betn\b",
+            r"\betf\b",
+            r"\bclosed\s+end\b",
+            r"\bmutual\s+fund\b",
+            r"\bbeneficial\s+interest\b",
+            r"\btrust\s+units?\b",
+        )
+        return not any(re.search(p, low) for p in reject_patterns)
+
+    collected = []
+    for _, row in df.iterrows():
+        name = row.get(name_col, "") if name_col is not None else ""
+        if not _looks_like_equity_name(name):
+            continue
+        symbol = ""
+        for col in (cqs_col, nasdaq_col, act_col):
+            if col is None:
+                continue
+            candidate = str(row.get(col, "") or "").strip().upper()
+            if candidate and candidate != "NAN":
+                symbol = candidate
+                break
+        if symbol:
+            collected.append(symbol)
+
+    return _normalize_ticker_list(collected)
 
 
-def _get_russell2000_from_wikipedia_raw():
+def _get_nyse_stocks_from_nasdaq_trader_ftp():
+    buf = io.BytesIO()
+    ftp = None
+    try:
+        ftp = FTP("ftp.nasdaqtrader.com", timeout=30)
+        ftp.login()
+        ftp.cwd("SymbolDirectory")
+        ftp.retrbinary("RETR otherlisted.txt", buf.write)
+        raw = buf.getvalue().decode("utf-8", errors="ignore")
+        tickers = _parse_nasdaq_otherlisted_text(raw)
+        return tickers if len(tickers) >= 1200 else []
+    except Exception:
+        return []
+    finally:
+        try:
+            if ftp is not None:
+                ftp.quit()
+        except Exception:
+            pass
+
+
+def _get_nyse_stocks_from_nasdaq_trader_http():
     urls = [
-        "https://en.wikipedia.org/w/index.php?title=Russell_2000_Index&action=raw",
-        "https://en.wikipedia.org/wiki/Russell_2000_Index?action=raw",
+        "https://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt",
+        "http://ftp.nasdaqtrader.com/SymbolDirectory/otherlisted.txt",
+        "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
     ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,*/*"}
     for url in urls:
         try:
-            resp = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(url, timeout=30, headers=headers)
             resp.raise_for_status()
-            raw = resp.content.decode("utf-8", errors="ignore")
-            tickers = re.findall(r"\|\|\s*([A-Z]{1,5}(?:[.-][A-Z])?)\s*\|\|", raw)
-            tickers = _normalize_ticker_list(tickers)
-            if len(tickers) >= 1500:
+            tickers = _parse_nasdaq_otherlisted_text(resp.text)
+            if len(tickers) >= 1200:
                 return tickers
         except Exception:
             continue
     return []
 
 
-def _get_russell2000_from_github_fallback():
-    """Last-resort community fallback for Russell-2000 tickers."""
+def _get_nyse_stocks_from_github_fallback():
     urls = [
-        "https://raw.githubusercontent.com/ikoniaris/Russell2000/refs/heads/master/russell_2000_components.csv",
-        "https://raw.githubusercontent.com/ikoniaris/Russell2000/refs/heads/master/russell2000_tickers.txt",
+        "https://raw.githubusercontent.com/joemccann/stock-exchange-symbols/master/csv/nyse.csv",
     ]
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,text/csv,*/*"}
     for url in urls:
@@ -238,18 +283,15 @@ def _get_russell2000_from_github_fallback():
             resp.raise_for_status()
             text = resp.content.decode("utf-8", errors="ignore")
             tickers = []
-            if url.endswith('.csv'):
-                try:
-                    df = pd.read_csv(io.StringIO(text))
-                    ticker_col = _extract_ticker_column(df)
-                    if ticker_col is not None:
-                        tickers = _normalize_ticker_list(df[ticker_col])
-                except Exception:
-                    tickers = []
-                if len(tickers) < 500:
-                    tickers = _normalize_ticker_list(re.findall(r"(?:^|[\s,])([A-Z]{1,5}(?:[.-][A-Z])?)(?=,|\s|$)", text, flags=re.MULTILINE))
-            else:
-                tickers = _normalize_ticker_list(re.split(r"[\s,;]+", text))
+            try:
+                df = pd.read_csv(io.StringIO(text))
+                ticker_col = _extract_ticker_column(df)
+                if ticker_col is not None:
+                    tickers = _normalize_ticker_list(df[ticker_col])
+            except Exception:
+                tickers = []
+            if len(tickers) < 500:
+                tickers = _normalize_ticker_list(re.split(r"[\s,;|]+", text))
             if len(tickers) >= 1000:
                 return tickers
         except Exception:
@@ -258,14 +300,13 @@ def _get_russell2000_from_github_fallback():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_russell2000_tickers():
-    """Load Russell 2000 constituents with multiple fallbacks."""
+def get_nyse_stock_tickers():
+    """Load a current NYSE stock universe from Nasdaq Trader otherlisted.txt with fallbacks."""
     best = []
     loaders = (
-        _get_russell2000_from_ishares,
-        _get_russell2000_from_wikipedia_tables,
-        _get_russell2000_from_wikipedia_raw,
-        _get_russell2000_from_github_fallback,
+        _get_nyse_stocks_from_nasdaq_trader_ftp,
+        _get_nyse_stocks_from_nasdaq_trader_http,
+        _get_nyse_stocks_from_github_fallback,
     )
     for loader in loaders:
         tickers = loader()
@@ -274,6 +315,13 @@ def get_russell2000_tickers():
         if len(tickers) >= 1200:
             return tickers
     return best if len(best) >= 300 else []
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_russell2000_tickers():
+    """Compatibility wrapper: now returns the current NYSE stock universe."""
+    return get_nyse_stock_tickers()
+
 
 # ═══════════════════════════════════════════════════════
 # DATA LOADING
@@ -392,10 +440,10 @@ def build_sector_table(closes, mode="daily", n_periods=20):
     return result, latest_ranked
 
 # ═══════════════════════════════════════════════════════
-# DEEP ANALYSIS: Russell 2000 breadth + FRED
+# DEEP ANALYSIS: NYSE breadth + FRED
 # ═══════════════════════════════════════════════════════
 CACHE_DB_NAME = "market_data_cache.sqlite"
-CACHE_UNIVERSE_NAME = "russell2000"
+CACHE_UNIVERSE_NAME = "nyse_stocks"
 
 
 def _safe_get_secret(*path, default=None):
@@ -953,7 +1001,7 @@ def _discover_yahoo_mapping(source_symbol, start, end, timeout=25, max_candidate
 
 
 def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_candidates=8):
-    """Automatically test Yahoo candidate symbols for still-missing Russell-2000 members and persist working mappings."""
+    """Automatically test Yahoo candidate symbols for still-missing NYSE members and persist working mappings."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
@@ -961,9 +1009,9 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
     store = _get_price_store()
     _init_price_cache_db(store)
 
-    tickers = _get_russell2000_tickers_with_cache(store)
+    tickers = _get_nyse_stock_tickers_with_cache(store)
     if not tickers:
-        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+        return {"ok": False, "error": "Keine aktuelle NYSE-Tickerliste verfügbar.", "store": _get_store_label(store)}
 
     tickers = list(dict.fromkeys([_normalize_symbol(t) for t in tickers if t]))
     _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
@@ -986,7 +1034,7 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
             "attempted": 0,
             "store": _get_store_label(store),
             "backend": store["backend"],
-            "message": "Es fehlen aktuell keine Russell-2000-Ticker mehr im Datenspeicher.",
+            "message": "Es fehlen aktuell keine NYSE-Ticker mehr im Datenspeicher.",
             "results_df": pd.DataFrame(),
             "counts": {},
         }
@@ -1109,7 +1157,7 @@ def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_c
 
 
 def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_workers=8):
-    """Diagnose a sample of still-missing Russell-2000 symbols against Yahoo."""
+    """Diagnose a sample of still-missing NYSE symbols against Yahoo."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
@@ -1117,9 +1165,9 @@ def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_wo
     store = _get_price_store()
     _init_price_cache_db(store)
 
-    tickers = _get_russell2000_tickers_with_cache(store)
+    tickers = _get_nyse_stock_tickers_with_cache(store)
     if not tickers:
-        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+        return {"ok": False, "error": "Keine aktuelle NYSE-Tickerliste verfügbar.", "store": _get_store_label(store)}
 
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
     missing, _ = _get_missing_universe_tickers(store, tickers)
@@ -1135,7 +1183,7 @@ def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_wo
             "sample_size": 0,
             "results_df": pd.DataFrame(),
             "counts": {},
-            "message": "Es fehlen aktuell keine Russell-2000-Ticker mehr im Datenspeicher.",
+            "message": "Es fehlen aktuell keine NYSE-Ticker mehr im Datenspeicher.",
         }
 
     sample_size = max(1, min(int(sample_size), len(missing)))
@@ -1320,8 +1368,8 @@ def _get_cached_last_dates(store, tickers):
         conn.close()
 
 
-def _get_russell2000_tickers_with_cache(store):
-    live = get_russell2000_tickers()
+def _get_nyse_stock_tickers_with_cache(store):
+    live = get_nyse_stock_tickers()
     if live and len(live) >= 1000:
         _store_universe_members(store, CACHE_UNIVERSE_NAME, live)
         return live
@@ -1358,9 +1406,9 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
     store = _get_price_store()
     _init_price_cache_db(store)
 
-    tickers = _get_russell2000_tickers_with_cache(store)
+    tickers = _get_nyse_stock_tickers_with_cache(store)
     if not tickers:
-        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+        return {"ok": False, "error": "Keine aktuelle NYSE-Tickerliste verfügbar.", "store": _get_store_label(store)}
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
     _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
 
@@ -1423,7 +1471,7 @@ def refresh_russell2000_price_store(lookback_days=550, history_batch_size=140, r
 
 
 def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=24, max_workers=8):
-    """Try to backfill still-missing Russell-2000 symbols without manual ticker input."""
+    """Try to backfill still-missing NYSE symbols without manual ticker input."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
@@ -1431,9 +1479,9 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
     store = _get_price_store()
     _init_price_cache_db(store)
 
-    tickers = _get_russell2000_tickers_with_cache(store)
+    tickers = _get_nyse_stock_tickers_with_cache(store)
     if not tickers:
-        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+        return {"ok": False, "error": "Keine aktuelle NYSE-Tickerliste verfügbar.", "store": _get_store_label(store)}
 
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
     _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
@@ -1457,7 +1505,7 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
             "single_successes": 0,
             "store": _get_store_label(store),
             "backend": store["backend"],
-            "message": "Es fehlen aktuell keine Russell-2000-Ticker mehr im Datenspeicher.",
+            "message": "Es fehlen aktuell keine NYSE-Ticker mehr im Datenspeicher.",
         }
 
     rows_written = 0
@@ -1538,7 +1586,7 @@ def load_russell2000_breadth_data(lookback_days=550):
     store = _get_price_store()
     _init_price_cache_db(store)
 
-    tickers = _get_russell2000_tickers_with_cache(store)
+    tickers = _get_nyse_stock_tickers_with_cache(store)
     if not tickers:
         return None
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
@@ -3450,7 +3498,7 @@ def _tab_marktanalyse():
     # ══════════════════════════════════════════════════
     st.markdown("---")
     st.markdown("### 🔬 Tiefenanalyse — Marktbreite & Makro")
-    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs und Deemer Ratio aus dem Russell-2000-Universum. Der S&P 500 dient weiter als Referenzindex für Divergenzen. Optional: Fed Funds Rate über FRED API.")
+    st.caption("Berechnet A/D-Linie, McClellan Oscillator, Neue Hochs/Tiefs, % über MAs und Deemer Ratio aus einem aktuellen NYSE-Aktienuniversum. Die Symbolbasis stammt primär aus Nasdaq Trader otherlisted.txt mit Exchange = N. Der S&P 500 dient weiter als Referenzindex für Divergenzen. Optional: Fed Funds Rate über FRED API.")
 
     # FRED key: try secrets first, then environment, then manual input
     fred_key = ""
@@ -3489,30 +3537,30 @@ def _tab_marktanalyse():
 
     btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
     with btn_refresh:
-        refresh_clicked = st.button("🗄️ Datenbank initial befüllen / aktualisieren", use_container_width=True)
+        refresh_clicked = st.button("🗄️ NYSE-Datenbank initial befüllen / aktualisieren", use_container_width=True)
     with btn_rescue:
-        rescue_clicked = st.button("🩹 Fehlende Ticker gezielt nachladen", use_container_width=True)
+        rescue_clicked = st.button("🩹 Fehlende NYSE-Ticker gezielt nachladen", use_container_width=True)
     with btn_remap:
-        remap_clicked = st.button("🧭 Fehlende Ticker automatisch remappen", use_container_width=True)
+        remap_clicked = st.button("🧭 Fehlende NYSE-Ticker automatisch remappen", use_container_width=True)
     with btn_diag:
-        diagnose_clicked = st.button("🧪 Fehlende Ticker bei Yahoo testen", use_container_width=True)
+        diagnose_clicked = st.button("🧪 Fehlende NYSE-Ticker bei Yahoo testen", use_container_width=True)
     with btn_analyze:
         analyze_clicked = st.button("🔬 Tiefenanalyse starten", type="primary", use_container_width=True)
 
     if refresh_clicked:
-        with st.spinner("Aktualisiere den persistenten Kursbestand für Russell 2000 …"):
+        with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE-Aktienuniversum …"):
             refresh_stats = refresh_russell2000_price_store()
             st.cache_data.clear()
         if refresh_stats.get("ok"):
             st.success(
-                f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} Russell-2000-Aktien verfügbar "
+                f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} NYSE-Aktien verfügbar "
                 f"({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}"
             )
         else:
             st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
 
     if rescue_clicked:
-        with st.spinner("Suche fehlende Russell-2000-Ticker und lade sie gezielt nach …"):
+        with st.spinner("Suche fehlende NYSE-Ticker und lade sie gezielt nach …"):
             rescue_stats = rescue_missing_russell2000_price_store()
             st.cache_data.clear()
         if rescue_stats.get("ok"):
@@ -3522,7 +3570,7 @@ def _tab_marktanalyse():
                 st.success(
                     f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen "
                     f"({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · "
-                    f"jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} Russell-2000-Aktien verfügbar "
+                    f"jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} NYSE-Aktien verfügbar "
                     f"({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben"
                 )
                 if rescue_stats.get("missing_after", 0) > 0:
@@ -3535,7 +3583,7 @@ def _tab_marktanalyse():
             st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
 
     if remap_clicked:
-        with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden Russell-2000-Ticker …"):
+        with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden NYSE-Ticker …"):
             remap_stats = auto_remap_missing_russell2000_yahoo()
             st.cache_data.clear()
         if remap_stats.get("ok"):
@@ -3550,7 +3598,7 @@ def _tab_marktanalyse():
                 st.success(
                     f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen "
                     f"({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} "
-                    f"Russell-2000-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben"
+                    f"NYSE-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben"
                 )
                 metric_cols = st.columns(4)
                 metric_cols[0].metric("Gemappt und geladen", mapped_now)
@@ -3565,7 +3613,7 @@ def _tab_marktanalyse():
             st.error(remap_stats.get("error", "Das automatische Remapping ist fehlgeschlagen."))
 
     if diagnose_clicked:
-        with st.spinner("Teste eine Stichprobe der noch fehlenden Russell-2000-Ticker direkt gegen Yahoo …"):
+        with st.spinner("Teste eine Stichprobe der noch fehlenden NYSE-Ticker direkt gegen Yahoo …"):
             diag_stats = diagnose_missing_russell2000_yahoo()
             st.cache_data.clear()
         if diag_stats.get("ok"):
@@ -3598,7 +3646,7 @@ def _tab_marktanalyse():
             st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
     if analyze_clicked:
-        with st.spinner("Lese Russell-2000-Aktien aus dem persistenten Datenspeicher …"):
+        with st.spinner("Lese NYSE-Aktien aus dem persistenten Datenspeicher …"):
             closes = load_russell2000_breadth_data()
 
         if closes is not None and len(closes) > 50:
@@ -3614,9 +3662,9 @@ def _tab_marktanalyse():
                 loaded = closes.attrs.get("loaded_universe", len(closes.columns))
                 coverage = float(closes.attrs.get("coverage_ratio", 0.0) or 0.0)
                 ratio_txt = f" / {requested}" if requested else ""
-                st.success(f"✓ {loaded} Russell-2000-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
+                st.success(f"✓ {loaded} NYSE-Aktien geladen{ratio_txt}, {len(br)} Handelstage · {date_note}")
                 if requested and loaded < requested * 0.8:
-                    st.warning(f"Hinweis: Es wurden nicht alle Russell-2000-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
+                    st.warning(f"Hinweis: Es wurden nicht alle NYSE-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
                 if closes.attrs.get("cache_used"):
                     store_label = closes.attrs.get("store_label", "Datenspeicher")
                     cache_msg = f"Persistenter Datenspeicher aktiv · Daten gelesen aus {store_label}."
@@ -3641,7 +3689,7 @@ def _tab_marktanalyse():
                 bL = br_valid.iloc[-1]
                 bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
 
-                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — Russell 2000 ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="info-card"><div class="card-label">MARKTBREITE-KENNZAHLEN — NYSE ({len(closes.columns)} Aktien) · {bL_date}</div>', unsafe_allow_html=True)
 
                 kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                 with kb1:
@@ -3705,7 +3753,7 @@ def _tab_marktanalyse():
 
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
-            st.error("Im persistenten Datenspeicher liegen noch nicht genug Russell-2000-Daten. Bitte zuerst auf 'Datenbank initial befüllen / aktualisieren' klicken und danach bei Bedarf 'Fehlende Ticker gezielt nachladen' ausführen.")
+            st.error("Im persistenten Datenspeicher liegen noch nicht genug NYSE-Daten. Bitte zuerst auf 'NYSE-Datenbank initial befüllen / aktualisieren' klicken und danach bei Bedarf 'Fehlende NYSE-Ticker gezielt nachladen' ausführen.")
 
         # ── Fed Funds Rate ──
         if fred_key:
