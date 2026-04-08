@@ -485,6 +485,19 @@ def _init_price_cache_db(store):
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS symbol_mappings (
+                    universe TEXT NOT NULL,
+                    source_symbol TEXT NOT NULL,
+                    yahoo_symbol TEXT,
+                    status TEXT,
+                    note TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (universe, source_symbol)
+                )
+                """
+            )
         else:
             cur.execute(
                 """
@@ -513,6 +526,19 @@ def _init_price_cache_db(store):
                     key TEXT PRIMARY KEY,
                     value TEXT,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS symbol_mappings (
+                    universe TEXT NOT NULL,
+                    source_symbol TEXT NOT NULL,
+                    yahoo_symbol TEXT,
+                    status TEXT,
+                    note TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (universe, source_symbol)
                 )
                 """
             )
@@ -617,6 +643,78 @@ def _load_cached_universe_members(store, universe):
         conn.close()
 
 
+def _normalize_symbol(symbol):
+    return str(symbol).strip().upper().replace("/", "-").replace(".", "-")
+
+
+def _upsert_symbol_mapping(store, universe, source_symbol, yahoo_symbol=None, status="unknown", note=""):
+    source_symbol = _normalize_symbol(source_symbol)
+    yahoo_symbol = str(yahoo_symbol).strip().upper() if yahoo_symbol else None
+    note = str(note or "")
+    conn = _get_cache_conn(store)
+    try:
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO symbol_mappings(universe, source_symbol, yahoo_symbol, status, note, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (universe, source_symbol)
+                    DO UPDATE SET yahoo_symbol=EXCLUDED.yahoo_symbol,
+                                  status=EXCLUDED.status,
+                                  note=EXCLUDED.note,
+                                  updated_at=NOW()
+                    """,
+                    (universe, source_symbol, yahoo_symbol, status, note),
+                )
+        else:
+            conn.execute(
+                """
+                INSERT INTO symbol_mappings(universe, source_symbol, yahoo_symbol, status, note, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(universe, source_symbol)
+                DO UPDATE SET yahoo_symbol=excluded.yahoo_symbol,
+                              status=excluded.status,
+                              note=excluded.note,
+                              updated_at=excluded.updated_at
+                """,
+                (universe, source_symbol, yahoo_symbol, status, note, now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _load_symbol_mappings(store, universe, status_filter=("mapped",)):
+    conn = _get_cache_conn(store)
+    try:
+        params = [universe]
+        status_sql = ""
+        if status_filter:
+            if store["backend"] == "neon":
+                status_sql = " AND status = ANY(%s)"
+                params.append(list(status_filter))
+            else:
+                placeholders = ",".join(["?"] * len(status_filter))
+                status_sql = f" AND status IN ({placeholders})"
+                params.extend(list(status_filter))
+        query = (
+            "SELECT source_symbol, yahoo_symbol FROM symbol_mappings "
+            "WHERE universe=" + ("%s" if store["backend"] == "neon" else "?") +
+            " AND yahoo_symbol IS NOT NULL AND TRIM(yahoo_symbol) <> ''" + status_sql
+        )
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                rows = cur.fetchall()
+        else:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return {_normalize_symbol(src): str(yahoo).strip().upper() for src, yahoo in rows if src and yahoo}
+    finally:
+        conn.close()
+
+
 def _chunked(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
@@ -646,7 +744,7 @@ def _extract_close_frame(df, requested_batch):
 
 def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
     """Bulk download helper for medium-sized ticker batches."""
-    batch = list(dict.fromkeys(batch))
+    batch = [str(b).strip().upper().replace('/', '-') for b in list(dict.fromkeys(batch)) if b]
     if not batch:
         return None
     try:
@@ -665,9 +763,37 @@ def _download_close_batch_fast(batch, start, end, threads=True, timeout=30):
         return None
 
 
+def _download_close_batch_mapped(symbols, symbol_map, start, end, threads=True, timeout=30):
+    symbols = [_normalize_symbol(s) for s in list(dict.fromkeys(symbols)) if s]
+    if not symbols:
+        return None, []
+
+    query_to_original = {}
+    query_symbols = []
+    collision_symbols = []
+    for original in symbols:
+        query_symbol = str(symbol_map.get(original, original)).strip().upper().replace('/', '-')
+        query_norm = _normalize_symbol(query_symbol)
+        if query_norm in query_to_original and query_to_original[query_norm] != original:
+            collision_symbols.append(original)
+            continue
+        query_to_original[query_norm] = original
+        query_symbols.append(query_symbol)
+
+    closes = _download_close_batch_fast(query_symbols, start, end, threads=threads, timeout=timeout)
+    if closes is None or closes.empty:
+        return None, collision_symbols
+
+    rename_map = {col: query_to_original.get(_normalize_symbol(col), col) for col in closes.columns}
+    closes = closes.rename(columns=rename_map)
+    closes = closes.loc[:, ~closes.columns.duplicated()]
+    closes = closes.dropna(axis=1, how="all")
+    return (closes if closes.shape[1] else None), collision_symbols
+
+
 def _download_single_ticker_close(symbol, start, end, timeout=30):
     """Single-symbol fallback download for hard-to-fetch tickers."""
-    symbol = str(symbol).strip().upper().replace('.', '-').replace('/', '-')
+    symbol = str(symbol).strip().upper().replace('/', '-')
     if not symbol:
         return None
     try:
@@ -684,6 +810,17 @@ def _download_single_ticker_close(symbol, start, end, timeout=30):
         return _extract_close_frame(df, [symbol])
     except Exception:
         return None
+
+
+def _download_single_source_symbol(source_symbol, symbol_map, start, end, timeout=30):
+    source_symbol = _normalize_symbol(source_symbol)
+    query_symbol = str(symbol_map.get(source_symbol, source_symbol)).strip().upper().replace('/', '-')
+    closes = _download_single_ticker_close(query_symbol, start, end, timeout=timeout)
+    if closes is None or closes.empty:
+        return None
+    closes = closes.rename(columns={closes.columns[0]: source_symbol})
+    closes = closes.loc[:, ~closes.columns.duplicated()]
+    return closes if closes.shape[1] else None
 
 
 def _search_yahoo_symbol_candidates(symbol, timeout=15):
@@ -752,6 +889,223 @@ def _probe_single_missing_symbol(symbol, start, end, timeout=25):
         "history_rows": history_rows,
         "status": status,
     }
+
+
+def _build_symbol_test_candidates(symbol, lookup_candidates=None, max_candidates=8):
+    seen = set()
+    out = []
+
+    def add(val):
+        val = str(val).strip().upper()
+        if not val:
+            return
+        if val not in seen:
+            seen.add(val)
+            out.append(val)
+
+    symbol = str(symbol).strip().upper().replace('/', '-')
+    add(symbol)
+    add(symbol.replace('-', '.'))
+    add(symbol.replace('.', '-'))
+    for cand in (lookup_candidates or []):
+        add(cand)
+        add(str(cand).replace('-', '.'))
+        add(str(cand).replace('.', '-'))
+        if len(out) >= max_candidates:
+            break
+    return out[:max_candidates]
+
+
+
+def _discover_yahoo_mapping(source_symbol, start, end, timeout=25, max_candidates=8):
+    source_symbol = _normalize_symbol(source_symbol)
+    lookup = _search_yahoo_symbol_candidates(source_symbol, timeout=max(10, timeout))
+    candidates = _build_symbol_test_candidates(source_symbol, lookup.get("candidates", []), max_candidates=max_candidates)
+    for candidate in candidates:
+        closes = _download_single_ticker_close(candidate, start, end, timeout=timeout)
+        if closes is not None and not closes.empty:
+            closes = closes.rename(columns={closes.columns[0]: source_symbol})
+            closes = closes.loc[:, ~closes.columns.duplicated()]
+            return {
+                "symbol": source_symbol,
+                "success": True,
+                "yahoo_symbol": candidate,
+                "history_rows": int(len(closes)),
+                "lookup_ok": bool(lookup.get("lookup_ok")),
+                "lookup_exact": bool(lookup.get("exact_match")),
+                "lookup_candidates": ", ".join(lookup.get("candidates", [])[:5]),
+                "status": "Gemappt und geladen",
+                "closes": closes,
+            }
+    status = "Yahoo kennt Symbol, aber keine Historie" if lookup.get("lookup_ok") else "Yahoo kennt Symbol nicht"
+    return {
+        "symbol": source_symbol,
+        "success": False,
+        "yahoo_symbol": "",
+        "history_rows": 0,
+        "lookup_ok": bool(lookup.get("lookup_ok")),
+        "lookup_exact": bool(lookup.get("exact_match")),
+        "lookup_candidates": ", ".join(lookup.get("candidates", [])[:5]),
+        "status": status,
+        "closes": None,
+    }
+
+
+
+def auto_remap_missing_russell2000_yahoo(lookback_days=550, max_workers=8, max_candidates=8):
+    """Automatically test Yahoo candidate symbols for still-missing Russell-2000 members and persist working mappings."""
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
+    end_date = pd.Timestamp(end).strftime("%Y-%m-%d")
+    store = _get_price_store()
+    _init_price_cache_db(store)
+
+    tickers = _get_russell2000_tickers_with_cache(store)
+    if not tickers:
+        return {"ok": False, "error": "Keine Russell-2000-Tickerliste verfügbar.", "store": _get_store_label(store)}
+
+    tickers = list(dict.fromkeys([_normalize_symbol(t) for t in tickers if t]))
+    _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
+
+    missing_before, _ = _get_missing_universe_tickers(store, tickers)
+    if not missing_before:
+        closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
+        loaded = int(closes_final.shape[1]) if closes_final is not None else len(tickers)
+        requested = len(tickers)
+        return {
+            "ok": True,
+            "requested": requested,
+            "loaded": loaded,
+            "coverage": loaded / max(requested, 1),
+            "missing_before": 0,
+            "missing_after": 0,
+            "new_symbols_loaded": 0,
+            "rows_written": 0,
+            "mapped_successes": 0,
+            "attempted": 0,
+            "store": _get_store_label(store),
+            "backend": store["backend"],
+            "message": "Es fehlen aktuell keine Russell-2000-Ticker mehr im Datenspeicher.",
+            "results_df": pd.DataFrame(),
+            "counts": {},
+        }
+
+    rows_written = 0
+    mapped_successes = 0
+    results = []
+
+    saved_mappings = _load_symbol_mappings(store, CACHE_UNIVERSE_NAME, status_filter=("mapped",))
+    if saved_mappings:
+        reusable = [s for s in missing_before if s in saved_mappings]
+        for batch in _chunked(reusable, 40):
+            closes, collision_symbols = _download_close_batch_mapped(batch, saved_mappings, start, end, threads=False, timeout=45)
+            loaded_symbols = []
+            if closes is not None and not closes.empty:
+                rows_written += _write_closes_to_cache(store, closes)
+                loaded_symbols = [str(c).strip().upper() for c in closes.columns]
+            for symbol in loaded_symbols:
+                mapped_successes += 1
+                results.append({
+                    "symbol": symbol,
+                    "success": True,
+                    "yahoo_symbol": saved_mappings.get(symbol, symbol),
+                    "history_rows": int(closes[symbol].dropna().shape[0]) if closes is not None and symbol in closes.columns else 0,
+                    "lookup_ok": True,
+                    "lookup_exact": True,
+                    "lookup_candidates": saved_mappings.get(symbol, symbol),
+                    "status": "Gespeichertes Mapping erneut genutzt",
+                })
+            for symbol in batch:
+                if symbol not in loaded_symbols and symbol not in collision_symbols:
+                    pass
+
+    missing_after_saved, _ = _get_missing_universe_tickers(store, tickers)
+    to_discover = [s for s in missing_after_saved if s not in saved_mappings]
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_discover_yahoo_mapping, symbol, start, end, 30, max_candidates): symbol
+            for symbol in to_discover
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                item = future.result()
+            except Exception:
+                item = {
+                    "symbol": symbol,
+                    "success": False,
+                    "yahoo_symbol": "",
+                    "history_rows": 0,
+                    "lookup_ok": False,
+                    "lookup_exact": False,
+                    "lookup_candidates": "",
+                    "status": "Mappingfehler",
+                    "closes": None,
+                }
+            closes = item.pop("closes", None)
+            if item.get("success") and closes is not None and not closes.empty:
+                rows_written += _write_closes_to_cache(store, closes)
+                mapped_successes += 1
+                _upsert_symbol_mapping(
+                    store,
+                    CACHE_UNIVERSE_NAME,
+                    item["symbol"],
+                    item.get("yahoo_symbol"),
+                    status="mapped",
+                    note=item.get("lookup_candidates", "")[:300],
+                )
+            else:
+                _upsert_symbol_mapping(
+                    store,
+                    CACHE_UNIVERSE_NAME,
+                    item["symbol"],
+                    item.get("yahoo_symbol") or None,
+                    status="no_history" if item.get("lookup_ok") else "not_found",
+                    note=item.get("lookup_candidates", "")[:300],
+                )
+            results.append(item)
+
+    missing_after, _ = _get_missing_universe_tickers(store, tickers)
+    closes_final = _prepare_closes_for_breadth(_read_cached_closes(store, tickers, start_date, end_date))
+    loaded = int(closes_final.shape[1]) if closes_final is not None else max(0, len(tickers) - len(missing_after))
+    requested = len(tickers)
+    coverage = loaded / max(requested, 1)
+    new_symbols_loaded = len(missing_before) - len(missing_after)
+
+    results_df = pd.DataFrame(results)
+    if not results_df.empty:
+        results_df = results_df.sort_values(["status", "symbol"]).reset_index(drop=True)
+    counts = results_df["status"].value_counts().to_dict() if not results_df.empty else {}
+
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    _set_cache_metadata(store, "last_auto_remap_at", now_str)
+    _set_cache_metadata(store, "last_auto_remap_missing_before", len(missing_before))
+    _set_cache_metadata(store, "last_auto_remap_missing_after", len(missing_after))
+    _set_cache_metadata(store, "last_auto_remap_rows_written", rows_written)
+    _set_cache_metadata(store, "last_auto_remap_mapped", mapped_successes)
+    _set_cache_metadata(store, "last_refresh_loaded_universe", loaded)
+    _set_cache_metadata(store, "last_refresh_requested_universe", requested)
+
+    return {
+        "ok": loaded > 0,
+        "requested": requested,
+        "loaded": loaded,
+        "coverage": coverage,
+        "missing_before": len(missing_before),
+        "missing_after": len(missing_after),
+        "new_symbols_loaded": new_symbols_loaded,
+        "rows_written": rows_written,
+        "mapped_successes": mapped_successes,
+        "attempted": len(to_discover),
+        "store": _get_store_label(store),
+        "backend": store["backend"],
+        "last_auto_remap_at": now_str,
+        "results_df": results_df,
+        "counts": counts,
+    }
+
 
 
 def diagnose_missing_russell2000_yahoo(sample_size=80, lookback_days=550, max_workers=8):
@@ -1108,11 +1462,17 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
 
     rows_written = 0
     rescue_batches = 0
+    saved_mappings = _load_symbol_mappings(store, CACHE_UNIVERSE_NAME, status_filter=("mapped",))
 
     for batch in _chunked(missing_before, rescue_batch_size):
-        closes = _download_close_batch_fast(batch, start, end, threads=False, timeout=45)
+        closes, collisions = _download_close_batch_mapped(batch, saved_mappings, start, end, threads=False, timeout=45)
         if closes is not None and not closes.empty:
             rows_written += _write_closes_to_cache(store, closes)
+        retry_symbols = list(dict.fromkeys((collisions or []) + [s for s in batch if closes is None or s not in closes.columns]))
+        for symbol in retry_symbols:
+            single = _download_single_source_symbol(symbol, saved_mappings, start, end, timeout=45)
+            if single is not None and not single.empty:
+                rows_written += _write_closes_to_cache(store, single)
         rescue_batches += 1
 
     missing_after_batch, _ = _get_missing_universe_tickers(store, tickers)
@@ -1122,7 +1482,7 @@ def rescue_missing_russell2000_price_store(lookback_days=550, rescue_batch_size=
     if missing_after_batch:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(_download_single_ticker_close, symbol, start, end, 45): symbol
+                executor.submit(_download_single_source_symbol, symbol, saved_mappings, start, end, 45): symbol
                 for symbol in missing_after_batch
             }
             for future in as_completed(futures):
@@ -3111,6 +3471,7 @@ def _tab_marktanalyse():
     current_requested = _get_cache_metadata(store, "last_refresh_requested_universe", "")
     current_loaded = _get_cache_metadata(store, "last_refresh_loaded_universe", "")
     current_rescue = _get_cache_metadata(store, "last_rescue_at", "")
+    current_auto_remap = _get_cache_metadata(store, "last_auto_remap_at", "")
     status_bits = []
     if current_loaded and current_requested:
         try:
@@ -3121,14 +3482,18 @@ def _tab_marktanalyse():
             pass
     if current_rescue:
         status_bits.append(f"Letzter Rescue-Lauf: {current_rescue} UTC")
+    if current_auto_remap:
+        status_bits.append(f"Letztes Auto-Remap: {current_auto_remap} UTC")
     if status_bits:
         st.caption(" · ".join(status_bits))
 
-    btn_refresh, btn_rescue, btn_diag, btn_analyze = st.columns(4)
+    btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
     with btn_refresh:
         refresh_clicked = st.button("🗄️ Datenbank initial befüllen / aktualisieren", use_container_width=True)
     with btn_rescue:
         rescue_clicked = st.button("🩹 Fehlende Ticker gezielt nachladen", use_container_width=True)
+    with btn_remap:
+        remap_clicked = st.button("🧭 Fehlende Ticker automatisch remappen", use_container_width=True)
     with btn_diag:
         diagnose_clicked = st.button("🧪 Fehlende Ticker bei Yahoo testen", use_container_width=True)
     with btn_analyze:
@@ -3168,6 +3533,36 @@ def _tab_marktanalyse():
                     )
         else:
             st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
+
+    if remap_clicked:
+        with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden Russell-2000-Ticker …"):
+            remap_stats = auto_remap_missing_russell2000_yahoo()
+            st.cache_data.clear()
+        if remap_stats.get("ok"):
+            if remap_stats.get("missing_before", 0) == 0:
+                st.success(remap_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+            else:
+                counts = remap_stats.get("counts", {}) or {}
+                mapped_now = int(counts.get("Gemappt und geladen", 0) + counts.get("Gespeichertes Mapping erneut genutzt", 0))
+                no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
+                unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
+                mapping_errors = int(counts.get("Mappingfehler", 0))
+                st.success(
+                    f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen "
+                    f"({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} "
+                    f"Russell-2000-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben"
+                )
+                metric_cols = st.columns(4)
+                metric_cols[0].metric("Gemappt und geladen", mapped_now)
+                metric_cols[1].metric("Keine Historie trotz Lookup", no_hist)
+                metric_cols[2].metric("Yahoo kennt Symbol nicht", unknown)
+                metric_cols[3].metric("Mappingfehler", mapping_errors)
+                results_df = remap_stats.get("results_df")
+                if results_df is not None and not results_df.empty:
+                    st.caption("Die Tabelle zeigt für die bisher fehlenden Ticker, ob ein Yahoo-Kandidat gefunden und erfolgreich geladen wurde.")
+                    st.dataframe(results_df, use_container_width=True, hide_index=True)
+        else:
+            st.error(remap_stats.get("error", "Das automatische Remapping ist fehlgeschlagen."))
 
     if diagnose_clicked:
         with st.spinner("Teste eine Stichprobe der noch fehlenden Russell-2000-Ticker direkt gegen Yahoo …"):
