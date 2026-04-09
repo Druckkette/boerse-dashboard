@@ -674,11 +674,20 @@ def _get_portfolio_settings() -> dict:
     raw = st.session_state.get("portfolio_settings", {})
     if isinstance(raw, dict):
         settings.update(raw)
-    for key, fallback in _default_portfolio_settings().items():
+    numeric_fields = {
+        "cash_balance",
+        "risk_per_position_pct",
+        "target_risk_contribution",
+        "max_depot_loss_low",
+        "max_depot_loss_high",
+    }
+    for key in numeric_fields:
+        fallback = _default_portfolio_settings().get(key, 0.0)
         try:
             settings[key] = float(settings.get(key, fallback))
         except Exception:
             settings[key] = fallback
+    settings["curve_start_date"] = str(settings.get("curve_start_date", "") or "").strip()
     return settings
 
 def _save_portfolio_settings(settings: dict) -> None:
@@ -877,6 +886,8 @@ def _bulk_download_ohlc(symbols: tuple[str, ...], start_date, end_date) -> dict[
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> dict[str, pd.Series]:
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
     frames = _bulk_download_ohlc(symbols, start_date, end_date)
     out: dict[str, pd.Series] = {}
     for sym, frame in frames.items():
@@ -887,6 +898,9 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
             continue
         close.index = pd.to_datetime(close.index).normalize()
         close = close[~close.index.duplicated(keep="last")].sort_index()
+        close = close[(close.index >= start_ts) & (close.index <= end_ts)]
+        if close.empty:
+            continue
         out[sym] = close
     return out
 
@@ -921,7 +935,7 @@ def _fetch_close_history(symbol: str, start_date, end_date):
         batch = _bulk_close_history_map((symbol,), start_ts, end_ts)
         close = batch.get(symbol, pd.Series(dtype=float))
         if len(close):
-            return close
+            return close[(close.index >= start_ts) & (close.index <= end_ts)]
     except Exception:
         pass
 
@@ -942,7 +956,9 @@ def _fetch_close_history(symbol: str, start_date, end_date):
             continue
         close.index = pd.to_datetime(close.index).normalize()
         close = close[~close.index.duplicated(keep="last")]
-        return close.sort_index()
+        close = close.sort_index()
+        close = close[(close.index >= start_ts) & (close.index <= end_ts)]
+        return close
     return pd.Series(dtype=float)
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -1292,10 +1308,14 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
         close = close_map.get(ticker)
         if close is None or len(close) == 0:
             close = _fetch_close_history(ticker, active_start, end_ts)
-        if close is None or len(close) == 0:
-            continue
-        aligned = close.reindex(pd.DatetimeIndex(curve["date"]), method="ffill")
         mask = curve["date"] >= active_start
+        if close is None or len(close) == 0:
+            if entry_price > 0:
+                fallback_idx = pd.DatetimeIndex(curve.loc[mask, "date"])
+                close = pd.Series(entry_price, index=fallback_idx, dtype=float)
+            else:
+                continue
+        aligned = close.reindex(pd.DatetimeIndex(curve["date"]), method="ffill")
         values = aligned.reindex(pd.DatetimeIndex(curve.loc[mask, "date"]), method="ffill").ffill().bfill().fillna(0.0).to_numpy()
         curve.loc[mask, "depot_value"] += values * shares
 
@@ -1588,17 +1608,7 @@ def _render_portfolio_72_area():
         st.info("Für das Depotcockpit werden nur Positionen mit Stückzahl größer 0 berücksichtigt.")
 
     st.markdown("#### Depotkurve")
-    default_curve_start = datetime.utcnow().date() - timedelta(days=180)
-    valid_buy_dates = []
-    for pos in tracked_positions:
-        try:
-            valid_buy_dates.append(pd.Timestamp(pos.get("buy_date")).date())
-        except Exception:
-            pass
-    if valid_buy_dates:
-        default_curve_start = min(valid_buy_dates)
-
-    st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Per Klick kannst du den Start auf heute setzen.")
+    st.caption("Die Kurve startet erst mit Klick auf „Kurve starten“. Danach läuft sie dauerhaft ab diesem Starttag weiter.")
     saved_curve_start = None
     try:
         raw_curve_start = str(settings.get("curve_start_date", "") or "").strip()
@@ -1606,29 +1616,39 @@ def _render_portfolio_72_area():
             saved_curve_start = pd.Timestamp(raw_curve_start).date()
     except Exception:
         saved_curve_start = None
+
     if st.session_state.pop("pf_auto_curve_start_force_today", False):
         today = datetime.utcnow().date()
-        st.session_state["pf_auto_curve_start"] = today
         current_settings = _get_portfolio_settings()
         current_settings["curve_start_date"] = str(today)
         st.session_state["portfolio_settings"] = current_settings
         _sync_workspace()
-    if "pf_auto_curve_start" not in st.session_state:
-        st.session_state["pf_auto_curve_start"] = saved_curve_start or default_curve_start
-    auto_col1, auto_col2, auto_col3 = st.columns([1, 1, 0.9])
+        st.rerun()
+
+    auto_end = datetime.utcnow().date()
+    auto_col1, auto_col2 = st.columns([1, 1.2])
     with auto_col1:
-        auto_start = st.date_input("Startdatum der Rekonstruktion", value=st.session_state.get("pf_auto_curve_start", default_curve_start), key="pf_auto_curve_start", on_change=_persist_curve_start_from_widget)
+        if saved_curve_start is None:
+            if st.button("Kurve starten", use_container_width=True, key="pf_auto_curve_start_today"):
+                st.session_state["pf_auto_curve_start_force_today"] = True
+                st.rerun()
+        else:
+            st.success(f"Kurve aktiv seit {saved_curve_start.strftime('%Y-%m-%d')}")
     with auto_col2:
-        auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
-    with auto_col3:
-        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        if st.button("Start = Heute", use_container_width=True, key="pf_auto_curve_start_today"):
-            st.session_state["pf_auto_curve_start_force_today"] = True
-            st.rerun()
+        if saved_curve_start is not None:
+            if st.button("Kurve neu starten (Heute)", use_container_width=True, key="pf_auto_curve_restart_today"):
+                st.session_state["pf_auto_curve_start_force_today"] = True
+                st.rerun()
+
+    auto_start = saved_curve_start
     cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
 
-    auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows)
-    if not auto_curve.empty:
+    auto_curve = pd.DataFrame()
+    if auto_start is not None:
+        auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows)
+    if auto_start is None:
+        st.info("Depotkurve ist noch nicht gestartet. Klicke auf „Kurve starten“, um den ersten Starttag festzulegen.")
+    elif not auto_curve.empty:
         fig_auto = go.Figure()
         fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index"], mode="lines", name="Depotindex"))
         fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma10"], mode="lines", name="10-Tage SMA", line=dict(width=1.6, dash="dot")))
