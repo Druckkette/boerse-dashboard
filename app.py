@@ -1695,9 +1695,22 @@ def _normalize_ticker_list(values):
     return list(dict.fromkeys(tickers))
 
 def _extract_ticker_column(df):
-    for c in df.columns:
-        name = str(c).strip().lower()
-        if name in {"ticker", "issuer ticker"} or "ticker" in name:
+    preferred = (
+        "ticker", "issuer ticker", "symbol", "symbols",
+        "nasdaq symbol", "cqs symbol", "act symbol",
+        "trading symbol", "stock symbol"
+    )
+    lowered = [(c, str(c).strip().lower()) for c in df.columns]
+    for want in preferred:
+        for c, name in lowered:
+            if name == want:
+                return c
+    for c, name in lowered:
+        compact = re.sub(r"[^a-z]", "", name)
+        if compact in {"ticker", "issuerticker", "symbol", "nasdaqsymbol", "cqssymbol", "actsymbol", "tradingsymbol", "stocksymbol"}:
+            return c
+    for c, name in lowered:
+        if "ticker" in name or "symbol" in name:
             return c
     return None
 
@@ -2030,10 +2043,40 @@ def get_nasdaq_stock_tickers():
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_app_stock_universe_tickers():
     """Combined internal stock universe for cache coverage, diagnostics and portfolio support."""
-    combined = _normalize_ticker_list(get_nyse_stock_tickers() + get_nasdaq_stock_tickers())
-    if combined:
-        return combined
-    return _normalize_ticker_list(SP500_TICKERS + get_nyse_stock_tickers())
+    nyse = _normalize_ticker_list(get_nyse_stock_tickers())
+    nasdaq = _normalize_ticker_list(get_nasdaq_stock_tickers())
+
+    # Guard against weak fallbacks that only return a handful of symbols and would
+    # otherwise create the false impression that Nasdaq support is active.
+    nyse_ok = len(nyse) >= 1000
+    nasdaq_ok = len(nasdaq) >= 1000
+
+    if nyse_ok and nasdaq_ok:
+        combined = _normalize_ticker_list(nyse + nasdaq)
+        if len(combined) >= 2500:
+            return combined
+
+    if nyse_ok:
+        # At minimum keep the NYSE universe stable instead of mixing it with a broken
+        # Nasdaq fallback that returned only a few dozen symbols.
+        return nyse
+
+    fallback = _normalize_ticker_list(SP500_TICKERS + nyse + nasdaq)
+    return fallback
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_app_stock_universe_breakdown():
+    nyse = _normalize_ticker_list(get_nyse_stock_tickers())
+    nasdaq = _normalize_ticker_list(get_nasdaq_stock_tickers())
+    combined = _normalize_ticker_list(nyse + nasdaq)
+    return {
+        "nyse": len(nyse),
+        "nasdaq": len(nasdaq),
+        "combined": len(combined),
+        "nasdaq_ok": len(nasdaq) >= 1000,
+        "nyse_ok": len(nyse) >= 1000,
+    }
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -2279,7 +2322,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_DB_NAME = "market_data_cache.sqlite"
 
-CACHE_UNIVERSE_NAME = "us_common_stocks"
+CACHE_UNIVERSE_NAME = "us_common_stocks_v3"
 
 def _safe_get_secret(*path, default=None):
     try:
@@ -3354,12 +3397,16 @@ def _get_cached_price_field_counts(store, tickers, start_date, end_date):
 
 def _get_nyse_stock_tickers_with_cache(store):
     cached = _load_cached_universe_members(store, CACHE_UNIVERSE_NAME)
+    fresh = get_nyse_breadth_tickers()
+    # Prefer the larger fresh universe to self-heal stale cache entries after universe changes.
+    if fresh and (not cached or len(fresh) > len(cached) + 100):
+        _store_universe_members(store, CACHE_UNIVERSE_NAME, fresh)
+        return fresh
     if cached:
         return cached
-    tickers = get_nyse_breadth_tickers()
-    if tickers:
-        _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
-    return tickers
+    if fresh:
+        _store_universe_members(store, CACHE_UNIVERSE_NAME, fresh)
+    return fresh
 def _prepare_component_frame(frame):
     if frame is None or frame.empty:
         return None
@@ -3629,10 +3676,8 @@ def load_nyse_breadth_data(lookback_days=550):
     }
     bundle["attrs"] = attrs
 
-    # Return cached data whenever at least one symbol is available.
-    # A partial universe is communicated via attrs["partial_universe"] and
-    # handled in the UI as a warning instead of a hard stop.
-    return bundle if loaded > 0 else None
+    min_required = max(350, int(requested * 0.18))
+    return bundle if loaded >= min_required else None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -5588,7 +5633,7 @@ def _tab_marktanalyse():
 
         btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
         with btn_refresh:
-            refresh_clicked = st.button("NYSE/Nasdaq aktualisieren", use_container_width=True)
+            refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True)
         with btn_rescue:
             rescue_clicked = st.button("Fehlende nachladen", use_container_width=True)
         with btn_remap:
@@ -5601,34 +5646,28 @@ def _tab_marktanalyse():
         if refresh_clicked:
             with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE/Nasdaq-Aktienuniversum …"):
                 refresh_stats = refresh_nyse_price_store()
-                rescue_stats = rescue_missing_nyse_price_store()
-                remap_stats = auto_remap_missing_nyse_yahoo()
                 st.cache_data.clear()
             if refresh_stats.get("ok"):
-                st.success(f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} Aktien (NYSE/Nasdaq) verfügbar ({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}")
-                if rescue_stats.get("ok"):
-                    st.info(f"↻ Nachladen fehlender Symbole: {rescue_stats.get('new_symbols_loaded', 0)} neu geladen ({rescue_stats.get('missing_before', 0)} → {rescue_stats.get('missing_after', 0)} fehlend).")
-                if remap_stats.get("ok"):
-                    st.info(f"↻ Auto-Remap: {remap_stats.get('new_symbols_loaded', 0)} zusätzlich gemappt/geladen ({remap_stats.get('missing_before', 0)} → {remap_stats.get('missing_after', 0)} fehlend).")
+                st.success(f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} Titeln im NYSE/Nasdaq-Aktienuniversum verfügbar ({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}")
             else:
                 st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
 
         if rescue_clicked:
-            with st.spinner("Suche fehlende NYSE-Ticker und lade sie gezielt nach …"):
+            with st.spinner("Suche fehlende Ticker im NYSE/Nasdaq-Aktienuniversum und lade sie gezielt nach …"):
                 rescue_stats = rescue_missing_nyse_price_store()
                 st.cache_data.clear()
             if rescue_stats.get("ok"):
                 if rescue_stats.get("missing_before", 0) == 0:
                     st.success(rescue_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
                 else:
-                    st.success(f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} Aktien (NYSE/Nasdaq) verfügbar ({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben")
+                    st.success(f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} NYSE-Aktien verfügbar ({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben")
                     if rescue_stats.get("missing_after", 0) > 0:
                         st.info(f"Noch fehlend: {rescue_stats['missing_after']} Ticker. Der Rescue-Lauf hat {rescue_stats['rescue_batches']} Mini-Batches und {rescue_stats['single_attempts']} Einzelversuche genutzt, davon {rescue_stats['single_successes']} erfolgreich.")
             else:
                 st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
 
         if remap_clicked:
-            with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden NYSE-Ticker …"):
+            with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum …"):
                 remap_stats = auto_remap_missing_nyse_yahoo()
                 st.cache_data.clear()
             if remap_stats.get("ok"):
@@ -5640,7 +5679,7 @@ def _tab_marktanalyse():
                     no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
                     unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
                     mapping_errors = int(counts.get("Mappingfehler", 0))
-                    st.success(f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} Aktien (NYSE/Nasdaq) verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben")
+                    st.success(f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} NYSE-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben")
                     metric_cols = st.columns(4)
                     metric_cols[0].metric("Gemappt und geladen", mapped_now)
                     metric_cols[1].metric("Keine Historie trotz Lookup", no_hist)
@@ -5653,7 +5692,7 @@ def _tab_marktanalyse():
                 st.error(remap_stats.get("error", "Das automatische Remapping ist fehlgeschlagen."))
 
         if diagnose_clicked:
-            with st.spinner("Teste eine Stichprobe der noch fehlenden NYSE-Ticker direkt gegen Yahoo …"):
+            with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
                 diag_stats = diagnose_missing_nyse_yahoo()
                 st.cache_data.clear()
             if diag_stats.get("ok"):
@@ -5678,12 +5717,12 @@ def _tab_marktanalyse():
                 st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
         if analyze_clicked:
-            with st.spinner("Lese NYSE/Nasdaq-Aktien aus dem persistenten Datenspeicher …"):
+            with st.spinner("Lese das NYSE/Nasdaq-Aktienuniversum aus dem persistenten Datenspeicher …"):
                 component_bundle = load_nyse_breadth_data()
             if component_bundle is not None:
                 close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
                 if close_frame is None or len(close_frame) <= 50:
-                    st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse.")
+                    st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse des NYSE/Nasdaq-Aktienuniversums.")
                     return
                 br = compute_breadth_from_components(component_bundle)
                 if br is not None and len(br) > 20:
@@ -5693,9 +5732,9 @@ def _tab_marktanalyse():
                     loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
                     coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
                     ratio_txt = f" / {requested}" if requested else ""
-                    st.success(f"✓ {loaded} NYSE/Nasdaq-Aktien geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
+                    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
                     if requested and loaded < requested * 0.8:
-                        st.warning(f"Hinweis: Es wurden nicht alle NYSE/Nasdaq-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
+                        st.warning(f"Hinweis: Es wurden nicht alle Titel des NYSE/Nasdaq-Aktienuniversums geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
                     st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
 
                     br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
@@ -5758,7 +5797,7 @@ def _tab_marktanalyse():
                         render_check("Deemer Ratio", False, "Nicht verfügbar")
                     st.markdown("</div>", unsafe_allow_html=True)
             else:
-                st.error("Im persistenten Datenspeicher liegen noch nicht genug NYSE/Nasdaq-Daten. Bitte zuerst den Kursbestand aktualisieren und danach 'Fehlende nachladen' sowie 'Automatisch remappen' ausführen.")
+                st.error("Im persistenten Datenspeicher liegen noch nicht genug Daten für das NYSE/Nasdaq-Aktienuniversum. Bitte zuerst den Kursbestand aktualisieren.")
 
             if fred_key:
                 with st.spinner("Lade Fed Funds Rate …"):
