@@ -6169,11 +6169,20 @@ def _tab_marktanalyse():
     st.markdown("### 🔎 Tiefenanalyse (automatisch)")
     with st.spinner("Lese Tiefenanalyse-Daten aus dem persistenten Datenspeicher …"):
         component_bundle = load_nyse_breadth_data()
+    store = _get_price_store()
     benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
+    refresh_guard = f"_auto_refresh_requested_{benchmark_last.isoformat()}"
+    refresh_at_raw = _get_cache_metadata(store, "last_refresh_at", "")
+    refresh_date = None
+    if refresh_at_raw:
+        parsed = pd.to_datetime(refresh_at_raw, errors="coerce")
+        if pd.notna(parsed):
+            refresh_date = parsed.date()
+    if refresh_date is not None and refresh_date >= benchmark_last:
+        st.session_state.pop(refresh_guard, None)
     if component_bundle is None:
         benchmark_str = benchmark_last.strftime("%d.%m.%Y")
-        refresh_guard = f"_auto_refresh_requested_{benchmark_last.isoformat()}"
-        active_job = _get_active_refresh_job(_get_price_store())
+        active_job = _get_active_refresh_job(store)
         if not st.session_state.get(refresh_guard) and not active_job:
             result = _request_external_refresh_job("refresh_universe", payload={"trigger": "auto_open_no_data", "required_date": benchmark_last.isoformat()})
             st.session_state[refresh_guard] = True
@@ -6187,11 +6196,11 @@ def _tab_marktanalyse():
         br = _render_deep_analysis_content(component_bundle, sd, data)
         if br is not None and len(br):
             breadth_last = pd.Timestamp(br.index[-1]).date()
-            if breadth_last < benchmark_last:
+            refresh_is_current = refresh_date is not None and refresh_date >= benchmark_last
+            if breadth_last < benchmark_last and not refresh_is_current:
                 benchmark_str = benchmark_last.strftime("%d.%m.%Y")
                 breadth_str = breadth_last.strftime("%d.%m.%Y")
-                refresh_guard = f"_auto_refresh_requested_{benchmark_last.isoformat()}"
-                active_job = _get_active_refresh_job(_get_price_store())
+                active_job = _get_active_refresh_job(store)
                 if not st.session_state.get(refresh_guard) and not active_job:
                     result = _request_external_refresh_job("refresh_universe", payload={"trigger": "auto_open_stale", "required_date": benchmark_last.isoformat(), "cached_date": breadth_last.isoformat()})
                     st.session_state[refresh_guard] = True
@@ -6201,6 +6210,8 @@ def _tab_marktanalyse():
                         st.error(result.get("error") or "Die automatische Aktualisierung konnte nicht gestartet werden.")
                 else:
                     st.warning(f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite.")
+            elif breadth_last < benchmark_last and refresh_is_current:
+                st.info(f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')}).")
 
     st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
 
