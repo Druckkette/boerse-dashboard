@@ -3629,8 +3629,10 @@ def load_nyse_breadth_data(lookback_days=550):
     }
     bundle["attrs"] = attrs
 
-    min_required = max(350, int(requested * 0.18))
-    return bundle if loaded >= min_required else None
+    # Return cached data whenever at least one symbol is available.
+    # A partial universe is communicated via attrs["partial_universe"] and
+    # handled in the UI as a warning instead of a hard stop.
+    return bundle if loaded > 0 else None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -5586,7 +5588,7 @@ def _tab_marktanalyse():
 
         btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
         with btn_refresh:
-            refresh_clicked = st.button("NYSE aktualisieren", use_container_width=True)
+            refresh_clicked = st.button("NYSE/Nasdaq aktualisieren", use_container_width=True)
         with btn_rescue:
             rescue_clicked = st.button("Fehlende nachladen", use_container_width=True)
         with btn_remap:
@@ -5599,9 +5601,15 @@ def _tab_marktanalyse():
         if refresh_clicked:
             with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE/Nasdaq-Aktienuniversum …"):
                 refresh_stats = refresh_nyse_price_store()
+                rescue_stats = rescue_missing_nyse_price_store()
+                remap_stats = auto_remap_missing_nyse_yahoo()
                 st.cache_data.clear()
             if refresh_stats.get("ok"):
-                st.success(f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} NYSE-Aktien verfügbar ({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}")
+                st.success(f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} Aktien (NYSE/Nasdaq) verfügbar ({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}")
+                if rescue_stats.get("ok"):
+                    st.info(f"↻ Nachladen fehlender Symbole: {rescue_stats.get('new_symbols_loaded', 0)} neu geladen ({rescue_stats.get('missing_before', 0)} → {rescue_stats.get('missing_after', 0)} fehlend).")
+                if remap_stats.get("ok"):
+                    st.info(f"↻ Auto-Remap: {remap_stats.get('new_symbols_loaded', 0)} zusätzlich gemappt/geladen ({remap_stats.get('missing_before', 0)} → {remap_stats.get('missing_after', 0)} fehlend).")
             else:
                 st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
 
@@ -5613,7 +5621,7 @@ def _tab_marktanalyse():
                 if rescue_stats.get("missing_before", 0) == 0:
                     st.success(rescue_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
                 else:
-                    st.success(f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} NYSE-Aktien verfügbar ({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben")
+                    st.success(f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} Aktien (NYSE/Nasdaq) verfügbar ({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben")
                     if rescue_stats.get("missing_after", 0) > 0:
                         st.info(f"Noch fehlend: {rescue_stats['missing_after']} Ticker. Der Rescue-Lauf hat {rescue_stats['rescue_batches']} Mini-Batches und {rescue_stats['single_attempts']} Einzelversuche genutzt, davon {rescue_stats['single_successes']} erfolgreich.")
             else:
@@ -5632,7 +5640,7 @@ def _tab_marktanalyse():
                     no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
                     unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
                     mapping_errors = int(counts.get("Mappingfehler", 0))
-                    st.success(f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} NYSE-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben")
+                    st.success(f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} Aktien (NYSE/Nasdaq) verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben")
                     metric_cols = st.columns(4)
                     metric_cols[0].metric("Gemappt und geladen", mapped_now)
                     metric_cols[1].metric("Keine Historie trotz Lookup", no_hist)
@@ -5670,7 +5678,7 @@ def _tab_marktanalyse():
                 st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
         if analyze_clicked:
-            with st.spinner("Lese NYSE-Aktien aus dem persistenten Datenspeicher …"):
+            with st.spinner("Lese NYSE/Nasdaq-Aktien aus dem persistenten Datenspeicher …"):
                 component_bundle = load_nyse_breadth_data()
             if component_bundle is not None:
                 close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
@@ -5685,9 +5693,9 @@ def _tab_marktanalyse():
                     loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
                     coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
                     ratio_txt = f" / {requested}" if requested else ""
-                    st.success(f"✓ {loaded} NYSE-Aktien geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
+                    st.success(f"✓ {loaded} NYSE/Nasdaq-Aktien geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
                     if requested and loaded < requested * 0.8:
-                        st.warning(f"Hinweis: Es wurden nicht alle NYSE-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
+                        st.warning(f"Hinweis: Es wurden nicht alle NYSE/Nasdaq-Titel geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
                     st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
 
                     br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
@@ -5697,7 +5705,7 @@ def _tab_marktanalyse():
                     bL = br_valid.iloc[-1]
                     bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
                     intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
-                    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
 
                     kb1, kb2, kb3, kb4, kb5 = st.columns(5)
                     mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
@@ -5750,7 +5758,7 @@ def _tab_marktanalyse():
                         render_check("Deemer Ratio", False, "Nicht verfügbar")
                     st.markdown("</div>", unsafe_allow_html=True)
             else:
-                st.error("Im persistenten Datenspeicher liegen noch nicht genug NYSE-Daten. Bitte zuerst den Kursbestand aktualisieren.")
+                st.error("Im persistenten Datenspeicher liegen noch nicht genug NYSE/Nasdaq-Daten. Bitte zuerst den Kursbestand aktualisieren und danach 'Fehlende nachladen' sowie 'Automatisch remappen' ausführen.")
 
             if fred_key:
                 with st.spinner("Lade Fed Funds Rate …"):
