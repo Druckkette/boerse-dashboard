@@ -1,1 +1,43 @@
+name: market-refresh
 
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Refresh-Job-ID aus der Streamlit-App
+        required: true
+        type: string
+      job_type:
+        description: refresh_universe | rescue_missing | auto_remap
+        required: true
+        type: string
+      requested_by:
+        description: Optionaler Auslöser
+        required: false
+        type: string
+
+jobs:
+  run-refresh-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run worker
+        run: |
+          python worker.py --job-id "${{ inputs.job_id }}" --job-type "${{ inputs.job_type }}"
