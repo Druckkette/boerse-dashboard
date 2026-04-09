@@ -488,20 +488,62 @@ def _format_data_freshness(selected: str, df: pd.DataFrame, vol_dashboard: pd.Da
         "requested": _get_cache_metadata(store, "last_refresh_requested_universe", ""),
     }
 
+def _ampel_phase_label(phase: str) -> str:
+    phase = str(phase or '').lower()
+    return {
+        'rot': 'ROT',
+        'gelb': 'GELB — Startschuss',
+        'gruen': 'GRÜN — Frühe Bestätigung',
+        'aufwaertstrend': 'AUFWÄRTSTREND',
+        'neutral': 'NEUTRAL',
+    }.get(phase, phase.upper() if phase else '—')
+
+
+def _ampel_reason_line(L) -> str:
+    phase = str(L.get('Ampel_Phase', '')).lower()
+    anchor = L.get('Anchor_Date')
+    ss_low = L.get('Startschuss_Low', np.nan)
+    floor = L.get('Floor_Mark', np.nan)
+    if phase == 'gelb':
+        if anchor and pd.notna(ss_low):
+            return f'Trendwende-Ampel: GELB — Startschuss aktiv seit {anchor} · Startschuss-Tief {float(ss_low):,.2f}'
+        return 'Trendwende-Ampel: GELB — Startschuss aktiv'
+    if phase == 'gruen':
+        if pd.notna(ss_low):
+            return f'Trendwende-Ampel: GRÜN — Startschuss bestätigt · Absicherung über {float(ss_low):,.2f}'
+        return 'Trendwende-Ampel: GRÜN — Startschuss bestätigt'
+    if phase == 'aufwaertstrend':
+        return 'Trendwende-Ampel: AUFWÄRTSTREND — MA-Ordnung bestätigt'
+    if phase == 'rot':
+        if pd.notna(floor):
+            return f'Trendwende-Ampel: ROT — Korrektur aktiv · Floor-Marke {float(floor):,.2f}'
+        return 'Trendwende-Ampel: ROT — Korrektur aktiv'
+    return 'Trendwende-Ampel: NEUTRAL — kein aktiver Zyklus'
+
+
 def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, vol_regime: str):
     phase = str(phase or "").lower()
     breadth_mode = str(breadth_mode or "").lower()
     vol_regime = str(vol_regime or "").lower()
-    if phase in {"rot"} or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
-        return "Defensiv", "bad", "Risiko reduzieren. Keine aggressiven Neueinstiege. Nur bestehende Positionen kritisch prüfen."
-    if phase in {"gelb"} or warning_count >= 2 or breadth_mode == "neutral" or vol_regime in {"risk", "vorsicht"}:
+    if phase == "rot" or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
+        return "Defensiv", "bad", "Ampel rot. Risiko reduzieren, keine aggressiven Neueinstiege und bestehende Positionen kritisch prüfen."
+    if phase == "gelb":
+        if warning_count <= 2 and breadth_mode != "schutz" and vol_regime not in {"stress", "risk"}:
+            return "Startschuss", "warn", "Startschuss aktiv. Erste Pilotpositionen sind erlaubt, aber nur selektiv und mit enger Risikokontrolle über das Startschuss-Tief."
+        return "Startschuss", "warn", "Startschuss erkannt, aber Umfeld noch nicht frei. Nur kleine Testpositionen und keine Aggressivität."
+    if phase == "gruen":
+        if warning_count <= 2 and breadth_mode != "schutz":
+            return "Frühe Bestätigung", "good", "Startschuss bestätigt. Gute Setups sind erlaubt und Risiko kann vorsichtig erhöht werden."
+        return "Frühe Bestätigung", "warn", "Ampel grün, aber Umfeld gemischt. Nur selektiv aufstocken."
+    if phase == "aufwaertstrend":
+        return "Offensiv", "good", "MA-Ordnung bestätigt. Markt konstruktiv, führende Aktien beobachten und Risiko schrittweise erhöhen."
+    if warning_count >= 2 or breadth_mode == "neutral" or vol_regime in {"risk", "vorsicht"}:
         return "Neutral", "warn", "Selektiv bleiben. Nur A-Setups und eher kleine Einstiege."
-    return "Offensiv", "good", "Markt konstruktiv. Führende Aktien beobachten und Risiko schrittweise erhöhen."
+    return "Konstruktiv", "good", "Markt konstruktiv. Führende Aktien beobachten und Risiko schrittweise erhöhen."
 
 def _build_market_reasons(L, warning_count: int, breadth_mode: str, vol_latest: pd.Series):
     reasons = []
-    phase = str(L.get("Ampel_Phase", "")).upper().replace("AUFWAERTSTREND", "AUFWÄRTSTREND")
-    reasons.append(f"Ampelphase: {phase or '—'}")
+    reasons.append(_ampel_reason_line(L))
     reasons.append(f"Aktive Warnzeichen: {warning_count}")
     p50 = L.get("Dist_50SMA_pct", np.nan)
     if not np.isnan(p50):
@@ -527,10 +569,17 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
     delta = dist_now - dist_prev
     delta_txt = f"{delta:+d}" if delta else "unverändert"
     changes.append({"title": "Distribution", "value": f"{dist_now} aktive Dist.-Tage", "detail": f"Gegenüber gestern: {delta_txt}"})
-    prev_phase = str(prev.get("Ampel_Phase", "")).upper().replace("AUFWAERTSTREND", "AUFWÄRTSTREND")
-    phase = str(latest.get("Ampel_Phase", "")).upper().replace("AUFWAERTSTREND", "AUFWÄRTSTREND")
-    detail = f"Wechsel von {prev_phase or '—'} auf {phase or '—'}" if phase != prev_phase else f"Unverändert seit gestern · {wc} Warnzeichen"
-    changes.append({"title": "Marktmodus", "value": phase or "—", "detail": detail})
+    prev_phase = _ampel_phase_label(prev.get("Ampel_Phase", ""))
+    phase = _ampel_phase_label(latest.get("Ampel_Phase", ""))
+    if str(latest.get("Ampel_Phase", "")).lower() == "gelb":
+        ss_low = latest.get("Startschuss_Low", np.nan)
+        ss_detail = f"Startschuss-Tief {float(ss_low):,.2f}" if pd.notna(ss_low) else "Startschuss aktiv"
+        detail = f"{ss_detail} · {wc} Warnzeichen"
+    elif str(latest.get("Ampel_Phase", "")).lower() == "gruen":
+        detail = f"Startschuss bestätigt · {wc} Warnzeichen"
+    else:
+        detail = f"Wechsel von {prev_phase or '—'} auf {phase or '—'}" if phase != prev_phase else f"Unverändert seit gestern · {wc} Warnzeichen"
+    changes.append({"title": "Trendwende-Ampel", "value": phase or "—", "detail": detail})
     if vol_dashboard is not None and len(vol_dashboard) >= 2:
         vp = vol_dashboard.iloc[-2]
         vl = vol_dashboard.iloc[-1]
@@ -5367,6 +5416,9 @@ def _tab_marktanalyse():
     _render_hero_card(mode, tone, reasons, action, freshness)
     _render_change_cards(changes)
 
+    # Trendwende-Ampel wieder als zentrales Element sichtbar machen
+    render_ampel_section(L)
+
     # Compact metric layout
     row1 = st.columns(3)
     with row1[0]:
@@ -5489,7 +5541,7 @@ def _tab_marktanalyse():
         no_correction = ddv > -8
         render_check("Kein substanzieller Drawdown (> -8%)", no_correction, f"Drawdown: {ddv:.1f}%" + (" — Korrektur läuft, Ampel aktiv" if not no_correction else " — Markt im Normalbereich"))
         render_check("Stabilisierung?", L["Ampel_Phase"] not in ("rot",) or L["Anchor_Date"] is not None, f"Ankertag: {L['Anchor_Date']}" if L["Anchor_Date"] else "Kein Zyklus" if L["Ampel_Phase"] in ("neutral", "aufwaertstrend") else "Noch keine")
-        render_check("Startschuss (≥Gelb)?", L["Ampel_Phase"] in ("gelb", "gruen", "aufwaertstrend"), f"Phase: {L['Ampel_Phase'].upper().replace('AUFWAERTSTREND', 'AUFWÄRTSTREND')}")
+        render_check("Startschuss (≥Gelb)?", L["Ampel_Phase"] in ("gelb", "gruen", "aufwaertstrend"), f"Phase: {_ampel_phase_label(L.get('Ampel_Phase', ''))}")
         if breadth_primary is not None and len(breadth_primary):
             render_check("Marktbreite?", breadth_primary.iloc[-1]["Breadth_Mode"] != "schutz", f"Modus: {breadth_primary.iloc[-1]['Breadth_Mode'].capitalize()}")
         render_check("VIX Regime nicht Stress?", vol_latest.get("VIX_Regime", "Neutral") != "Stress", f"Regime: {vol_latest.get('VIX_Regime', 'n/a')}")
