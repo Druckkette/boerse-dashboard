@@ -559,7 +559,7 @@ def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, fre
     bullets = "".join(f"<li>{r}</li>" for r in reasons)
     nyse_txt = ""
     if freshness.get("coverage") and freshness.get("requested"):
-        nyse_txt = f" · NYSE-Cache {freshness['coverage']}/{freshness['requested']}"
+        nyse_txt = f" · NYSE/Nasdaq-Cache {freshness['coverage']}/{freshness['requested']}"
     refresh_txt = ""
     if freshness.get("nyse_refresh"):
         refresh_txt = f" · Tiefenanalyse aktualisiert {_elapsed_text(freshness['nyse_refresh'])}"
@@ -676,6 +676,141 @@ def _normalize_single_ticker(value: str) -> str:
     t = t.replace(".", "-").replace("/", "-").replace(" ", "")
     return t
 
+
+def _symbol_variants(symbol: str) -> list[str]:
+    base = _normalize_single_ticker(symbol)
+    if not base:
+        return []
+    variants = [base]
+    dotted = _normalize_single_ticker(base.replace("-", "."))
+    dashed = _normalize_single_ticker(base.replace(".", "-"))
+    for cand in (dotted, dashed):
+        if cand and cand not in variants:
+            variants.append(cand)
+    try:
+        lookup = _search_yahoo_symbol_candidates(base)
+        for cand in lookup.get("candidates", [])[:6]:
+            cand = _normalize_single_ticker(cand)
+            if cand and cand not in variants:
+                variants.append(cand)
+    except Exception:
+        pass
+    return variants
+
+
+def _coerce_ohlc_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
+    if frame is None or len(frame) == 0:
+        return pd.DataFrame()
+    df = frame.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    if "Close" in df.columns:
+        df = df.dropna(subset=["Close"])
+    return df
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _bulk_download_ohlc(symbols: tuple[str, ...], start_date, end_date) -> dict[str, pd.DataFrame]:
+    canonical = [_normalize_single_ticker(s) for s in symbols if _normalize_single_ticker(s)]
+    if not canonical:
+        return {}
+    start_ts = pd.Timestamp(start_date).normalize() - timedelta(days=7)
+    end_ts = pd.Timestamp(end_date).normalize() + timedelta(days=3)
+
+    variants_by_symbol = {sym: _symbol_variants(sym) for sym in canonical}
+    requested = []
+    for vars_ in variants_by_symbol.values():
+        requested.extend(vars_)
+    requested = list(dict.fromkeys(requested))
+    if not requested:
+        return {}
+
+    raw_by_variant: dict[str, pd.DataFrame] = {}
+    try:
+        raw = yf.download(requested, start=start_ts, end=end_ts, progress=False, auto_adjust=True, group_by="ticker", threads=True)
+    except Exception:
+        raw = None
+
+    if raw is not None and len(raw) > 0:
+        if isinstance(raw.columns, pd.MultiIndex):
+            for variant in requested:
+                frame = None
+                try:
+                    frame = raw[variant]
+                except Exception:
+                    try:
+                        frame = raw.xs(variant, axis=1, level=0)
+                    except Exception:
+                        frame = None
+                frame = _coerce_ohlc_frame(frame)
+                if not frame.empty:
+                    raw_by_variant[variant] = frame
+        else:
+            frame = _coerce_ohlc_frame(raw)
+            if not frame.empty:
+                raw_by_variant[requested[0]] = frame
+
+    for variant in requested:
+        if variant in raw_by_variant:
+            continue
+        try:
+            hist = yf.Ticker(variant).history(start=start_ts, end=end_ts, auto_adjust=True)
+        except Exception:
+            hist = None
+        frame = _coerce_ohlc_frame(hist)
+        if not frame.empty:
+            raw_by_variant[variant] = frame
+
+    resolved: dict[str, pd.DataFrame] = {}
+    for sym, variants in variants_by_symbol.items():
+        for variant in variants:
+            frame = raw_by_variant.get(variant)
+            if frame is not None and not frame.empty:
+                resolved[sym] = frame
+                break
+    return resolved
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> dict[str, pd.Series]:
+    frames = _bulk_download_ohlc(symbols, start_date, end_date)
+    out: dict[str, pd.Series] = {}
+    for sym, frame in frames.items():
+        if frame is None or frame.empty or "Close" not in frame:
+            continue
+        close = pd.to_numeric(frame["Close"], errors="coerce").dropna()
+        if close.empty:
+            continue
+        close.index = pd.to_datetime(close.index).normalize()
+        close = close[~close.index.duplicated(keep="last")].sort_index()
+        out[sym] = close
+    return out
+
+
+def _beta_from_close_series(close: pd.Series, benchmark_close: pd.Series, window: int = 120) -> float:
+    try:
+        if close is None or benchmark_close is None or len(close) < 20 or len(benchmark_close) < 20:
+            return np.nan
+        joined = pd.concat(
+            [close.pct_change().rename("asset"), benchmark_close.pct_change().rename("bench")],
+            axis=1,
+            join="inner",
+        ).dropna()
+        if len(joined) < 20:
+            return np.nan
+        joined = joined.tail(window)
+        bench_var = joined["bench"].var()
+        if pd.isna(bench_var) or bench_var <= 0:
+            return np.nan
+        return float(joined["asset"].cov(joined["bench"]) / bench_var)
+    except Exception:
+        return np.nan
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _fetch_close_history(symbol: str, start_date, end_date):
     symbol = _normalize_single_ticker(symbol)
@@ -683,25 +818,33 @@ def _fetch_close_history(symbol: str, start_date, end_date):
     end_ts = pd.Timestamp(end_date).normalize()
     if not symbol or end_ts < start_ts:
         return pd.Series(dtype=float)
-    df = _dl(symbol, start_ts - timedelta(days=7), end_ts + timedelta(days=3))
-    if df is None or df.empty or "Close" not in df:
-        try:
-            hist = yf.Ticker(symbol).history(start=start_ts - timedelta(days=7), end=end_ts + timedelta(days=3), auto_adjust=True)
-        except Exception:
-            hist = None
-        if hist is None or len(hist) == 0 or "Close" not in hist:
-            return pd.Series(dtype=float)
-        df = hist.copy()
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.index = pd.to_datetime(df.index)
-    close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-    if close.empty:
-        return pd.Series(dtype=float)
-    close.index = pd.to_datetime(close.index).normalize()
-    close = close[~close.index.duplicated(keep="last")]
-    return close.sort_index()
+    try:
+        batch = _bulk_close_history_map((symbol,), start_ts, end_ts)
+        close = batch.get(symbol, pd.Series(dtype=float))
+        if len(close):
+            return close
+    except Exception:
+        pass
 
+    for variant in _symbol_variants(symbol):
+        df = _dl(variant, start_ts - timedelta(days=7), end_ts + timedelta(days=3))
+        if df is None or df.empty or "Close" not in df:
+            try:
+                hist = yf.Ticker(variant).history(start=start_ts - timedelta(days=7), end=end_ts + timedelta(days=3), auto_adjust=True)
+            except Exception:
+                hist = None
+            df = _coerce_ohlc_frame(hist)
+        else:
+            df = _coerce_ohlc_frame(df)
+        if df is None or df.empty or "Close" not in df:
+            continue
+        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+        if close.empty:
+            continue
+        close.index = pd.to_datetime(close.index).normalize()
+        close = close[~close.index.duplicated(keep="last")]
+        return close.sort_index()
+    return pd.Series(dtype=float)
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _portfolio_symbol_metrics(ticker: str) -> dict:
@@ -727,6 +870,9 @@ def _portfolio_symbol_metrics(ticker: str) -> dict:
         atr_val = _atr(df, 21).iloc[-1] if len(df) >= 21 else np.nan
         atr_pct = (atr_val / latest_price * 100) if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val) else np.nan
         beta = _safe_float((info or {}).get("beta"), np.nan)
+        if np.isnan(beta):
+            spx = _fetch_close_history("^GSPC", datetime.now() - timedelta(days=260), datetime.now())
+            beta = _beta_from_close_series(pd.to_numeric(df["Close"], errors="coerce"), spx)
         return _fallback_payload(
             name=(info or {}).get("shortName", ticker),
             sector=(info or {}).get("sector", ""),
@@ -736,25 +882,78 @@ def _portfolio_symbol_metrics(ticker: str) -> dict:
             beta=beta,
         )
 
-    try:
-        series = _fetch_close_history(ticker, datetime.now() - timedelta(days=180), datetime.now())
-    except Exception:
-        series = pd.Series(dtype=float)
+    series = _fetch_close_history(ticker, datetime.now() - timedelta(days=260), datetime.now())
     latest_price = _safe_float(series.iloc[-1], np.nan) if len(series) else np.nan
     atr_pct = np.nan
     if len(series) >= 22 and not np.isnan(latest_price) and latest_price > 0:
         atr_pct = float(series.pct_change().abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
-    beta = np.nan
+    spx = _fetch_close_history("^GSPC", datetime.now() - timedelta(days=260), datetime.now())
+    beta = _beta_from_close_series(series, spx)
+    name = ticker
     try:
         fast = yf.Ticker(ticker).fast_info
-        if hasattr(fast, "get"):
-            beta = _safe_float(fast.get("beta", np.nan), np.nan)
-            if np.isnan(latest_price):
-                latest_price = _safe_float(fast.get("lastPrice", np.nan), np.nan)
+        if hasattr(fast, "get") and np.isnan(latest_price):
+            latest_price = _safe_float(fast.get("lastPrice", np.nan), np.nan)
     except Exception:
         pass
-    return _fallback_payload(price=latest_price, atr_pct=atr_pct, beta=beta)
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        info = {}
+    if info:
+        name = info.get("shortName") or info.get("longName") or ticker
+        if np.isnan(beta):
+            beta = _safe_float(info.get("beta", np.nan), np.nan)
+        return _fallback_payload(
+            name=name,
+            sector=info.get("sector", ""),
+            industry=info.get("industry", ""),
+            price=latest_price,
+            atr_pct=atr_pct,
+            beta=beta,
+        )
+    return _fallback_payload(name=name, price=latest_price, atr_pct=atr_pct, beta=beta)
 
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _bulk_portfolio_metrics(tickers: tuple[str, ...]) -> dict[str, dict]:
+    normalized = tuple(dict.fromkeys(_normalize_single_ticker(t) for t in tickers if _normalize_single_ticker(t)))
+    if not normalized:
+        return {}
+    end = datetime.now()
+    start = end - timedelta(days=260)
+    frames = _bulk_download_ohlc(normalized, start, end)
+    spx_close = _fetch_close_history("^GSPC", start, end)
+    out: dict[str, dict] = {}
+    for ticker in normalized:
+        frame = frames.get(ticker)
+        if frame is None or frame.empty or "Close" not in frame:
+            out[ticker] = _portfolio_symbol_metrics(ticker)
+            continue
+        latest_price = _safe_float(frame["Close"].iloc[-1], np.nan)
+        atr_pct = np.nan
+        if len(frame) >= 21 and {"High", "Low", "Close"}.issubset(frame.columns):
+            atr_val = _atr(frame, 21).iloc[-1]
+            if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val):
+                atr_pct = float(atr_val / latest_price * 100)
+        if np.isnan(atr_pct) and len(frame) >= 22 and latest_price and not np.isnan(latest_price):
+            atr_pct = float(pd.to_numeric(frame["Close"], errors="coerce").pct_change().abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
+        beta = _beta_from_close_series(pd.to_numeric(frame["Close"], errors="coerce"), spx_close)
+        out[ticker] = {
+            "ticker": ticker,
+            "name": ticker,
+            "sector": "",
+            "industry": "",
+            "price": latest_price,
+            "atr_pct": atr_pct,
+            "beta": beta,
+        }
+        if np.isnan(beta) or np.isnan(latest_price):
+            fallback = _portfolio_symbol_metrics(ticker)
+            merged = dict(fallback or {})
+            merged.update({k: v for k, v in out[ticker].items() if not (isinstance(v, float) and np.isnan(v))})
+            out[ticker] = merged
+    return out
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _sp500_atr_reference(lookback_days: int = 180) -> float:
@@ -777,6 +976,9 @@ def _portfolio_positions_only(positions: list[dict]) -> list[dict]:
 
 def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, target_risk_contribution: float = 0.20) -> tuple[pd.DataFrame, dict]:
     tracked = _portfolio_positions_only(positions)
+    tickers = tuple(_normalize_single_ticker((pos or {}).get("ticker", "")) for pos in tracked if _normalize_single_ticker((pos or {}).get("ticker", "")))
+    metrics_map = _bulk_portfolio_metrics(tickers)
+
     preliminary_rows = []
     total_value = max(float(cash_balance or 0), 0.0)
     for pos in tracked:
@@ -785,7 +987,7 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
         shares = _safe_float(pos.get("shares"), 0.0)
         if not ticker or shares <= 0:
             continue
-        metrics = _portfolio_symbol_metrics(ticker)
+        metrics = metrics_map.get(ticker) or _portfolio_symbol_metrics(ticker)
         price = _safe_float(metrics.get("price"), np.nan)
         entry = _position_entry_price(pos)
         current_value = shares * price if not np.isnan(price) else np.nan
@@ -906,7 +1108,6 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
     df = df.assign(_cash_sort=df["is_cash"].astype(int)).sort_values(["_cash_sort", "pnl_pct"], ascending=[True, False], na_position="last").drop(columns=["_cash_sort"])
     return df, summary
 
-
 def _portfolio_health_messages(summary: dict, positions_df: pd.DataFrame, settings: dict) -> list[tuple[str, str]]:
     messages = []
     count = int(summary.get("tracked_count", 0))
@@ -997,8 +1198,6 @@ def _build_portfolio_curve(history: list[dict]) -> pd.DataFrame:
 
 def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: float, start_date, end_date=None) -> pd.DataFrame:
     tracked = _portfolio_positions_only(positions)
-    if not tracked:
-        return pd.DataFrame()
     start_ts = pd.Timestamp(start_date).normalize()
     end_ts = pd.Timestamp(end_date or datetime.utcnow().date()).normalize()
     if end_ts < start_ts:
@@ -1012,8 +1211,11 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
     if len(calendar) == 0:
         return pd.DataFrame()
 
-    curve = pd.DataFrame(index=calendar)
+    curve = pd.DataFrame({"date": pd.DatetimeIndex(calendar)})
     curve["depot_value"] = float(cash_balance or 0.0)
+
+    ticker_tuple = tuple(dict.fromkeys(_normalize_single_ticker((pos or {}).get("ticker", "")) for pos in tracked if _normalize_single_ticker((pos or {}).get("ticker", ""))))
+    close_map = _bulk_close_history_map(ticker_tuple, start_ts, end_ts) if ticker_tuple else {}
 
     for pos in tracked:
         ticker = _normalize_single_ticker(pos.get("ticker", ""))
@@ -1027,20 +1229,24 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
         entry_price = _position_entry_price(pos)
         entry_value = shares * entry_price if not np.isnan(entry_price) and entry_price > 0 else 0.0
         if buy_ts > start_ts and entry_value > 0:
-            curve.loc[curve.index < buy_ts, "depot_value"] += entry_value
+            curve.loc[curve["date"] < buy_ts, "depot_value"] += entry_value
         active_start = max(start_ts, buy_ts)
-        close = _fetch_close_history(ticker, active_start, end_ts)
-        if len(close) == 0:
+        close = close_map.get(ticker)
+        if close is None or len(close) == 0:
+            close = _fetch_close_history(ticker, active_start, end_ts)
+        if close is None or len(close) == 0:
             continue
-        aligned = close.reindex(curve.index, method="ffill")
-        mask = curve.index >= active_start
-        curve.loc[mask, "depot_value"] += aligned.loc[mask].ffill().bfill().fillna(0.0) * shares
+        aligned = close.reindex(pd.DatetimeIndex(curve["date"]), method="ffill")
+        mask = curve["date"] >= active_start
+        values = aligned.reindex(pd.DatetimeIndex(curve.loc[mask, "date"]), method="ffill").ffill().bfill().fillna(0.0).to_numpy()
+        curve.loc[mask, "depot_value"] += values * shares
 
-    curve = curve.reset_index().rename(columns={"index": "date"})
-    curve["date"] = pd.to_datetime(curve["date"])
+    curve["date"] = pd.to_datetime(curve["date"], errors="coerce")
+    curve = curve.dropna(subset=["date"]).copy()
     curve = curve[curve["depot_value"].notna()].copy()
-    curve = curve[curve["depot_value"] > 0].copy()
     if curve.empty:
+        return pd.DataFrame()
+    if (curve["depot_value"] <= 0).all():
         return pd.DataFrame()
 
     first_value = float(curve["depot_value"].iloc[0])
@@ -1057,7 +1263,6 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
     else:
         curve["sp500_index"] = np.nan
     return curve
-
 
 def _render_portfolio_72_area():
     _init_workspace_state()
@@ -1549,6 +1754,132 @@ def _parse_nasdaq_otherlisted_text(text):
 
     return _normalize_ticker_list(collected)
 
+
+def _parse_nasdaq_listed_text(text):
+    try:
+        df = pd.read_csv(io.StringIO(text), sep="|", dtype=str, engine="python")
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    df.columns = [str(c).strip() for c in df.columns]
+    first_col = df.columns[0]
+    df = df[~df[first_col].fillna("").str.startswith("File Creation Time", na=False)].copy()
+    df = df.dropna(how="all")
+    lower_cols = {str(c).strip().lower(): c for c in df.columns}
+    symbol_col = lower_cols.get("symbol")
+    name_col = lower_cols.get("security name")
+    etf_col = lower_cols.get("etf")
+    test_col = lower_cols.get("test issue")
+    nextshares_col = lower_cols.get("nextshares")
+    if symbol_col is None:
+        return []
+    if etf_col is not None:
+        df[etf_col] = df[etf_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[etf_col] != "Y"]
+    if test_col is not None:
+        df[test_col] = df[test_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[test_col] != "Y"]
+    if nextshares_col is not None:
+        df[nextshares_col] = df[nextshares_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[nextshares_col] != "Y"]
+
+    def _looks_like_equity_name(name):
+        low = f" {str(name or '').lower()} "
+        reject_patterns = (
+            r"\bpreferred\b",
+            r"\bdepositary\b",
+            r"\bwarrants?\b",
+            r"\brights?\b",
+            r"\bunits?\b",
+            r"\bnotes?\b",
+            r"\bbonds?\b",
+            r"\bdebentures?\b",
+            r"\betn\b",
+            r"\betf\b",
+            r"\bclosed\s+end\b",
+            r"\bmutual\s+fund\b",
+            r"\btrust\s+units?\b",
+        )
+        return low.strip() and not any(re.search(p, low) for p in reject_patterns)
+
+    symbols = []
+    for _, row in df.iterrows():
+        name = row.get(name_col, "") if name_col is not None else ""
+        if name_col is not None and not _looks_like_equity_name(name):
+            continue
+        symbol = str(row.get(symbol_col, "") or "").strip().upper()
+        if symbol and symbol != "NAN":
+            symbols.append(symbol)
+    return _normalize_ticker_list(symbols)
+
+
+def _get_nasdaq_stocks_from_nasdaq_trader_ftp():
+    buf = io.BytesIO()
+    ftp = None
+    try:
+        ftp = FTP("ftp.nasdaqtrader.com", timeout=30)
+        ftp.login()
+        ftp.cwd("SymbolDirectory")
+        ftp.retrbinary("RETR nasdaqlisted.txt", buf.write)
+        raw = buf.getvalue().decode("utf-8", errors="ignore")
+        tickers = _parse_nasdaq_listed_text(raw)
+        return tickers if len(tickers) >= 1500 else []
+    except Exception:
+        return []
+    finally:
+        try:
+            if ftp is not None:
+                ftp.quit()
+        except Exception:
+            pass
+
+
+def _get_nasdaq_stocks_from_nasdaq_trader_http():
+    urls = [
+        "https://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt",
+        "http://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqlisted.txt",
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,*/*"}
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=30, headers=headers)
+            resp.raise_for_status()
+            tickers = _parse_nasdaq_listed_text(resp.text)
+            if len(tickers) >= 1500:
+                return tickers
+        except Exception:
+            continue
+    return []
+
+
+def _get_nasdaq_stocks_from_github_fallback():
+    urls = [
+        "https://raw.githubusercontent.com/joemccann/stock-exchange-symbols/master/csv/nasdaq.csv",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,text/csv,*/*"}
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=25, headers=headers)
+            resp.raise_for_status()
+            raw_text = resp.content.decode("utf-8", errors="ignore")
+            tickers = []
+            try:
+                df = pd.read_csv(io.StringIO(raw_text))
+                ticker_col = _extract_ticker_column(df)
+                if ticker_col is not None:
+                    tickers = _normalize_ticker_list(df[ticker_col])
+            except Exception:
+                tickers = []
+            if len(tickers) < 1000:
+                tickers = _normalize_ticker_list(re.split(r"[\s,;|]+", raw_text))
+            if len(tickers) >= 1200:
+                return tickers
+        except Exception:
+            continue
+    return []
+
 def _get_nyse_stocks_from_nasdaq_trader_ftp():
     buf = io.BytesIO()
     ftp = None
@@ -1630,17 +1961,42 @@ def get_nyse_stock_tickers():
     return best if len(best) >= 300 else []
 
 
+def get_nasdaq_stock_tickers():
+    """Load a current Nasdaq common-stock universe from Nasdaq Trader with fallbacks."""
+    best = []
+    loaders = (
+        _get_nasdaq_stocks_from_nasdaq_trader_ftp,
+        _get_nasdaq_stocks_from_nasdaq_trader_http,
+        _get_nasdaq_stocks_from_github_fallback,
+    )
+    for loader in loaders:
+        tickers = loader()
+        if len(tickers) > len(best):
+            best = tickers
+        if len(tickers) >= 1500:
+            return tickers
+    return best if len(best) >= 500 else []
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_app_stock_universe_tickers():
+    """Combined internal stock universe for cache coverage, diagnostics and portfolio support."""
+    combined = _normalize_ticker_list(get_nyse_stock_tickers() + get_nasdaq_stock_tickers())
+    if combined:
+        return combined
+    return _normalize_ticker_list(SP500_TICKERS + get_nyse_stock_tickers())
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_nyse_breadth_tickers():
-    """Canonical helper for the current NYSE stock universe used in breadth calculations."""
-    return get_nyse_stock_tickers()
+    """Backward-compatible helper. Internally the supported universe now includes NYSE and Nasdaq common stocks."""
+    return get_app_stock_universe_tickers()
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_russell2000_tickers():
     """Backward-compatible wrapper kept for older code paths."""
     return get_nyse_breadth_tickers()
-
 
 def _dl(symbol, start, end):
     try:
@@ -1874,7 +2230,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_DB_NAME = "market_data_cache.sqlite"
 
-CACHE_UNIVERSE_NAME = "nyse_stocks"
+CACHE_UNIVERSE_NAME = "us_common_stocks"
 
 def _safe_get_secret(*path, default=None):
     try:
@@ -5141,7 +5497,7 @@ def _tab_marktanalyse():
         st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Datenwartung und Tiefenanalyse", expanded=False):
-        st.caption("Der technische Bereich ist bewusst ausgelagert. Hier verwaltest du NYSE-Datenbank, Diagnose und die tiefe Marktbreitenanalyse.")
+        st.caption("Der technische Bereich ist bewusst ausgelagert. Hier verwaltest du NYSE/Nasdaq-Datenbank, Diagnose und die tiefe Marktbreitenanalyse.")
         fred_key = ""
         try:
             fred_key = st.secrets.get("FRED_API_KEY", "")
@@ -5189,7 +5545,7 @@ def _tab_marktanalyse():
             analyze_clicked = st.button("Tiefenanalyse starten", type="primary", use_container_width=True)
 
         if refresh_clicked:
-            with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE-Aktienuniversum …"):
+            with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE/Nasdaq-Aktienuniversum …"):
                 refresh_stats = refresh_nyse_price_store()
                 st.cache_data.clear()
             if refresh_stats.get("ok"):
