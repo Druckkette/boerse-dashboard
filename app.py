@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from ftplib import FTP
@@ -1934,9 +1935,9 @@ def _get_nasdaq_stocks_from_github_fallback():
                     tickers = _normalize_ticker_list(df[ticker_col])
             except Exception:
                 tickers = []
-            # Do not fall back to tokenizing free text. This can accidentally parse
-            # company names/words as symbols and inflate the universe massively.
-            if 1200 <= len(tickers) <= 8000:
+            if len(tickers) < 1000:
+                tickers = _normalize_ticker_list(re.split(r"[\s,;|]+", raw_text))
+            if len(tickers) >= 1200:
                 return tickers
         except Exception:
             continue
@@ -1998,9 +1999,9 @@ def _get_nyse_stocks_from_github_fallback():
                     tickers = _normalize_ticker_list(df[ticker_col])
             except Exception:
                 tickers = []
-            # Do not parse free text into pseudo symbols. Keep only parsed ticker
-            # column data from trusted CSV structure.
-            if 1000 <= len(tickers) <= 8000:
+            if len(tickers) < 500:
+                tickers = _normalize_ticker_list(re.split(r"[\s,;|]+", text))
+            if len(tickers) >= 1000:
                 return tickers
         except Exception:
             continue
@@ -2018,9 +2019,9 @@ def get_nyse_stock_tickers():
         tickers = loader()
         if len(tickers) > len(best):
             best = tickers
-        if 1200 <= len(tickers) <= 8000:
+        if len(tickers) >= 1200:
             return tickers
-    return best if 300 <= len(best) <= 8000 else []
+    return best if len(best) >= 300 else []
 
 
 def get_nasdaq_stock_tickers():
@@ -2035,9 +2036,9 @@ def get_nasdaq_stock_tickers():
         tickers = loader()
         if len(tickers) > len(best):
             best = tickers
-        if 1500 <= len(tickers) <= 8000:
+        if len(tickers) >= 1500:
             return tickers
-    return best if 500 <= len(best) <= 8000 else []
+    return best if len(best) >= 500 else []
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -2053,7 +2054,7 @@ def get_app_stock_universe_tickers():
 
     if nyse_ok and nasdaq_ok:
         combined = _normalize_ticker_list(nyse + nasdaq)
-        if 2500 <= len(combined) <= 12000:
+        if len(combined) >= 2500:
             return combined
 
     if nyse_ok:
@@ -2106,7 +2107,6 @@ def _dl(symbol, start, end):
     except Exception as exc:
         logger.warning("Download failed for %s: %s", symbol, exc)
         return None
-@st.cache_data(ttl=300, show_spinner=False)
 def load_market_data(lookback_days=400):
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = {
@@ -2136,7 +2136,6 @@ SECTOR_ETFS = {
     "XLRE": "Real Estate",
 }
 
-@st.cache_data(ttl=900, show_spinner=False)
 def load_sector_data(lookback_days=200):
     """Load daily close prices for all sector ETFs."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
@@ -2468,6 +2467,59 @@ def _init_price_cache_db(store):
                 )
                 """
             )
+
+        if store["backend"] == "neon":
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS refresh_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    job_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    current_step TEXT,
+                    message TEXT,
+                    requested_by TEXT,
+                    trigger_mode TEXT,
+                    trigger_status TEXT,
+                    trigger_response TEXT,
+                    payload_json TEXT,
+                    result_json TEXT,
+                    runner_source TEXT,
+                    run_url TEXT,
+                    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    started_at TIMESTAMPTZ,
+                    finished_at TIMESTAMPTZ,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status_requested_at ON refresh_jobs(status, requested_at DESC)")
+        else:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS refresh_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    job_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress INTEGER NOT NULL DEFAULT 0,
+                    current_step TEXT,
+                    message TEXT,
+                    requested_by TEXT,
+                    trigger_mode TEXT,
+                    trigger_status TEXT,
+                    trigger_response TEXT,
+                    payload_json TEXT,
+                    result_json TEXT,
+                    runner_source TEXT,
+                    run_url TEXT,
+                    requested_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status_requested_at ON refresh_jobs(status, requested_at DESC)")
         if store["backend"] == "neon":
             cur.execute("ALTER TABLE prices ADD COLUMN IF NOT EXISTS high DOUBLE PRECISION")
             cur.execute("ALTER TABLE prices ADD COLUMN IF NOT EXISTS low DOUBLE PRECISION")
@@ -2533,6 +2585,271 @@ def _get_cache_metadata(store, key, default=None):
         return row[0] if row else default
     finally:
         conn.close()
+
+
+def _utc_now_str():
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _github_actions_config():
+    owner = str(_safe_get_secret("github_actions", "owner", default=os.environ.get("GITHUB_ACTIONS_OWNER", "")) or "").strip()
+    repo = str(_safe_get_secret("github_actions", "repo", default=os.environ.get("GITHUB_ACTIONS_REPO", "")) or "").strip()
+    repository = str(_safe_get_secret("github_actions", "repository", default=os.environ.get("GITHUB_ACTIONS_REPOSITORY", "")) or "").strip()
+    if repository and "/" in repository and (not owner or not repo):
+        owner, repo = repository.split("/", 1)
+    if repo and "/" in repo and not owner:
+        owner, repo = repo.split("/", 1)
+    workflow = str(_safe_get_secret("github_actions", "workflow", default=os.environ.get("GITHUB_ACTIONS_WORKFLOW", "market-refresh.yml")) or "market-refresh.yml").strip()
+    ref = str(_safe_get_secret("github_actions", "ref", default=os.environ.get("GITHUB_ACTIONS_REF", "main")) or "main").strip()
+    token = str(_safe_get_secret("github_actions", "token", default=os.environ.get("GITHUB_ACTIONS_TOKEN", "")) or "").strip()
+    if not token:
+        token = str(_safe_get_secret("github_actions", "dispatch_token", default=os.environ.get("GITHUB_ACTIONS_DISPATCH_TOKEN", "")) or "").strip()
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches" if owner and repo and workflow else ""
+    actions_url = f"https://github.com/{owner}/{repo}/actions/workflows/{workflow}" if owner and repo and workflow else ""
+    return {
+        "owner": owner,
+        "repo": repo,
+        "workflow": workflow,
+        "ref": ref,
+        "token": token,
+        "api_url": api_url,
+        "actions_url": actions_url,
+        "ready": bool(owner and repo and workflow and token),
+    }
+
+
+def _job_row_to_dict(columns, row):
+    if not row:
+        return None
+    data = dict(zip(columns, row))
+    for raw_key, parsed_key in (("payload_json", "payload"), ("result_json", "result")):
+        raw = data.get(raw_key)
+        if raw in (None, ""):
+            data[parsed_key] = None
+        else:
+            try:
+                data[parsed_key] = json.loads(raw)
+            except Exception:
+                data[parsed_key] = None
+    return data
+
+
+def _create_refresh_job(store, job_type, requested_by="streamlit", payload=None, trigger_mode="github_actions"):
+    job_id = f"job-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    now = _utc_now_str()
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO refresh_jobs(
+                        job_id, job_type, status, progress, current_step, message,
+                        requested_by, trigger_mode, trigger_status, payload_json,
+                        requested_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    """,
+                    (job_id, job_type, "queued", 0, "Wartet auf GitHub Actions", "Job angelegt", requested_by, trigger_mode, "pending", payload_json),
+                )
+        else:
+            conn.execute(
+                """
+                INSERT INTO refresh_jobs(
+                    job_id, job_type, status, progress, current_step, message,
+                    requested_by, trigger_mode, trigger_status, payload_json,
+                    requested_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (job_id, job_type, "queued", 0, "Wartet auf GitHub Actions", "Job angelegt", requested_by, trigger_mode, "pending", payload_json, now, now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return _get_refresh_job(store, job_id)
+
+
+def _update_refresh_job(store, job_id, **fields):
+    allowed = {
+        "status", "progress", "current_step", "message", "requested_by", "trigger_mode", "trigger_status",
+        "trigger_response", "payload_json", "result_json", "runner_source", "run_url", "requested_at",
+        "started_at", "finished_at", "updated_at",
+    }
+    cleaned = {}
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        if key in {"payload_json", "result_json"} and value is not None and not isinstance(value, str):
+            value = json.dumps(value, ensure_ascii=False)
+        cleaned[key] = value
+    cleaned.setdefault("updated_at", _utc_now_str())
+    if not cleaned:
+        return _get_refresh_job(store, job_id)
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            assignments = []
+            values = []
+            for key, value in cleaned.items():
+                if key == "updated_at":
+                    assignments.append("updated_at = NOW()")
+                else:
+                    assignments.append(f"{key} = %s")
+                    values.append(value)
+            values.append(job_id)
+            sql = f"UPDATE refresh_jobs SET {', '.join(assignments)} WHERE job_id = %s"
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(values))
+        else:
+            assignments = []
+            values = []
+            for key, value in cleaned.items():
+                assignments.append(f"{key} = ?")
+                values.append(value)
+            values.append(job_id)
+            sql = f"UPDATE refresh_jobs SET {', '.join(assignments)} WHERE job_id = ?"
+            conn.execute(sql, tuple(values))
+        conn.commit()
+    finally:
+        conn.close()
+    return _get_refresh_job(store, job_id)
+
+
+def _get_refresh_job(store, job_id):
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM refresh_jobs WHERE job_id=%s", (job_id,))
+                row = cur.fetchone()
+                cols = [desc[0] for desc in cur.description] if cur.description else []
+        else:
+            cur = conn.execute("SELECT * FROM refresh_jobs WHERE job_id=?", (job_id,))
+            row = cur.fetchone()
+            cols = [desc[0] for desc in cur.description] if cur.description else []
+        return _job_row_to_dict(cols, row)
+    finally:
+        conn.close()
+
+
+def _list_recent_refresh_jobs(store, limit=8):
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM refresh_jobs ORDER BY requested_at DESC LIMIT %s", (limit,))
+                rows = cur.fetchall()
+                cols = [desc[0] for desc in cur.description] if cur.description else []
+        else:
+            cur = conn.execute("SELECT * FROM refresh_jobs ORDER BY requested_at DESC LIMIT ?", (limit,))
+            rows = cur.fetchall()
+            cols = [desc[0] for desc in cur.description] if cur.description else []
+        return [_job_row_to_dict(cols, row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _get_active_refresh_job(store):
+    conn = _get_cache_conn(store)
+    try:
+        statuses = ("queued", "running")
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM refresh_jobs WHERE status IN (%s, %s) ORDER BY requested_at DESC LIMIT 1",
+                    statuses,
+                )
+                row = cur.fetchone()
+                cols = [desc[0] for desc in cur.description] if cur.description else []
+        else:
+            cur = conn.execute(
+                "SELECT * FROM refresh_jobs WHERE status IN (?, ?) ORDER BY requested_at DESC LIMIT 1",
+                statuses,
+            )
+            row = cur.fetchone()
+            cols = [desc[0] for desc in cur.description] if cur.description else []
+        return _job_row_to_dict(cols, row)
+    finally:
+        conn.close()
+
+
+def _job_type_label(job_type):
+    return {
+        "refresh_universe": "Aktienuniversum aktualisieren",
+        "rescue_missing": "Fehlende nachladen",
+        "auto_remap": "Automatisch remappen",
+    }.get(str(job_type or ""), str(job_type or "Unbekannt"))
+
+
+def _trigger_github_actions_workflow(job_id, job_type, extra_inputs=None):
+    cfg = _github_actions_config()
+    if not cfg.get("ready"):
+        return {"ok": False, "error": "GitHub Actions ist nicht vollständig konfiguriert.", "config": cfg}
+    inputs = {"job_id": str(job_id), "job_type": str(job_type)}
+    if extra_inputs:
+        for key, value in extra_inputs.items():
+            inputs[str(key)] = "" if value is None else str(value)
+    payload = {"ref": cfg["ref"], "inputs": inputs}
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {cfg['token']}",
+    }
+    try:
+        response = requests.post(cfg["api_url"], headers=headers, json=payload, timeout=20)
+        ok = response.status_code in (200, 201, 202, 204)
+        body = (response.text or "").strip()
+        return {
+            "ok": ok,
+            "status_code": response.status_code,
+            "body": body[:1000],
+            "actions_url": cfg.get("actions_url", ""),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "actions_url": cfg.get("actions_url", "")}
+
+
+def _request_external_refresh_job(job_type, requested_by="streamlit", payload=None):
+    store = _get_price_store()
+    _init_price_cache_db(store)
+    active = _get_active_refresh_job(store)
+    if active:
+        return {"ok": False, "error": f"Es läuft bereits ein Job: {_job_type_label(active.get('job_type'))}", "job": active}
+    job = _create_refresh_job(store, job_type=job_type, requested_by=requested_by, payload=payload or {})
+    dispatch = _trigger_github_actions_workflow(job["job_id"], job_type, extra_inputs={"requested_by": requested_by})
+    if dispatch.get("ok"):
+        job = _update_refresh_job(
+            store,
+            job["job_id"],
+            trigger_status="sent",
+            current_step="In GitHub-Warteschlange",
+            message="Workflow ausgelöst. Die App aktualisiert den Status beim nächsten Laden.",
+            run_url=dispatch.get("actions_url", ""),
+        )
+        return {"ok": True, "job": job, "dispatch": dispatch}
+    job = _update_refresh_job(
+        store,
+        job["job_id"],
+        status="failed",
+        trigger_status="failed",
+        current_step="Dispatch fehlgeschlagen",
+        message=dispatch.get("error") or dispatch.get("body") or "Workflow konnte nicht ausgelöst werden.",
+        run_url=dispatch.get("actions_url", ""),
+        finished_at=_utc_now_str(),
+    )
+    return {"ok": False, "job": job, "dispatch": dispatch, "error": job.get("message")}
+
+
+def _job_status_badge(status):
+    s = str(status or "").lower()
+    if s == "done":
+        return "✅ Fertig"
+    if s == "failed":
+        return "❌ Fehlgeschlagen"
+    if s == "running":
+        return "🏃 Läuft"
+    if s == "queued":
+        return "🕒 Warteschlange"
+    return s or "—"
 
 def _store_universe_members(store, universe, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
@@ -4023,25 +4340,12 @@ def summarize_volatility_state(vol_df):
     }
 
 def detect_intermarket_divergence(data):
-    results = []
-    for name in ["S&P 500", "Nasdaq Composite", "Russell 2000"]:
-        if name not in data:
-            continue
-        df = data[name]
-        if len(df) < 22:
-            continue
-        h20 = df["High"].rolling(20, min_periods=10).max()
-        close_now = float(df["Close"].iloc[-1])
-        close_prev = float(df["Close"].iloc[-2])
-        high_20 = float(h20.iloc[-1]) if pd.notna(h20.iloc[-1]) else np.nan
-        dist_20 = (close_now / high_20 - 1) * 100 if high_20 and not np.isnan(high_20) else np.nan
-        day_change = (close_now / close_prev - 1) * 100 if close_prev else np.nan
-        results.append({
-            "name": name,
-            "at_20d_high": close_now >= float(h20.iloc[-2]) * 0.998 if pd.notna(h20.iloc[-2]) else False,
-            "dist_20d_high_pct": round(float(dist_20), 2) if pd.notna(dist_20) else np.nan,
-            "day_change_pct": round(float(day_change), 2) if pd.notna(day_change) else np.nan,
-        })
+    results=[]
+    for name in ["S&P 500","Nasdaq Composite","Russell 2000"]:
+        if name not in data: continue
+        df=data[name];h20=df["High"].rolling(20,min_periods=10).max()
+        results.append({"name":name,"at_20d_high":df["Close"].iloc[-1]>=h20.iloc[-2]*0.998,
+                        "pct":round((df["Close"].iloc[-1]/h20.iloc[-1]-1)*100,2)})
     return results
 
 def detect_sector_rotation(data):
@@ -4204,25 +4508,6 @@ def render_ampel_section(L):
                 f'<div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div>'
                 f'</div>', unsafe_allow_html=True)
 
-    explainers = {
-        "rot": "🔴 ROT: Wird aktiv, sobald ein substanzieller Drawdown läuft (Marktkorrektur). Ziel: erst Stabilisierung/Ankertag abwarten.",
-        "gelb": "🟡 GELB: Wird aktiv, wenn nach dem Ankertag ein Startschuss erkannt wurde (frühes Trendwendesignal).",
-        "gruen": "🟢 GRÜN: Wird aktiv, wenn der Startschuss bestätigt bleibt (z. B. Kurs hält über dem Startschuss-Tief).",
-    }
-    selected_key = st.session_state.get("ampel_explainer_key", phase if phase in explainers else "gelb")
-    e1, e2, e3 = st.columns(3)
-    with e1:
-        if st.button("🔴 Rot erklären", key="ampel_explain_rot", use_container_width=True):
-            selected_key = "rot"
-    with e2:
-        if st.button("🟡 Gelb erklären", key="ampel_explain_gelb", use_container_width=True):
-            selected_key = "gelb"
-    with e3:
-        if st.button("🟢 Grün erklären", key="ampel_explain_gruen", use_container_width=True):
-            selected_key = "gruen"
-    st.session_state["ampel_explainer_key"] = selected_key
-    st.info(explainers[selected_key])
-
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
     st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#e2e8f0;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
@@ -4255,40 +4540,6 @@ def plot_volume(df,sd=90):
     dv=df.tail(sd);x=_x(dv.index);colors=["#22c55e" if p>=0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig=go.Figure();fig.add_trace(go.Bar(x=x,y=_y(dv["Volume"]),marker_color=colors,opacity=0.7));fig.add_trace(go.Scatter(x=x,y=_y(dv["Vol_SMA50"]),line=dict(color="#64748b",width=1,dash="dot")))
     fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#1e293b",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
-    return fig
-
-def plot_price_with_volume(df, sd=90):
-    dv = df.tail(sd)
-    x = _x(dv.index)
-    vol_colors = ["#22c55e" if p >= 0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.78, 0.22],
-    )
-    fig.add_trace(go.Scatter(x=x, y=_y(dv["Close"]), name="Kurs", line=dict(color="#e2e8f0", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x, y=_y(dv["EMA21"]), name="21-EMA", line=dict(color="#06b6d4", width=1, dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA50"]), name="50-SMA", line=dict(color="#f97316", width=1, dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA200"]), name="200-SMA", line=dict(color="#a855f7", width=1, dash="dash")), row=1, col=1)
-    fl = dv["Floor_Mark"].dropna()
-    if len(fl) > 0:
-        fig.add_hline(y=float(fl.iloc[-1]), line_dash="dash", line_color="#ef4444", line_width=1, row=1, col=1)
-    fig.add_trace(go.Bar(x=x, y=_y(dv["Volume"]), marker_color=vol_colors, opacity=0.6, name="Volumen"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=x, y=_y(dv["Vol_SMA50"]), name="Vol. 50-SMA", line=dict(color="#64748b", width=1, dash="dot")), row=2, col=1)
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#111827",
-        plot_bgcolor="#111827",
-        margin=dict(l=0, r=0, t=30, b=0),
-        height=500,
-        legend=dict(orientation="h", yanchor="top", y=1.05, font=dict(size=9, color="#94a3b8")),
-        xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
-        yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
-        yaxis2=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), tickformat=".2s"),
-        hovermode="x unified",
-    )
     return fig
 
 def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
@@ -5470,10 +5721,6 @@ def _tab_marktanalyse():
         selected = st.radio("Index", available, horizontal=True, label_visibility="collapsed")
     with c2:
         sd = st.selectbox("Zeitraum", [60, 90, 130, 200], index=1, format_func=lambda x: f"{x} Tage")
-        if st.button("Daten neu laden", use_container_width=True, help="Leert den Kurzzeit-Cache und lädt Marktdaten frisch von der Quelle."):
-            load_market_data.clear()
-            st.cache_data.clear()
-            st.rerun()
 
     df = add_indicators(data[selected].copy())
     df = detect_distribution_days(df)
@@ -5520,12 +5767,7 @@ def _tab_marktanalyse():
     warning_items.append(("Volumen an Aufwärtstagen", not vd, "Abnehmendes Vol." if vd else "OK", vd)); wc += int(vd)
     if div_r:
         ah = [r for r in div_r if r["at_20d_high"]]; nh = [r for r in div_r if not r["at_20d_high"]]; hd = len(ah) > 0 and len(nh) > 0
-        warning_items.append((
-            "Intermarket-Konvergenz",
-            not hd,
-            " · ".join(f"{r['name']}: {r.get('dist_20d_high_pct', np.nan):+.1f}% zum 20T-Hoch" for r in div_r),
-            hd,
-        )); wc += int(hd)
+        warning_items.append(("Intermarket-Konvergenz", not hd, " · ".join(f"{r['name']}: {r['pct']:+.1f}%" for r in div_r), hd)); wc += int(hd)
     if rot is not None:
         warning_items.append(("Keine Sektorrotation in Defensive", not rot, f"Spread: {sp:+.1f}%", bool(rot))); wc += int(bool(rot))
     rp, drp = detect_failing_rally(df)
@@ -5567,7 +5809,11 @@ def _tab_marktanalyse():
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
 
-    st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
+    chart_tab1, chart_tab2 = st.tabs(["Preis", "Volumen"])
+    with chart_tab1:
+        st.plotly_chart(plot_price(df, sd), use_container_width=True, config={"displayModeBar": False})
+    with chart_tab2:
+        st.plotly_chart(plot_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
 
     with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
         st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
@@ -5613,16 +5859,9 @@ def _tab_marktanalyse():
                 st.markdown("</div>", unsafe_allow_html=True)
             if div_r:
                 st.markdown('<div class="info-card"><div class="card-label">Intermarket-Bild</div>', unsafe_allow_html=True)
-                st.caption("Anzeige = Abstand des aktuellen Schlusskurses zum jeweiligen 20-Tage-Hoch (nicht Tagesperformance).")
                 for r in div_r:
-                    dist = r.get("dist_20d_high_pct", np.nan)
-                    daily = r.get("day_change_pct", np.nan)
-                    tone_c = "#22c55e" if pd.notna(dist) and dist >= -0.3 else "#ef4444"
-                    st.markdown(
-                        f'<div style="padding:4px 0;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span> '
-                        f'<span class="mini-help">20T-Hoch: {dist:+.1f}% · Tag: {daily:+.1f}%</span></div>',
-                        unsafe_allow_html=True
-                    )
+                    tone_c = "#22c55e" if r["pct"] >= 0 else "#ef4444"
+                    st.markdown(f'<div style="padding:4px 0;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span> <span class="mini-help">{r["pct"]:+.1f}%</span></div>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Marktbreite und Volatilität", expanded=True):
@@ -5711,90 +5950,113 @@ def _tab_marktanalyse():
         if status_bits:
             st.caption(" · ".join(status_bits))
 
+
+        gh_cfg = _github_actions_config()
+        if gh_cfg.get("ready"):
+            st.caption(f"Externer Worker: GitHub Actions · {gh_cfg['owner']}/{gh_cfg['repo']} · Workflow: {gh_cfg['workflow']} · Ref: {gh_cfg['ref']}")
+        else:
+            st.warning("GitHub Actions ist noch nicht konfiguriert. Für den asynchronen Refresh brauchst du in Streamlit Secrets owner, repo, workflow, ref und token.")
+
+        active_job = _get_active_refresh_job(store)
+        latest_jobs = _list_recent_refresh_jobs(store, limit=6)
+        latest_job = latest_jobs[0] if latest_jobs else None
+        if latest_job:
+            with st.container(border=True):
+                left, middle, right, reload_col = st.columns([2.2, 1.3, 2.2, 1])
+                left.markdown(f"**Letzter Job:** {_job_type_label(latest_job.get('job_type'))}")
+                left.caption(f"Job-ID: {latest_job.get('job_id', '—')}")
+                middle.metric("Status", _job_status_badge(latest_job.get('status')))
+                progress_value = int(latest_job.get('progress') or 0)
+                right.markdown(f"**Schritt:** {latest_job.get('current_step') or '—'}")
+                right.caption(latest_job.get('message') or '—')
+                with reload_col:
+                    if st.button("Status neu laden", use_container_width=True):
+                        st.rerun()
+                st.progress(max(0, min(progress_value, 100)) / 100.0, text=f"Fortschritt: {progress_value}%")
+                meta_bits = []
+                if latest_job.get('requested_at'):
+                    meta_bits.append(f"Angelegt: {latest_job['requested_at']} UTC")
+                if latest_job.get('started_at'):
+                    meta_bits.append(f"Gestartet: {latest_job['started_at']} UTC")
+                if latest_job.get('finished_at'):
+                    meta_bits.append(f"Beendet: {latest_job['finished_at']} UTC")
+                if latest_job.get('runner_source'):
+                    meta_bits.append(f"Runner: {latest_job['runner_source']}")
+                if meta_bits:
+                    st.caption(" · ".join(meta_bits))
+                if latest_job.get('run_url'):
+                    st.markdown(f"[GitHub-Run öffnen]({latest_job['run_url']})")
+                result = latest_job.get('result') or {}
+                if latest_job.get('status') == 'done' and isinstance(result, dict) and result:
+                    cols = st.columns(4)
+                    if result.get('requested') is not None:
+                        cols[0].metric("Angefragt", int(result.get('requested') or 0))
+                    if result.get('loaded') is not None:
+                        cols[1].metric("Geladen", int(result.get('loaded') or 0))
+                    if result.get('coverage') is not None:
+                        cols[2].metric("Abdeckung", f"{float(result.get('coverage') or 0):.0%}")
+                    if result.get('rows_written') is not None:
+                        cols[3].metric("Kurszeilen", f"{int(result.get('rows_written') or 0):,}")
+                elif latest_job.get('status') == 'failed' and latest_job.get('message'):
+                    st.error(latest_job.get('message'))
+
         btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
         with btn_refresh:
-            refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True)
+            refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True, disabled=bool(active_job))
         with btn_rescue:
-            rescue_clicked = st.button("Fehlende nachladen", use_container_width=True)
+            rescue_clicked = st.button("Fehlende nachladen", use_container_width=True, disabled=bool(active_job))
         with btn_remap:
-            remap_clicked = st.button("Automatisch remappen", use_container_width=True)
+            remap_clicked = st.button("Automatisch remappen", use_container_width=True, disabled=bool(active_job))
         with btn_diag:
             diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True)
         with btn_analyze:
             analyze_clicked = st.button("Tiefenanalyse starten", type="primary", use_container_width=True)
 
         if refresh_clicked:
-            with st.spinner("Aktualisiere den persistenten Kursbestand für das aktuelle NYSE/Nasdaq-Aktienuniversum …"):
-                refresh_stats = refresh_nyse_price_store()
-                st.cache_data.clear()
-            if refresh_stats.get("ok"):
-                st.success(f"✓ Datenbank aktualisiert · {refresh_stats['loaded']} von {refresh_stats['requested']} Titeln im NYSE/Nasdaq-Aktienuniversum verfügbar ({refresh_stats['coverage']:.0%} Abdeckung) · {refresh_stats['rows_written']:,} Kurszeilen geschrieben · Speicher: {refresh_stats['store']}")
+            result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit"})
+            if result.get("ok"):
+                st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}. Der Worker übernimmt den Import jetzt außerhalb von Streamlit.")
             else:
-                st.error(refresh_stats.get("error", "Die Datenbank-Aktualisierung ist fehlgeschlagen."))
+                st.error(result.get("error") or "Der Refresh-Job konnte nicht gestartet werden.")
 
         if rescue_clicked:
-            with st.spinner("Suche fehlende Ticker im NYSE/Nasdaq-Aktienuniversum und lade sie gezielt nach …"):
-                rescue_stats = rescue_missing_nyse_price_store()
-                st.cache_data.clear()
-            if rescue_stats.get("ok"):
-                if rescue_stats.get("missing_before", 0) == 0:
-                    st.success(rescue_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
-                else:
-                    st.success(f"✓ Rescue-Lauf abgeschlossen · {rescue_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({rescue_stats['missing_before']} → {rescue_stats['missing_after']} fehlend) · jetzt {rescue_stats['loaded']} von {rescue_stats['requested']} NYSE-Aktien verfügbar ({rescue_stats['coverage']:.0%} Abdeckung) · {rescue_stats['rows_written']:,} Kurszeilen geschrieben")
-                    if rescue_stats.get("missing_after", 0) > 0:
-                        st.info(f"Noch fehlend: {rescue_stats['missing_after']} Ticker. Der Rescue-Lauf hat {rescue_stats['rescue_batches']} Mini-Batches und {rescue_stats['single_attempts']} Einzelversuche genutzt, davon {rescue_stats['single_successes']} erfolgreich.")
+            result = _request_external_refresh_job("rescue_missing", payload={"trigger": "streamlit"})
+            if result.get("ok"):
+                st.success(f"✓ Rescue-Job angelegt: {result['job']['job_id']}.")
             else:
-                st.error(rescue_stats.get("error", "Der Rescue-Lauf ist fehlgeschlagen."))
+                st.error(result.get("error") or "Der Rescue-Job konnte nicht gestartet werden.")
 
         if remap_clicked:
-            with st.spinner("Suche automatisch nach Yahoo-Kandidaten für die noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum …"):
-                remap_stats = auto_remap_missing_nyse_yahoo()
-                st.cache_data.clear()
-            if remap_stats.get("ok"):
-                if remap_stats.get("missing_before", 0) == 0:
-                    st.success(remap_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
-                else:
-                    counts = remap_stats.get("counts", {}) or {}
-                    mapped_now = int(counts.get("Gemappt und geladen", 0) + counts.get("Gespeichertes Mapping erneut genutzt", 0))
-                    no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
-                    unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
-                    mapping_errors = int(counts.get("Mappingfehler", 0))
-                    st.success(f"✓ Auto-Remap abgeschlossen · {remap_stats['new_symbols_loaded']} bisher fehlende Ticker neu geladen ({remap_stats['missing_before']} → {remap_stats['missing_after']} fehlend) · jetzt {remap_stats['loaded']} von {remap_stats['requested']} NYSE-Aktien verfügbar ({remap_stats['coverage']:.0%} Abdeckung) · {remap_stats['rows_written']:,} Kurszeilen geschrieben")
-                    metric_cols = st.columns(4)
-                    metric_cols[0].metric("Gemappt und geladen", mapped_now)
-                    metric_cols[1].metric("Keine Historie trotz Lookup", no_hist)
-                    metric_cols[2].metric("Yahoo kennt Symbol nicht", unknown)
-                    metric_cols[3].metric("Mappingfehler", mapping_errors)
-                    results_df = remap_stats.get("results_df")
-                    if results_df is not None and not results_df.empty:
-                        st.dataframe(results_df, use_container_width=True, hide_index=True)
+            result = _request_external_refresh_job("auto_remap", payload={"trigger": "streamlit"})
+            if result.get("ok"):
+                st.success(f"✓ Auto-Remap-Job angelegt: {result['job']['job_id']}.")
             else:
-                st.error(remap_stats.get("error", "Das automatische Remapping ist fehlgeschlagen."))
+                st.error(result.get("error") or "Der Auto-Remap-Job konnte nicht gestartet werden.")
 
         if diagnose_clicked:
-            with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
-                diag_stats = diagnose_missing_nyse_yahoo()
-                st.cache_data.clear()
-            if diag_stats.get("ok"):
-                if diag_stats.get("missing_total", 0) == 0:
-                    st.success(diag_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
-                else:
-                    counts = diag_stats.get("counts", {}) or {}
-                    hist_ok = int(counts.get("Historie vorhanden", 0))
-                    lookup_no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
-                    unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
-                    errors = int(counts.get("Diagnosefehler", 0))
-                    st.success(f"✓ Yahoo-Diagnose abgeschlossen · Stichprobe {diag_stats['sample_size']} von {diag_stats['missing_total']} fehlenden Tickern · Historie vorhanden: {hist_ok} · Yahoo kennt Symbol, aber keine Historie: {lookup_no_hist} · Yahoo kennt Symbol nicht: {unknown}" + (f" · Diagnosefehler: {errors}" if errors else ""))
-                    metric_cols = st.columns(4)
-                    metric_cols[0].metric("Stichprobe", diag_stats["sample_size"])
-                    metric_cols[1].metric("Historie vorhanden", hist_ok)
-                    metric_cols[2].metric("Yahoo kennt Symbol, aber keine Historie", lookup_no_hist)
-                    metric_cols[3].metric("Yahoo kennt Symbol nicht", unknown)
-                    results_df = diag_stats.get("results_df")
-                    if results_df is not None and not results_df.empty:
-                        st.dataframe(results_df, use_container_width=True, hide_index=True)
-            else:
-                st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
+                    with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
+                        diag_stats = diagnose_missing_nyse_yahoo()
+                        st.cache_data.clear()
+                    if diag_stats.get("ok"):
+                        if diag_stats.get("missing_total", 0) == 0:
+                            st.success(diag_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
+                        else:
+                            counts = diag_stats.get("counts", {}) or {}
+                            hist_ok = int(counts.get("Historie vorhanden", 0))
+                            lookup_no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
+                            unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
+                            errors = int(counts.get("Diagnosefehler", 0))
+                            st.success(f"✓ Yahoo-Diagnose abgeschlossen · Stichprobe {diag_stats['sample_size']} von {diag_stats['missing_total']} fehlenden Tickern · Historie vorhanden: {hist_ok} · Yahoo kennt Symbol, aber keine Historie: {lookup_no_hist} · Yahoo kennt Symbol nicht: {unknown}" + (f" · Diagnosefehler: {errors}" if errors else ""))
+                            metric_cols = st.columns(4)
+                            metric_cols[0].metric("Stichprobe", diag_stats["sample_size"])
+                            metric_cols[1].metric("Historie vorhanden", hist_ok)
+                            metric_cols[2].metric("Yahoo kennt Symbol, aber keine Historie", lookup_no_hist)
+                            metric_cols[3].metric("Yahoo kennt Symbol nicht", unknown)
+                            results_df = diag_stats.get("results_df")
+                            if results_df is not None and not results_df.empty:
+                                st.dataframe(results_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
         if analyze_clicked:
             with st.spinner("Lese das NYSE/Nasdaq-Aktienuniversum aus dem persistenten Datenspeicher …"):
@@ -5993,10 +6255,9 @@ def _tab_mein_bereich():
         _render_portfolio_72_area()
 
 
-configure_page()
-inject_css()
-
 def main():
+    configure_page()
+    inject_css()
     _init_workspace_state()
     _render_workspace_sidebar()
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
