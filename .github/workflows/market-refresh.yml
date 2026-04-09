@@ -1,15 +1,28 @@
-name: Market Refresh
+name: market-refresh
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+    inputs:
+      job_id:
+        description: Refresh-Job-ID aus der Streamlit-App
+        required: true
+        type: string
+      job_type:
+        description: refresh_universe | rescue_missing | auto_remap
+        required: true
+        type: string
+      requested_by:
+        description: Optionaler Auslöser
+        required: false
+        type: string
 
 jobs:
   run-refresh-worker:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
+    permissions:
+      contents: read
 
     env:
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
@@ -31,4 +44,4 @@ jobs:
 
       - name: Run refresh worker
         run: |
-          python worker.py
+          python worker.py --job-id "${{ inputs.job_id }}" --job-type "${{ inputs.job_type }}"
