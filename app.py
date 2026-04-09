@@ -166,19 +166,42 @@ def _ensure_workspace_store_ready() -> None:
     except Exception as exc:
         logger.debug("workspace store init failed: %s", exc)
 
+def _default_portfolio_settings():
+    return {
+        "cash_balance": 0.0,
+        "risk_per_position_pct": 1.0,
+        "target_risk_contribution": 0.20,
+        "max_depot_loss_low": 8.0,
+        "max_depot_loss_high": 12.0,
+    }
+
 def _workspace_payload():
+    settings = dict(_default_portfolio_settings())
+    raw_settings = st.session_state.get("portfolio_settings", {})
+    if isinstance(raw_settings, dict):
+        settings.update(raw_settings)
     return {
         "watchlist": list(dict.fromkeys(st.session_state.get("watchlist", []))),
         "recent_tickers": list(dict.fromkeys(st.session_state.get("recent_tickers", [])))[:12],
         "positions": st.session_state.get("positions", []),
         "todos": st.session_state.get("todos", ""),
+        "portfolio_history": st.session_state.get("portfolio_history", []),
+        "portfolio_settings": settings,
     }
 
 def _load_workspace_from_store():
     _ensure_workspace_store_ready()
     payload = {}
     store = _get_price_store()
-    for field, default in {"watchlist": [], "recent_tickers": [], "positions": [], "todos": ""}.items():
+    defaults = {
+        "watchlist": [],
+        "recent_tickers": [],
+        "positions": [],
+        "todos": "",
+        "portfolio_history": [],
+        "portfolio_settings": _default_portfolio_settings(),
+    }
+    for field, default in defaults.items():
         raw = _get_cache_metadata(store, _workspace_meta_key(field), None)
         if raw in (None, ""):
             payload[field] = default
@@ -188,6 +211,14 @@ def _load_workspace_from_store():
         except Exception as exc:
             logger.debug("workspace field decode failed for %s: %s", field, exc)
             payload[field] = default
+    if not isinstance(payload.get("portfolio_settings"), dict):
+        payload["portfolio_settings"] = _default_portfolio_settings()
+    else:
+        merged = dict(_default_portfolio_settings())
+        merged.update(payload.get("portfolio_settings", {}))
+        payload["portfolio_settings"] = merged
+    if not isinstance(payload.get("portfolio_history"), list):
+        payload["portfolio_history"] = []
     return payload
 
 def _sync_workspace() -> None:
@@ -201,6 +232,8 @@ def _sync_workspace() -> None:
             _workspace_meta_key("recent_tickers"): json.dumps(payload["recent_tickers"], ensure_ascii=False),
             _workspace_meta_key("positions"): json.dumps(payload["positions"], ensure_ascii=False),
             _workspace_meta_key("todos"): json.dumps(payload["todos"], ensure_ascii=False),
+            _workspace_meta_key("portfolio_history"): json.dumps(payload["portfolio_history"], ensure_ascii=False),
+            _workspace_meta_key("portfolio_settings"): json.dumps(payload["portfolio_settings"], ensure_ascii=False),
             _workspace_meta_key("updated_at"): datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         }
         _set_cache_metadata_many(store, values)
@@ -215,7 +248,7 @@ def _init_workspace_state():
         stored = _load_workspace_from_store()
     except Exception as exc:
         logger.debug("workspace store load failed: %s", exc)
-    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos"]):
+    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_settings"]):
         local_stored = _safe_json_load(Path(WORKSPACE_FILE), {})
         if isinstance(local_stored, dict) and local_stored:
             stored = local_stored
@@ -224,6 +257,11 @@ def _init_workspace_state():
                 st.session_state["recent_tickers"] = stored.get("recent_tickers", [])
                 st.session_state["positions"] = stored.get("positions", [])
                 st.session_state["todos"] = stored.get("todos", "")
+                st.session_state["portfolio_history"] = stored.get("portfolio_history", [])
+                migrated_settings = dict(_default_portfolio_settings())
+                if isinstance(stored.get("portfolio_settings"), dict):
+                    migrated_settings.update(stored.get("portfolio_settings", {}))
+                st.session_state["portfolio_settings"] = migrated_settings
                 _sync_workspace()
             except Exception as exc:
                 logger.debug("workspace migration failed: %s", exc)
@@ -231,6 +269,11 @@ def _init_workspace_state():
     st.session_state["recent_tickers"] = stored.get("recent_tickers", []) if isinstance(stored, dict) else []
     st.session_state["positions"] = stored.get("positions", []) if isinstance(stored, dict) else []
     st.session_state["todos"] = stored.get("todos", "") if isinstance(stored, dict) else ""
+    st.session_state["portfolio_history"] = stored.get("portfolio_history", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_history", []), list) else []
+    base_settings = dict(_default_portfolio_settings())
+    if isinstance(stored, dict) and isinstance(stored.get("portfolio_settings"), dict):
+        base_settings.update(stored.get("portfolio_settings", {}))
+    st.session_state["portfolio_settings"] = base_settings
     st.session_state["_workspace_initialized"] = True
 
 def _get_private_password_hash() -> str:
@@ -314,7 +357,9 @@ def _upsert_position(position: dict) -> None:
     updated = False
     for idx, existing in enumerate(positions):
         if existing.get("ticker") == ticker:
-            positions[idx] = position
+            merged = dict(existing)
+            merged.update(position)
+            positions[idx] = merged
             updated = True
             break
     if not updated:
@@ -367,20 +412,21 @@ def search_symbol_candidates(query: str):
     fallback = query.upper().replace(" ", "")
     return [{"symbol": fallback, "name": "", "exchange": "", "type": "MANUAL"}] if fallback else []
 
-def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia"):
+def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia", show_quick: bool = True):
     _init_workspace_state()
-    quick = []
-    for source in [st.session_state.get("recent_tickers", []), st.session_state.get("watchlist", []), DEFAULT_FAVORITES]:
-        for ticker in source:
-            if ticker not in quick:
-                quick.append(ticker)
-    quick = quick[:8]
-    if quick:
-        cols = st.columns(min(4, len(quick)))
-        for i, ticker in enumerate(quick):
-            with cols[i % len(cols)]:
-                if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
-                    st.session_state[f"{key_prefix}_query"] = ticker
+    if show_quick:
+        quick = []
+        for source in [st.session_state.get("recent_tickers", []), st.session_state.get("watchlist", []), DEFAULT_FAVORITES]:
+            for ticker in source:
+                if ticker not in quick:
+                    quick.append(ticker)
+        quick = quick[:8]
+        if quick:
+            cols = st.columns(min(4, len(quick)))
+            for i, ticker in enumerate(quick):
+                with cols[i % len(cols)]:
+                    if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
+                        st.session_state[f"{key_prefix}_query"] = ticker
     query = st.text_input(label, value=st.session_state.get(f"{key_prefix}_query", ""), placeholder=placeholder, key=f"{key_prefix}_query")
     query = (query or "").strip()
     if not query:
@@ -554,6 +600,548 @@ def _simple_position_health(position: dict):
     elif not np.isnan(pnl):
         detail = f"{pnl:+.1f}% seit Kauf"
     return {"ticker": ticker, "name": (info or {}).get("shortName", ticker), "status": status, "pnl": pnl, "detail": detail, "price": price}
+
+
+def _safe_float(value, default=np.nan):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+def _get_portfolio_settings() -> dict:
+    _init_workspace_state()
+    settings = dict(_default_portfolio_settings())
+    raw = st.session_state.get("portfolio_settings", {})
+    if isinstance(raw, dict):
+        settings.update(raw)
+    for key, fallback in _default_portfolio_settings().items():
+        try:
+            settings[key] = float(settings.get(key, fallback))
+        except Exception:
+            settings[key] = fallback
+    return settings
+
+def _save_portfolio_settings(settings: dict) -> None:
+    merged = dict(_default_portfolio_settings())
+    if isinstance(settings, dict):
+        merged.update(settings)
+    st.session_state["portfolio_settings"] = merged
+    _sync_workspace()
+
+def _append_portfolio_history_entry(date_value, depot_value, deposit=0.0, withdrawal=0.0, note="") -> None:
+    _init_workspace_state()
+    try:
+        date_str = pd.Timestamp(date_value).strftime("%Y-%m-%d")
+    except Exception:
+        return
+    history = [row for row in st.session_state.get("portfolio_history", []) if str(row.get("date", "")) != date_str]
+    history.append({
+        "date": date_str,
+        "depot_value": float(depot_value or 0),
+        "deposit": float(deposit or 0),
+        "withdrawal": float(withdrawal or 0),
+        "note": str(note or ""),
+    })
+    history = sorted(history, key=lambda row: str(row.get("date", "")))
+    st.session_state["portfolio_history"] = history[-1500:]
+    _sync_workspace()
+
+def _remove_portfolio_history_entry(date_value) -> None:
+    _init_workspace_state()
+    date_str = str(date_value or "")
+    st.session_state["portfolio_history"] = [row for row in st.session_state.get("portfolio_history", []) if str(row.get("date", "")) != date_str]
+    _sync_workspace()
+
+def _position_entry_price(position: dict) -> float:
+    return _safe_float(position.get("buy_price_usd") or position.get("buy_price"), np.nan)
+
+def _position_stop_pct(position: dict) -> float:
+    val = _safe_float(position.get("stop_pct"), np.nan)
+    return val if not np.isnan(val) and val > 0 else np.nan
+
+def _position_stop_price(position: dict) -> float:
+    manual = _safe_float(position.get("stop_price"), np.nan)
+    if not np.isnan(manual) and manual > 0:
+        return manual
+    entry = _position_entry_price(position)
+    stop_pct = _position_stop_pct(position)
+    if entry > 0 and not np.isnan(stop_pct):
+        return entry * (1 - stop_pct / 100)
+    return np.nan
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _portfolio_symbol_metrics(ticker: str) -> dict:
+    ticker = str(ticker or "").upper().strip()
+    if not ticker:
+        return {}
+    df, info, *_ = load_stock_full(ticker)
+    if df is None or len(df) < 30:
+        return {"ticker": ticker, "price": np.nan, "atr_pct": np.nan, "beta": np.nan, "name": ticker}
+    latest_price = _safe_float(df["Close"].iloc[-1], np.nan)
+    atr_val = _atr(df, 21).iloc[-1] if len(df) >= 21 else np.nan
+    atr_pct = (atr_val / latest_price * 100) if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val) else np.nan
+    beta = _safe_float((info or {}).get("beta"), np.nan)
+    return {
+        "ticker": ticker,
+        "name": (info or {}).get("shortName", ticker),
+        "sector": (info or {}).get("sector", ""),
+        "industry": (info or {}).get("industry", ""),
+        "price": latest_price,
+        "atr_pct": atr_pct,
+        "beta": beta,
+    }
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _sp500_atr_reference(lookback_days: int = 180) -> float:
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    df = _dl("^GSPC", start, end)
+    if df is None or len(df) < 30:
+        return np.nan
+    latest_price = _safe_float(df["Close"].iloc[-1], np.nan)
+    atr_val = _atr(df, 21).iloc[-1]
+    return (atr_val / latest_price * 100) if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val) else np.nan
+
+def _portfolio_positions_only(positions: list[dict]) -> list[dict]:
+    out = []
+    for pos in positions or []:
+        shares = _safe_float((pos or {}).get("shares"), 0.0)
+        if shares > 0:
+            out.append(pos)
+    return out
+
+def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, target_risk_contribution: float = 0.20) -> tuple[pd.DataFrame, dict]:
+    tracked = _portfolio_positions_only(positions)
+    preliminary_rows = []
+    total_value = max(float(cash_balance or 0), 0.0)
+    for pos in tracked:
+        ticker = str((pos or {}).get("ticker", "")).upper().strip()
+        shares = _safe_float(pos.get("shares"), 0.0)
+        if not ticker or shares <= 0:
+            continue
+        metrics = _portfolio_symbol_metrics(ticker)
+        price = _safe_float(metrics.get("price"), np.nan)
+        entry = _position_entry_price(pos)
+        current_value = shares * price if not np.isnan(price) else np.nan
+        if not np.isnan(current_value):
+            total_value += current_value
+        preliminary_rows.append({
+            "ticker": ticker,
+            "name": metrics.get("name", ticker),
+            "sector": metrics.get("sector", ""),
+            "industry": metrics.get("industry", ""),
+            "shares": shares,
+            "entry": entry,
+            "current_price": price,
+            "current_value": current_value,
+            "buy_date": pos.get("buy_date", ""),
+            "currency": pos.get("currency", "USD"),
+            "note": pos.get("note", ""),
+            "stop_pct": _position_stop_pct(pos),
+            "stop_price": _position_stop_price(pos),
+            "atr_pct": _safe_float(metrics.get("atr_pct"), np.nan),
+            "beta": _safe_float(metrics.get("beta"), np.nan),
+        })
+
+    total_value = total_value if total_value > 0 else np.nan
+    spx_atr_pct = _sp500_atr_reference()
+    rows = []
+    for row in preliminary_rows:
+        weight = (row["current_value"] / total_value) if total_value and not np.isnan(total_value) and not np.isnan(row["current_value"]) else np.nan
+        pnl_pct = ((row["current_price"] / row["entry"]) - 1) * 100 if row["entry"] and row["entry"] > 0 and not np.isnan(row["current_price"]) else np.nan
+        pnl_abs = (row["current_price"] - row["entry"]) * row["shares"] if row["entry"] and row["entry"] > 0 and not np.isnan(row["current_price"]) else np.nan
+        score = np.nan
+        if not np.isnan(row["beta"]) and not np.isnan(row["atr_pct"]) and not np.isnan(spx_atr_pct) and spx_atr_pct > 0:
+            score = 0.60 * row["beta"] + 0.40 * (row["atr_pct"] / spx_atr_pct)
+        risk_contribution = weight * score if not np.isnan(weight) and not np.isnan(score) else np.nan
+        max_weight = (target_risk_contribution / score) if not np.isnan(score) and score > 0 else np.nan
+        max_position_value = total_value * max_weight if not np.isnan(total_value) and not np.isnan(max_weight) else np.nan
+        stop_distance_pct = ((row["current_price"] / row["stop_price"]) - 1) * 100 if not np.isnan(row["current_price"]) and not np.isnan(row["stop_price"]) and row["stop_price"] > 0 else np.nan
+        position_risk_abs = row["shares"] * max(row["current_price"] - row["stop_price"], 0) if not np.isnan(row["current_price"]) and not np.isnan(row["stop_price"]) else np.nan
+        rows.append({
+            **row,
+            "weight": weight,
+            "pnl_pct": pnl_pct,
+            "pnl_abs": pnl_abs,
+            "score": score,
+            "risk_contribution": risk_contribution,
+            "max_weight": max_weight,
+            "max_position_value": max_position_value,
+            "stop_distance_pct": stop_distance_pct,
+            "position_risk_abs": position_risk_abs,
+        })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        summary = {
+            "tracked_count": 0,
+            "total_value": max(float(cash_balance or 0), 0.0),
+            "invested_value": 0.0,
+            "cash_balance": max(float(cash_balance or 0), 0.0),
+            "cash_ratio": 1.0 if float(cash_balance or 0) > 0 else 0.0,
+            "portfolio_atr_pct": np.nan,
+            "beta_balancer": np.nan,
+            "max_depot_loss_pct": np.nan,
+            "spx_atr_pct": spx_atr_pct,
+        }
+        return df, summary
+
+    invested_value = float(df["current_value"].sum(skipna=True))
+    cash_value = max(float(cash_balance or 0), 0.0)
+    total_value = invested_value + cash_value
+    portfolio_atr_pct = float((df["weight"] * df["atr_pct"]).sum(skipna=True))
+    beta_balancer = float(df["risk_contribution"].sum(skipna=True))
+    valid_risks = df["position_risk_abs"].dropna()
+    max_depot_loss_pct = (float(valid_risks.sum()) / total_value * 100) if total_value > 0 and len(valid_risks) else np.nan
+    summary = {
+        "tracked_count": int(len(df)),
+        "total_value": total_value,
+        "invested_value": invested_value,
+        "cash_balance": cash_value,
+        "cash_ratio": (cash_value / total_value) if total_value > 0 else np.nan,
+        "portfolio_atr_pct": portfolio_atr_pct,
+        "beta_balancer": beta_balancer,
+        "max_depot_loss_pct": max_depot_loss_pct,
+        "spx_atr_pct": spx_atr_pct,
+    }
+    return df.sort_values("pnl_pct", ascending=False, na_position="last"), summary
+
+def _portfolio_health_messages(summary: dict, positions_df: pd.DataFrame, settings: dict) -> list[tuple[str, str]]:
+    messages = []
+    count = int(summary.get("tracked_count", 0))
+    if count < 8:
+        messages.append(("warning", f"Du hältst aktuell {count} echte Depotpositionen. Kapitel 7.2 empfiehlt meist einen Korridor von 8 bis 12 Aktien."))
+    elif count > 12:
+        messages.append(("warning", f"Du hältst aktuell {count} Positionen. Das liegt über dem empfohlenen Korridor von 8 bis 12 Aktien und macht das Depot schwerer steuerbar."))
+    else:
+        messages.append(("success", f"Mit {count} Positionen liegst du im empfohlenen Korridor von 8 bis 12 Aktien."))
+
+    max_loss = _safe_float(summary.get("max_depot_loss_pct"), np.nan)
+    low = _safe_float(settings.get("max_depot_loss_low"), 8.0)
+    high = _safe_float(settings.get("max_depot_loss_high"), 12.0)
+    if not np.isnan(max_loss):
+        if max_loss < low:
+            messages.append(("info", f"Der modellierte maximale Depotverlust liegt bei {max_loss:.1f}%. Das ist defensiver als dein Zielkorridor von {low:.0f} bis {high:.0f}%."))
+        elif max_loss > high:
+            messages.append(("warning", f"Der modellierte maximale Depotverlust liegt bei {max_loss:.1f}% und damit über deinem Zielkorridor von {low:.0f} bis {high:.0f}%."))
+        else:
+            messages.append(("success", f"Der modellierte maximale Depotverlust liegt mit {max_loss:.1f}% im Zielkorridor von {low:.0f} bis {high:.0f}%."))
+
+    atr_pct = _safe_float(summary.get("portfolio_atr_pct"), np.nan)
+    if not np.isnan(atr_pct):
+        if atr_pct > 4:
+            messages.append(("warning", f"Deine Portfolio ATR liegt bei {atr_pct:.2f}%. Im Buch gilt ein Wert über 4% als sehr aggressiv."))
+        elif atr_pct >= 2.5:
+            messages.append(("info", f"Deine Portfolio ATR liegt bei {atr_pct:.2f}%. Das ist ordentlich Bewegung im Depot, aber noch kontrollierbar."))
+        else:
+            messages.append(("success", f"Deine Portfolio ATR liegt bei {atr_pct:.2f}%. Das wirkt aktuell vergleichsweise ruhig."))
+
+    balancer = _safe_float(summary.get("beta_balancer"), np.nan)
+    if not np.isnan(balancer):
+        if balancer >= 2.5:
+            messages.append(("warning", f"Dein Beta Balancer liegt bei {balancer:.2f}. Das entspricht einem sehr dynamischen, schwankungsintensiven Depot."))
+        elif balancer >= 1.5:
+            messages.append(("info", f"Dein Beta Balancer liegt bei {balancer:.2f}. Das ist offensiv, aber noch steuerbar."))
+        else:
+            messages.append(("success", f"Dein Beta Balancer liegt bei {balancer:.2f}. Das ist näher am Marktrisiko des S&P 500."))
+
+    target_rc = _safe_float(settings.get("target_risk_contribution"), 0.20)
+    if not positions_df.empty and "risk_contribution" in positions_df:
+        over = positions_df[positions_df["risk_contribution"] > target_rc]
+        if len(over):
+            tickers = ", ".join(over["ticker"].head(4).tolist())
+            messages.append(("warning", f"Diese Positionen liegen über dem Ziel-Risikobeitrag von {target_rc:.2f}: {tickers}."))
+    return messages
+
+def _build_portfolio_curve(history: list[dict]) -> pd.DataFrame:
+    if not history:
+        return pd.DataFrame()
+    hist = pd.DataFrame(history)
+    if hist.empty or "date" not in hist:
+        return pd.DataFrame()
+    hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+    hist = hist.dropna(subset=["date"]).sort_values("date").drop_duplicates(subset=["date"], keep="last")
+    if hist.empty:
+        return pd.DataFrame()
+    for col in ["depot_value", "deposit", "withdrawal"]:
+        hist[col] = pd.to_numeric(hist.get(col, 0), errors="coerce").fillna(0.0)
+
+    index_values = [100.0]
+    for idx in range(1, len(hist)):
+        prev_value = float(hist.iloc[idx - 1]["depot_value"])
+        current_value = float(hist.iloc[idx]["depot_value"])
+        deposit = float(hist.iloc[idx]["deposit"])
+        withdrawal = float(hist.iloc[idx]["withdrawal"])
+        if prev_value <= 0:
+            day_return = 0.0
+        else:
+            adjusted_profit = current_value - prev_value - deposit + withdrawal
+            day_return = adjusted_profit / prev_value
+        index_values.append(index_values[-1] * (1 + day_return))
+    hist["portfolio_index"] = index_values
+
+    bench = _dl("^GSPC", hist["date"].min() - timedelta(days=7), hist["date"].max() + timedelta(days=3))
+    if bench is not None and len(bench):
+        bench_series = bench["Close"].copy()
+        bench_series.index = pd.to_datetime(bench_series.index).normalize()
+        aligned = bench_series.reindex(hist["date"].dt.normalize(), method="ffill")
+        hist["sp500_close"] = aligned.values
+        first_valid = hist["sp500_close"].dropna()
+        if len(first_valid):
+            start_val = float(first_valid.iloc[0])
+            hist["sp500_index"] = hist["sp500_close"] / start_val * 100
+        else:
+            hist["sp500_index"] = np.nan
+    else:
+        hist["sp500_index"] = np.nan
+    return hist
+
+def _render_portfolio_72_area():
+    _init_workspace_state()
+    settings = _get_portfolio_settings()
+    all_positions = st.session_state.get("positions", [])
+    snapshot_df, summary = _build_portfolio_snapshot(
+        all_positions,
+        cash_balance=_safe_float(settings.get("cash_balance"), 0.0),
+        target_risk_contribution=_safe_float(settings.get("target_risk_contribution"), 0.20),
+    )
+    tracked_positions = _portfolio_positions_only(all_positions)
+    current_total_value = _safe_float(summary.get("total_value"), 0.0)
+
+    st.markdown("### 💼 Depot nach Kapitel 7.2")
+    st.caption("Umgesetzt sind der Korridor von 8 bis 12 Aktien, die Positionsgröße über den maximalen Verlust, die Depotkurve mit Geldflüssen, die Einzelperformance, das ATR gewichtete Portfolio, der Beta Balancer und der maximale Depotverlust.")
+
+    set_cols = st.columns(5)
+    with set_cols[0]:
+        cash_balance = st.number_input("Cash / freie Liquidität", min_value=0.0, value=float(settings.get("cash_balance", 0.0)), step=100.0, key="pf_cash_balance")
+    with set_cols[1]:
+        risk_per_position_pct = st.number_input("Max. Verlust je Idee %", min_value=0.1, max_value=5.0, value=float(settings.get("risk_per_position_pct", 1.0)), step=0.1, key="pf_risk_pct")
+    with set_cols[2]:
+        target_risk_contribution = st.number_input("Ziel Risikobeitrag", min_value=0.05, max_value=0.50, value=float(settings.get("target_risk_contribution", 0.20)), step=0.01, key="pf_target_rc")
+    with set_cols[3]:
+        max_loss_low = st.number_input("Untergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0, value=float(settings.get("max_depot_loss_low", 8.0)), step=0.5, key="pf_max_loss_low")
+    with set_cols[4]:
+        max_loss_high = st.number_input("Obergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0, value=float(settings.get("max_depot_loss_high", 12.0)), step=0.5, key="pf_max_loss_high")
+    if st.button("Portfolio-Regler speichern", use_container_width=True, key="pf_save_settings"):
+        _save_portfolio_settings({
+            "cash_balance": float(cash_balance),
+            "risk_per_position_pct": float(risk_per_position_pct),
+            "target_risk_contribution": float(target_risk_contribution),
+            "max_depot_loss_low": float(min(max_loss_low, max_loss_high)),
+            "max_depot_loss_high": float(max(max_loss_low, max_loss_high)),
+        })
+        st.success("Portfolio-Regler gespeichert.")
+        st.rerun()
+
+    edit_col, calc_col = st.columns([1.15, 1.0])
+    with edit_col:
+        st.markdown("#### Position erfassen oder aktualisieren")
+        pos_ticker = _render_ticker_picker("portfolio_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
+        selected_pos = next((p for p in all_positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
+        entry_default = float((selected_pos or {}).get("buy_price", 1.0) or 1.0)
+        shares_default = float((selected_pos or {}).get("shares", 0.0) or 0.0)
+        stop_pct_default = float((selected_pos or {}).get("stop_pct", 7.0) or 7.0)
+        price_col, shares_col, stop_col = st.columns(3)
+        with price_col:
+            buy_price = st.number_input("Einstand", min_value=0.01, value=entry_default, step=0.01, key="pf_buy_price")
+        with shares_col:
+            shares = st.number_input("Stückzahl", min_value=0.0, value=shares_default, step=1.0, key="pf_shares")
+        with stop_col:
+            stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=stop_pct_default, step=0.1, key="pf_stop_pct")
+        date_col, curr_col, note_col = st.columns([1, 0.8, 1.4])
+        with date_col:
+            try:
+                default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.utcnow().date()
+            except Exception:
+                default_date = datetime.utcnow().date()
+            buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
+        with curr_col:
+            curr_default = (selected_pos or {}).get("currency", "USD")
+            currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if curr_default == "USD" else 1, key="pf_currency")
+        with note_col:
+            note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="pf_note")
+
+        stop_price_preview = float(buy_price) * (1 - float(stop_pct) / 100)
+        st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
+
+        if st.button("Depotposition speichern", use_container_width=True, key="pf_save_position", disabled=not bool(pos_ticker)):
+            buy_price_usd = float(buy_price)
+            eur_usd_rate = None
+            if currency == "EUR":
+                try:
+                    fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
+                    if fx is not None and len(fx) > 0:
+                        eur_usd_rate = float(fx["Close"].iloc[-1])
+                        buy_price_usd = float(buy_price) * eur_usd_rate
+                except Exception:
+                    eur_usd_rate = None
+                if eur_usd_rate is None:
+                    buy_price_usd = float(buy_price) * 1.08
+            _upsert_position({
+                "ticker": pos_ticker,
+                "buy_price": float(buy_price),
+                "buy_price_usd": float(buy_price_usd),
+                "buy_date": str(buy_date),
+                "currency": currency,
+                "shares": float(shares),
+                "stop_pct": float(stop_pct),
+                "stop_price": float(stop_price_preview),
+                "note": note,
+            })
+            st.success(f"{pos_ticker} gespeichert.")
+            st.rerun()
+
+    with calc_col:
+        st.markdown("#### Positionsgrößen-Rechner")
+        st.caption("Kapitel 7.2 empfiehlt, pro Idee meist nicht mehr als 1% des Depots zu riskieren.")
+        calculator_entry = _safe_float(st.session_state.get("pf_buy_price"), np.nan)
+        calculator_stop_pct = _safe_float(st.session_state.get("pf_stop_pct"), np.nan)
+        risk_budget = current_total_value * (float(risk_per_position_pct) / 100) if current_total_value > 0 else np.nan
+        risk_per_share = calculator_entry * (calculator_stop_pct / 100) if not np.isnan(calculator_entry) and not np.isnan(calculator_stop_pct) else np.nan
+        max_shares = int(np.floor(risk_budget / risk_per_share)) if not np.isnan(risk_budget) and not np.isnan(risk_per_share) and risk_per_share > 0 else 0
+        max_position_value = max_shares * calculator_entry if max_shares > 0 and not np.isnan(calculator_entry) else np.nan
+        st.metric("Modelliertes Depot", f"{current_total_value:,.0f}" if current_total_value > 0 else "—")
+        st.metric("Risikobudget je Idee", f"{risk_budget:,.0f}" if not np.isnan(risk_budget) else "—")
+        st.metric("Risiko pro Aktie", f"{risk_per_share:,.2f}" if not np.isnan(risk_per_share) else "—")
+        st.metric("Maximale Stückzahl", f"{max_shares:,}" if max_shares else "—")
+        st.metric("Maximale Positionsgröße", f"{max_position_value:,.0f}" if not np.isnan(max_position_value) else "—")
+
+        if pos_ticker:
+            metrics = _portfolio_symbol_metrics(pos_ticker)
+            score = np.nan
+            if not np.isnan(_safe_float(metrics.get("beta"), np.nan)) and not np.isnan(_safe_float(metrics.get("atr_pct"), np.nan)) and not np.isnan(_safe_float(summary.get("spx_atr_pct"), np.nan)) and _safe_float(summary.get("spx_atr_pct"), np.nan) > 0:
+                score = 0.60 * _safe_float(metrics.get("beta"), np.nan) + 0.40 * (_safe_float(metrics.get("atr_pct"), np.nan) / _safe_float(summary.get("spx_atr_pct"), np.nan))
+            balancer_weight = (float(target_risk_contribution) / score) if not np.isnan(score) and score > 0 else np.nan
+            balancer_value = current_total_value * balancer_weight if current_total_value > 0 and not np.isnan(balancer_weight) else np.nan
+            balancer_shares = int(np.floor(balancer_value / _safe_float(metrics.get("price"), np.nan))) if not np.isnan(balancer_value) and _safe_float(metrics.get("price"), np.nan) > 0 else 0
+            st.markdown("---")
+            st.metric("ATR % der Aktie", f"{_safe_float(metrics.get('atr_pct'), np.nan):.2f}%" if not np.isnan(_safe_float(metrics.get("atr_pct"), np.nan)) else "—")
+            st.metric("Beta", f"{_safe_float(metrics.get('beta'), np.nan):.2f}" if not np.isnan(_safe_float(metrics.get("beta"), np.nan)) else "—")
+            st.metric("Beta-Balancer-Score", f"{score:.2f}" if not np.isnan(score) else "—")
+            st.metric("Max. Gewicht via Balancer", f"{balancer_weight*100:.1f}%" if not np.isnan(balancer_weight) else "—")
+            st.metric("Max. Stück via Balancer", f"{balancer_shares:,}" if balancer_shares else "—")
+
+    metric_cols = st.columns(6)
+    metric_map = [
+        ("Aktive Depotpositionen", f"{int(summary.get('tracked_count', 0))}"),
+        ("Depotwert", f"{summary.get('total_value', 0):,.0f}" if summary.get("total_value", 0) else "—"),
+        ("Cashquote", f"{summary.get('cash_ratio', 0)*100:.1f}%" if not np.isnan(_safe_float(summary.get("cash_ratio"), np.nan)) else "—"),
+        ("Portfolio ATR", f"{summary.get('portfolio_atr_pct', np.nan):.2f}%" if not np.isnan(_safe_float(summary.get("portfolio_atr_pct"), np.nan)) else "—"),
+        ("Beta Balancer", f"{summary.get('beta_balancer', np.nan):.2f}" if not np.isnan(_safe_float(summary.get("beta_balancer"), np.nan)) else "—"),
+        ("Max. Depotverlust", f"{summary.get('max_depot_loss_pct', np.nan):.2f}%" if not np.isnan(_safe_float(summary.get("max_depot_loss_pct"), np.nan)) else "—"),
+    ]
+    for col, (label, value) in zip(metric_cols, metric_map):
+        with col:
+            st.metric(label, value)
+
+    for level, msg in _portfolio_health_messages(summary, snapshot_df, {
+        "target_risk_contribution": float(target_risk_contribution),
+        "max_depot_loss_low": float(max_loss_low),
+        "max_depot_loss_high": float(max_loss_high),
+    }):
+        getattr(st, level)(msg)
+
+    if not snapshot_df.empty:
+        display_df = snapshot_df.copy()
+        display_df["Gewicht %"] = display_df["weight"] * 100
+        display_df["P&L %"] = display_df["pnl_pct"]
+        display_df["P&L $"] = display_df["pnl_abs"]
+        display_df["ATR %"] = display_df["atr_pct"]
+        display_df["Score"] = display_df["score"]
+        display_df["Risikobeitrag"] = display_df["risk_contribution"]
+        display_df["Max. Gewicht %"] = display_df["max_weight"] * 100
+        display_df["Max. Wert"] = display_df["max_position_value"]
+        display_df["Abstand Stop %"] = display_df["stop_distance_pct"]
+        display_df["Positionsrisiko"] = display_df["position_risk_abs"]
+        display_df = display_df[[
+            "ticker", "shares", "entry", "current_price", "current_value", "Gewicht %", "stop_pct", "stop_price",
+            "Abstand Stop %", "P&L %", "P&L $", "ATR %", "beta", "Score", "Risikobeitrag", "Max. Gewicht %", "Max. Wert", "Positionsrisiko", "note"
+        ]].rename(columns={
+            "ticker": "Ticker",
+            "shares": "Stück",
+            "entry": "Einstand",
+            "current_price": "Aktuell",
+            "current_value": "Wert",
+            "stop_pct": "Stopp %",
+            "stop_price": "Stoppkurs",
+            "beta": "Beta",
+            "note": "Notiz",
+        })
+        st.markdown("#### Einzelperformance und Risiko-Ranking")
+        st.dataframe(display_df.round(2), use_container_width=True, hide_index=True)
+
+        worst = snapshot_df.sort_values("pnl_pct", ascending=True, na_position="last").head(3)[["ticker", "pnl_pct", "risk_contribution"]].copy()
+        if len(worst):
+            worst["pnl_pct"] = worst["pnl_pct"].round(2)
+            worst["risk_contribution"] = worst["risk_contribution"].round(3)
+            st.markdown("#### Verkaufskandidaten nach relativer Schwäche")
+            st.dataframe(worst.rename(columns={"ticker": "Ticker", "pnl_pct": "P&L %", "risk_contribution": "Risikobeitrag"}), use_container_width=True, hide_index=True)
+    else:
+        st.info("Für das Depotcockpit werden nur Positionen mit Stückzahl größer 0 berücksichtigt.")
+
+    st.markdown("#### Depotkurve als tägliches Cockpit")
+    history = st.session_state.get("portfolio_history", [])
+    hist_col1, hist_col2, hist_col3, hist_col4 = st.columns([1, 1, 1, 1.3])
+    with hist_col1:
+        snapshot_date = st.date_input("Datum", value=datetime.utcnow().date(), key="pf_hist_date")
+    with hist_col2:
+        snapshot_value = st.number_input("Depotwert", min_value=0.0, value=float(current_total_value or 0.0), step=100.0, key="pf_hist_value")
+    with hist_col3:
+        snapshot_deposit = st.number_input("Einzahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_deposit")
+    with hist_col4:
+        snapshot_withdrawal = st.number_input("Auszahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_withdrawal")
+    snapshot_note = st.text_input("Notiz zur Tageszeile", value="", key="pf_hist_note")
+    act_hist1, act_hist2 = st.columns(2)
+    with act_hist1:
+        if st.button("Tageszeile speichern", use_container_width=True, key="pf_hist_save"):
+            _append_portfolio_history_entry(snapshot_date, snapshot_value, snapshot_deposit, snapshot_withdrawal, snapshot_note)
+            st.success("Tageszeile gespeichert.")
+            st.rerun()
+    with act_hist2:
+        if st.button("Heutigen Depotwert übernehmen", use_container_width=True, key="pf_hist_take_today", disabled=not bool(current_total_value)):
+            _append_portfolio_history_entry(datetime.utcnow().date(), current_total_value, 0.0, 0.0, "Automatisch aus Depot übernommen")
+            st.success("Heutiger Depotwert übernommen.")
+            st.rerun()
+
+    curve_df = _build_portfolio_curve(history)
+    if not curve_df.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["portfolio_index"], mode="lines+markers", name="Depotindex"))
+        if "sp500_index" in curve_df and curve_df["sp500_index"].notna().any():
+            fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["sp500_index"], mode="lines+markers", name="S&P 500 Index"))
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0f172a",
+            plot_bgcolor="#0f172a",
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
+            xaxis=dict(title="", gridcolor="#1e293b"),
+        )
+        st.plotly_chart(fig, use_container_width=True, key="pf_curve_chart")
+        hist_display = curve_df[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "sp500_index", "note"]].copy()
+        hist_display["date"] = hist_display["date"].dt.strftime("%Y-%m-%d")
+        hist_display = hist_display.rename(columns={
+            "date": "Datum",
+            "depot_value": "Depotwert",
+            "deposit": "Einzahlung",
+            "withdrawal": "Auszahlung",
+            "portfolio_index": "Depotindex",
+            "sp500_index": "S&P 500",
+            "note": "Notiz",
+        })
+        st.dataframe(hist_display.round(2), use_container_width=True, hide_index=True)
+        delete_date = st.selectbox("Tageszeile löschen", options=[""] + hist_display["Datum"].tolist(), key="pf_hist_delete_date")
+        if delete_date and st.button("Tageszeile löschen", use_container_width=True, key="pf_hist_delete_btn"):
+            _remove_portfolio_history_entry(delete_date)
+            st.success("Tageszeile gelöscht.")
+            st.rerun()
+    else:
+        st.info("Lege mindestens zwei Tageszeilen an, damit die Depotkurve gegen den S&P 500 sichtbar wird.")
+
 
 def _render_workspace_sidebar():
     _init_workspace_state()
@@ -3585,7 +4173,7 @@ def _tab_aktienbewertung():
     st.markdown("### 📋 Aktienbewertung")
     st.caption("Einzelaktien-Check mit komfortabler Suche, Watchlist und schneller Einordnung für Fundamentaldaten, Technik und Chartverhalten.")
 
-    ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia")
+    ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
 
@@ -3770,25 +4358,14 @@ def _tab_aktienbewertung():
 def _tab_nach_kauf():
     _init_workspace_state()
     st.markdown("### 🎯 Nach dem Kauf")
-    st.caption("Überwache bestehende Positionen. Du kannst entweder eine gespeicherte Position wählen oder alles manuell eingeben.")
+    st.caption("Überwache bestehende Positionen ohne Vorauswahl. Du gibst den Ticker direkt ein und vorhandene Depotdaten werden erst danach übernommen.")
 
     private_ok = _is_private_unlocked()
     saved_positions = st.session_state.get("positions", []) if private_ok else []
     if not private_ok:
         st.info("Dein persönliches Depot ist gesperrt. Du kannst diesen Tab manuell nutzen oder den privaten Bereich entsperren, um gespeicherte Positionen zu laden und zu speichern.")
-    selected_saved = ""
-    if saved_positions:
-        selected_saved = st.selectbox(
-            "Gespeicherte Position wählen",
-            options=[""] + [p.get("ticker", "") for p in saved_positions],
-            format_func=lambda x: "Manuell eingeben" if x == "" else x,
-            key="nk_saved_pos",
-        )
-
-    default_ticker = selected_saved or st.session_state.get("nachkauf_ticker_query", "")
-    if default_ticker:
-        st.session_state["nachkauf_ticker_query"] = default_ticker
-    ticker = _render_ticker_picker("nachkauf_ticker", "Ticker oder Firmenname suchen", "NVDA oder Nvidia")
+    st.caption("Keine Vorauswahl mehr. Gib den Ticker direkt ein und die Felder werden nur dann mit gespeicherten Daten befüllt, wenn die Position bereits existiert.")
+    ticker = _render_ticker_picker("nachkauf_ticker", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
 
@@ -4575,6 +5152,8 @@ def _tab_marktanalyse():
 # ===== Main entry point =====
 
 
+
+
 def _tab_mein_bereich():
     _init_workspace_state()
     if not _render_private_gate("🔐 Mein Bereich"):
@@ -4593,112 +5172,78 @@ def _tab_mein_bereich():
             _lock_private_area()
             st.rerun()
 
-    left, right = st.columns([1.05, 1.45])
+    area_tab1, area_tab2 = st.tabs(["📝 Arbeitsbereich", "💼 Depot 7.2"])
 
-    with left:
-        st.markdown('<div class="workspace-card"><div class="card-label">Watchlist</div>', unsafe_allow_html=True)
-        watchlist = st.session_state.get("watchlist", [])
-        if watchlist:
-            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist) + '</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
-        add_watch = st.text_input("Ticker zur Watchlist hinzufügen", value="", placeholder="NVDA", key="watch_add_input").upper().strip()
-        col_add, col_remove = st.columns(2)
-        with col_add:
-            if st.button("Hinzufügen", use_container_width=True, key="watch_add_btn") and add_watch:
-                _add_watchlist_ticker(add_watch)
-                st.rerun()
-        with col_remove:
+    with area_tab1:
+        left, right = st.columns([1.0, 1.0])
+
+        with left:
+            st.markdown('<div class="workspace-card"><div class="card-label">Watchlist</div>', unsafe_allow_html=True)
+            watchlist = st.session_state.get("watchlist", [])
             if watchlist:
-                rem = st.selectbox("Entfernen", options=watchlist, key="watch_remove_sel")
-                if st.button("Entfernen", use_container_width=True, key="watch_remove_btn"):
-                    _remove_watchlist_ticker(rem)
+                st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist) + '</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
+            add_watch = st.text_input("Ticker zur Watchlist hinzufügen", value="", placeholder="NVDA", key="watch_add_input").upper().strip()
+            col_add, col_remove = st.columns(2)
+            with col_add:
+                if st.button("Hinzufügen", use_container_width=True, key="watch_add_btn") and add_watch:
+                    _add_watchlist_ticker(add_watch)
                     st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
+            with col_remove:
+                if watchlist:
+                    rem = st.selectbox("Entfernen", options=watchlist, key="watch_remove_sel")
+                    if st.button("Entfernen", use_container_width=True, key="watch_remove_btn"):
+                        _remove_watchlist_ticker(rem)
+                        st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        st.markdown('<div class="workspace-card"><div class="card-label">Heutige To-dos</div>', unsafe_allow_html=True)
-        todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=180, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
-        if st.button("To-dos speichern", use_container_width=True, key="save_todos"):
-            st.session_state["todos"] = todos
-            _sync_workspace()
-            st.success("To-dos gespeichert.")
-        st.markdown('<div class="workspace-note">Ideal für Tagesplan, offene Fragen und Beobachtungsliste.</div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown('<div class="workspace-card"><div class="card-label">Heutige To-dos</div>', unsafe_allow_html=True)
+            todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=220, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
+            if st.button("To-dos speichern", use_container_width=True, key="save_todos"):
+                st.session_state["todos"] = todos
+                _sync_workspace()
+                st.success("To-dos gespeichert.")
+            st.markdown('<div class="workspace-note">Ideal für Tagesplan, offene Fragen und Beobachtungsliste.</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        st.markdown('<div class="workspace-card"><div class="card-label">Schnellzugriff</div>', unsafe_allow_html=True)
-        recents = st.session_state.get("recent_tickers", [])
-        if recents:
-            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in recents[:10]) + '</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="workspace-note">Noch keine zuletzt genutzten Ticker.</div>', unsafe_allow_html=True)
-        st.markdown('<div class="workspace-note">Nutze diese Liste als tägliches Cockpit für deine wichtigsten Namen.</div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+        with right:
+            st.markdown('<div class="workspace-card"><div class="card-label">Schnellzugriff</div>', unsafe_allow_html=True)
+            recents = st.session_state.get("recent_tickers", [])
+            if recents:
+                st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in recents[:12]) + '</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="workspace-note">Noch keine zuletzt genutzten Ticker.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="workspace-note">Nutze diese Liste als tägliches Cockpit für deine wichtigsten Namen.</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    with right:
-        st.markdown('<div class="workspace-card"><div class="card-label">Privates Depot</div>', unsafe_allow_html=True)
-        pos_ticker = _render_ticker_picker("private_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia")
-        positions = st.session_state.get("positions", [])
-        selected_pos = next((p for p in positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
-        price_col, date_col, curr_col, note_col = st.columns([1, 1, 0.8, 1.2])
-        with price_col:
-            buy_price = st.number_input("Einstand", min_value=0.01, value=float(selected_pos.get("buy_price", 1.0)) if selected_pos else 1.0, step=0.01, key="private_buy_price")
-        with date_col:
-            try:
-                default_date = pd.Timestamp(selected_pos.get("buy_date")).date() if selected_pos and selected_pos.get("buy_date") else datetime.utcnow().date()
-            except Exception:
-                default_date = datetime.utcnow().date()
-            buy_date = st.date_input("Kaufdatum", value=default_date, key="private_buy_date")
-        with curr_col:
-            curr_default = (selected_pos or {}).get("currency", "USD")
-            currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if curr_default == "USD" else 1, key="private_currency")
-        with note_col:
-            note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="private_note")
-        if st.button("Depotposition speichern", use_container_width=True, key="private_save_position", disabled=not bool(pos_ticker)):
-            buy_price_usd = float(buy_price)
-            eur_usd_rate = None
-            if currency == "EUR":
-                try:
-                    fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
-                    if fx is not None and len(fx) > 0:
-                        eur_usd_rate = float(fx["Close"].iloc[-1])
-                        buy_price_usd = float(buy_price) * eur_usd_rate
-                except Exception:
-                    eur_usd_rate = None
-                if eur_usd_rate is None:
-                    buy_price_usd = float(buy_price) * 1.08
-            _upsert_position({
-                "ticker": pos_ticker,
-                "buy_price": float(buy_price),
-                "buy_price_usd": float(buy_price_usd),
-                "buy_date": str(buy_date),
-                "currency": currency,
-                "note": note,
-            })
-            st.success(f"{pos_ticker} gespeichert.")
-            st.rerun()
+            st.markdown('<div class="workspace-card"><div class="card-label">Gespeicherte Positionen</div>', unsafe_allow_html=True)
+            positions = st.session_state.get("positions", [])
+            if positions:
+                rows = []
+                for pos in positions[:25]:
+                    health = _simple_position_health(pos)
+                    rows.append({
+                        "Ticker": pos.get("ticker", ""),
+                        "Stück": _safe_float(pos.get("shares"), 0.0),
+                        "Kaufdatum": pos.get("buy_date", ""),
+                        "Einstand": pos.get("buy_price", np.nan),
+                        "Währung": pos.get("currency", "USD"),
+                        "Status": health.get("status", "") if health else "",
+                        "P&L %": round(float(health["pnl"]), 2) if health and health.get("pnl") is not None and not np.isnan(health.get("pnl")) else np.nan,
+                        "Notiz": pos.get("note", ""),
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                remove_pos = st.selectbox("Position entfernen", options=[""] + [p.get("ticker", "") for p in positions], key="pos_remove_sel")
+                if remove_pos and st.button("Position löschen", use_container_width=True, key="pos_remove_btn"):
+                    _remove_position(remove_pos)
+                    st.rerun()
+            else:
+                st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Reale Depotpositionen mit Stückzahl pflegst du im Tab „Depot 7.2“.</div>', unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        if positions:
-            rows = []
-            for pos in positions[:20]:
-                health = _simple_position_health(pos)
-                rows.append({
-                    "Ticker": pos.get("ticker", ""),
-                    "Kaufdatum": pos.get("buy_date", ""),
-                    "Einstand": pos.get("buy_price", np.nan),
-                    "Währung": pos.get("currency", "USD"),
-                    "Status": health.get("status", "") if health else "",
-                    "P&L %": round(float(health["pnl"]), 2) if health and health.get("pnl") is not None and not np.isnan(health.get("pnl")) else np.nan,
-                    "Notiz": pos.get("note", ""),
-                })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            remove_pos = st.selectbox("Position entfernen", options=[""] + [p.get("ticker", "") for p in positions], key="pos_remove_sel")
-            if remove_pos and st.button("Position löschen", use_container_width=True, key="pos_remove_btn"):
-                _remove_position(remove_pos)
-                st.rerun()
-        else:
-            st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Du kannst sie hier oder im Tab „Nach dem Kauf“ anlegen.</div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
+    with area_tab2:
+        _render_portfolio_72_area()
 
 
 configure_page()
