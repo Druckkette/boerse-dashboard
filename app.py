@@ -1934,9 +1934,9 @@ def _get_nasdaq_stocks_from_github_fallback():
                     tickers = _normalize_ticker_list(df[ticker_col])
             except Exception:
                 tickers = []
-            if len(tickers) < 1000:
-                tickers = _normalize_ticker_list(re.split(r"[\s,;|]+", raw_text))
-            if len(tickers) >= 1200:
+            # Do not fall back to tokenizing free text. This can accidentally parse
+            # company names/words as symbols and inflate the universe massively.
+            if 1200 <= len(tickers) <= 8000:
                 return tickers
         except Exception:
             continue
@@ -1998,9 +1998,9 @@ def _get_nyse_stocks_from_github_fallback():
                     tickers = _normalize_ticker_list(df[ticker_col])
             except Exception:
                 tickers = []
-            if len(tickers) < 500:
-                tickers = _normalize_ticker_list(re.split(r"[\s,;|]+", text))
-            if len(tickers) >= 1000:
+            # Do not parse free text into pseudo symbols. Keep only parsed ticker
+            # column data from trusted CSV structure.
+            if 1000 <= len(tickers) <= 8000:
                 return tickers
         except Exception:
             continue
@@ -2018,9 +2018,9 @@ def get_nyse_stock_tickers():
         tickers = loader()
         if len(tickers) > len(best):
             best = tickers
-        if len(tickers) >= 1200:
+        if 1200 <= len(tickers) <= 8000:
             return tickers
-    return best if len(best) >= 300 else []
+    return best if 300 <= len(best) <= 8000 else []
 
 
 def get_nasdaq_stock_tickers():
@@ -2035,9 +2035,9 @@ def get_nasdaq_stock_tickers():
         tickers = loader()
         if len(tickers) > len(best):
             best = tickers
-        if len(tickers) >= 1500:
+        if 1500 <= len(tickers) <= 8000:
             return tickers
-    return best if len(best) >= 500 else []
+    return best if 500 <= len(best) <= 8000 else []
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -2053,7 +2053,7 @@ def get_app_stock_universe_tickers():
 
     if nyse_ok and nasdaq_ok:
         combined = _normalize_ticker_list(nyse + nasdaq)
-        if len(combined) >= 2500:
+        if 2500 <= len(combined) <= 12000:
             return combined
 
     if nyse_ok:
@@ -4021,12 +4021,25 @@ def summarize_volatility_state(vol_df):
     }
 
 def detect_intermarket_divergence(data):
-    results=[]
-    for name in ["S&P 500","Nasdaq Composite","Russell 2000"]:
-        if name not in data: continue
-        df=data[name];h20=df["High"].rolling(20,min_periods=10).max()
-        results.append({"name":name,"at_20d_high":df["Close"].iloc[-1]>=h20.iloc[-2]*0.998,
-                        "pct":round((df["Close"].iloc[-1]/h20.iloc[-1]-1)*100,2)})
+    results = []
+    for name in ["S&P 500", "Nasdaq Composite", "Russell 2000"]:
+        if name not in data:
+            continue
+        df = data[name]
+        if len(df) < 22:
+            continue
+        h20 = df["High"].rolling(20, min_periods=10).max()
+        close_now = float(df["Close"].iloc[-1])
+        close_prev = float(df["Close"].iloc[-2])
+        high_20 = float(h20.iloc[-1]) if pd.notna(h20.iloc[-1]) else np.nan
+        dist_20 = (close_now / high_20 - 1) * 100 if high_20 and not np.isnan(high_20) else np.nan
+        day_change = (close_now / close_prev - 1) * 100 if close_prev else np.nan
+        results.append({
+            "name": name,
+            "at_20d_high": close_now >= float(h20.iloc[-2]) * 0.998 if pd.notna(h20.iloc[-2]) else False,
+            "dist_20d_high_pct": round(float(dist_20), 2) if pd.notna(dist_20) else np.nan,
+            "day_change_pct": round(float(day_change), 2) if pd.notna(day_change) else np.nan,
+        })
     return results
 
 def detect_sector_rotation(data):
@@ -4189,6 +4202,25 @@ def render_ampel_section(L):
                 f'<div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div>'
                 f'</div>', unsafe_allow_html=True)
 
+    explainers = {
+        "rot": "🔴 ROT: Wird aktiv, sobald ein substanzieller Drawdown läuft (Marktkorrektur). Ziel: erst Stabilisierung/Ankertag abwarten.",
+        "gelb": "🟡 GELB: Wird aktiv, wenn nach dem Ankertag ein Startschuss erkannt wurde (frühes Trendwendesignal).",
+        "gruen": "🟢 GRÜN: Wird aktiv, wenn der Startschuss bestätigt bleibt (z. B. Kurs hält über dem Startschuss-Tief).",
+    }
+    selected_key = st.session_state.get("ampel_explainer_key", phase if phase in explainers else "gelb")
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        if st.button("🔴 Rot erklären", key="ampel_explain_rot", use_container_width=True):
+            selected_key = "rot"
+    with e2:
+        if st.button("🟡 Gelb erklären", key="ampel_explain_gelb", use_container_width=True):
+            selected_key = "gelb"
+    with e3:
+        if st.button("🟢 Grün erklären", key="ampel_explain_gruen", use_container_width=True):
+            selected_key = "gruen"
+    st.session_state["ampel_explainer_key"] = selected_key
+    st.info(explainers[selected_key])
+
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
     st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#e2e8f0;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
@@ -4221,6 +4253,40 @@ def plot_volume(df,sd=90):
     dv=df.tail(sd);x=_x(dv.index);colors=["#22c55e" if p>=0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig=go.Figure();fig.add_trace(go.Bar(x=x,y=_y(dv["Volume"]),marker_color=colors,opacity=0.7));fig.add_trace(go.Scatter(x=x,y=_y(dv["Vol_SMA50"]),line=dict(color="#64748b",width=1,dash="dot")))
     fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#1e293b",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
+    return fig
+
+def plot_price_with_volume(df, sd=90):
+    dv = df.tail(sd)
+    x = _x(dv.index)
+    vol_colors = ["#22c55e" if p >= 0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.78, 0.22],
+    )
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["Close"]), name="Kurs", line=dict(color="#e2e8f0", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["EMA21"]), name="21-EMA", line=dict(color="#06b6d4", width=1, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA50"]), name="50-SMA", line=dict(color="#f97316", width=1, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA200"]), name="200-SMA", line=dict(color="#a855f7", width=1, dash="dash")), row=1, col=1)
+    fl = dv["Floor_Mark"].dropna()
+    if len(fl) > 0:
+        fig.add_hline(y=float(fl.iloc[-1]), line_dash="dash", line_color="#ef4444", line_width=1, row=1, col=1)
+    fig.add_trace(go.Bar(x=x, y=_y(dv["Volume"]), marker_color=vol_colors, opacity=0.6, name="Volumen"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["Vol_SMA50"]), name="Vol. 50-SMA", line=dict(color="#64748b", width=1, dash="dot")), row=2, col=1)
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="#111827",
+        plot_bgcolor="#111827",
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=500,
+        legend=dict(orientation="h", yanchor="top", y=1.05, font=dict(size=9, color="#94a3b8")),
+        xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
+        yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
+        yaxis2=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), tickformat=".2s"),
+        hovermode="x unified",
+    )
     return fig
 
 def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
@@ -5448,7 +5514,12 @@ def _tab_marktanalyse():
     warning_items.append(("Volumen an Aufwärtstagen", not vd, "Abnehmendes Vol." if vd else "OK", vd)); wc += int(vd)
     if div_r:
         ah = [r for r in div_r if r["at_20d_high"]]; nh = [r for r in div_r if not r["at_20d_high"]]; hd = len(ah) > 0 and len(nh) > 0
-        warning_items.append(("Intermarket-Konvergenz", not hd, " · ".join(f"{r['name']}: {r['pct']:+.1f}%" for r in div_r), hd)); wc += int(hd)
+        warning_items.append((
+            "Intermarket-Konvergenz",
+            not hd,
+            " · ".join(f"{r['name']}: {r.get('dist_20d_high_pct', np.nan):+.1f}% zum 20T-Hoch" for r in div_r),
+            hd,
+        )); wc += int(hd)
     if rot is not None:
         warning_items.append(("Keine Sektorrotation in Defensive", not rot, f"Spread: {sp:+.1f}%", bool(rot))); wc += int(bool(rot))
     rp, drp = detect_failing_rally(df)
@@ -5490,11 +5561,7 @@ def _tab_marktanalyse():
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
 
-    chart_tab1, chart_tab2 = st.tabs(["Preis", "Volumen"])
-    with chart_tab1:
-        st.plotly_chart(plot_price(df, sd), use_container_width=True, config={"displayModeBar": False})
-    with chart_tab2:
-        st.plotly_chart(plot_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
 
     with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
         st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
@@ -5540,9 +5607,16 @@ def _tab_marktanalyse():
                 st.markdown("</div>", unsafe_allow_html=True)
             if div_r:
                 st.markdown('<div class="info-card"><div class="card-label">Intermarket-Bild</div>', unsafe_allow_html=True)
+                st.caption("Anzeige = Abstand des aktuellen Schlusskurses zum jeweiligen 20-Tage-Hoch (nicht Tagesperformance).")
                 for r in div_r:
-                    tone_c = "#22c55e" if r["pct"] >= 0 else "#ef4444"
-                    st.markdown(f'<div style="padding:4px 0;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span> <span class="mini-help">{r["pct"]:+.1f}%</span></div>', unsafe_allow_html=True)
+                    dist = r.get("dist_20d_high_pct", np.nan)
+                    daily = r.get("day_change_pct", np.nan)
+                    tone_c = "#22c55e" if pd.notna(dist) and dist >= -0.3 else "#ef4444"
+                    st.markdown(
+                        f'<div style="padding:4px 0;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span> '
+                        f'<span class="mini-help">20T-Hoch: {dist:+.1f}% · Tag: {daily:+.1f}%</span></div>',
+                        unsafe_allow_html=True
+                    )
                 st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Marktbreite und Volatilität", expanded=True):
