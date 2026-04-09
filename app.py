@@ -886,6 +886,8 @@ def _bulk_download_ohlc(symbols: tuple[str, ...], start_date, end_date) -> dict[
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> dict[str, pd.Series]:
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
     frames = _bulk_download_ohlc(symbols, start_date, end_date)
     out: dict[str, pd.Series] = {}
     for sym, frame in frames.items():
@@ -896,6 +898,9 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
             continue
         close.index = pd.to_datetime(close.index).normalize()
         close = close[~close.index.duplicated(keep="last")].sort_index()
+        close = close[(close.index >= start_ts) & (close.index <= end_ts)]
+        if close.empty:
+            continue
         out[sym] = close
     return out
 
@@ -930,7 +935,7 @@ def _fetch_close_history(symbol: str, start_date, end_date):
         batch = _bulk_close_history_map((symbol,), start_ts, end_ts)
         close = batch.get(symbol, pd.Series(dtype=float))
         if len(close):
-            return close
+            return close[(close.index >= start_ts) & (close.index <= end_ts)]
     except Exception:
         pass
 
@@ -951,7 +956,9 @@ def _fetch_close_history(symbol: str, start_date, end_date):
             continue
         close.index = pd.to_datetime(close.index).normalize()
         close = close[~close.index.duplicated(keep="last")]
-        return close.sort_index()
+        close = close.sort_index()
+        close = close[(close.index >= start_ts) & (close.index <= end_ts)]
+        return close
     return pd.Series(dtype=float)
 
 @st.cache_data(ttl=900, show_spinner=False)
