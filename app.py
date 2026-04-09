@@ -671,27 +671,90 @@ def _position_stop_price(position: dict) -> float:
         return entry * (1 - stop_pct / 100)
     return np.nan
 
+def _normalize_single_ticker(value: str) -> str:
+    t = str(value or "").strip().upper()
+    t = t.replace(".", "-").replace("/", "-").replace(" ", "")
+    return t
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _fetch_close_history(symbol: str, start_date, end_date):
+    symbol = _normalize_single_ticker(symbol)
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
+    if not symbol or end_ts < start_ts:
+        return pd.Series(dtype=float)
+    df = _dl(symbol, start_ts - timedelta(days=7), end_ts + timedelta(days=3))
+    if df is None or df.empty or "Close" not in df:
+        try:
+            hist = yf.Ticker(symbol).history(start=start_ts - timedelta(days=7), end=end_ts + timedelta(days=3), auto_adjust=True)
+        except Exception:
+            hist = None
+        if hist is None or len(hist) == 0 or "Close" not in hist:
+            return pd.Series(dtype=float)
+        df = hist.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.index = pd.to_datetime(df.index)
+    close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+    if close.empty:
+        return pd.Series(dtype=float)
+    close.index = pd.to_datetime(close.index).normalize()
+    close = close[~close.index.duplicated(keep="last")]
+    return close.sort_index()
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _portfolio_symbol_metrics(ticker: str) -> dict:
-    ticker = str(ticker or "").upper().strip()
+    original_ticker = str(ticker or "").upper().strip()
+    ticker = _normalize_single_ticker(original_ticker)
     if not ticker:
         return {}
+
+    def _fallback_payload(name=None, sector="", industry="", price=np.nan, atr_pct=np.nan, beta=np.nan):
+        return {
+            "ticker": ticker,
+            "name": name or ticker,
+            "sector": sector or "",
+            "industry": industry or "",
+            "price": price,
+            "atr_pct": atr_pct,
+            "beta": beta,
+        }
+
     df, info, *_ = load_stock_full(ticker)
-    if df is None or len(df) < 30:
-        return {"ticker": ticker, "price": np.nan, "atr_pct": np.nan, "beta": np.nan, "name": ticker}
-    latest_price = _safe_float(df["Close"].iloc[-1], np.nan)
-    atr_val = _atr(df, 21).iloc[-1] if len(df) >= 21 else np.nan
-    atr_pct = (atr_val / latest_price * 100) if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val) else np.nan
-    beta = _safe_float((info or {}).get("beta"), np.nan)
-    return {
-        "ticker": ticker,
-        "name": (info or {}).get("shortName", ticker),
-        "sector": (info or {}).get("sector", ""),
-        "industry": (info or {}).get("industry", ""),
-        "price": latest_price,
-        "atr_pct": atr_pct,
-        "beta": beta,
-    }
+    if df is not None and len(df) >= 30:
+        latest_price = _safe_float(df["Close"].iloc[-1], np.nan)
+        atr_val = _atr(df, 21).iloc[-1] if len(df) >= 21 else np.nan
+        atr_pct = (atr_val / latest_price * 100) if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val) else np.nan
+        beta = _safe_float((info or {}).get("beta"), np.nan)
+        return _fallback_payload(
+            name=(info or {}).get("shortName", ticker),
+            sector=(info or {}).get("sector", ""),
+            industry=(info or {}).get("industry", ""),
+            price=latest_price,
+            atr_pct=atr_pct,
+            beta=beta,
+        )
+
+    try:
+        series = _fetch_close_history(ticker, datetime.now() - timedelta(days=180), datetime.now())
+    except Exception:
+        series = pd.Series(dtype=float)
+    latest_price = _safe_float(series.iloc[-1], np.nan) if len(series) else np.nan
+    atr_pct = np.nan
+    if len(series) >= 22 and not np.isnan(latest_price) and latest_price > 0:
+        atr_pct = float(series.pct_change().abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
+    beta = np.nan
+    try:
+        fast = yf.Ticker(ticker).fast_info
+        if hasattr(fast, "get"):
+            beta = _safe_float(fast.get("beta", np.nan), np.nan)
+            if np.isnan(latest_price):
+                latest_price = _safe_float(fast.get("lastPrice", np.nan), np.nan)
+    except Exception:
+        pass
+    return _fallback_payload(price=latest_price, atr_pct=atr_pct, beta=beta)
+
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _sp500_atr_reference(lookback_days: int = 180) -> float:
@@ -717,7 +780,8 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
     preliminary_rows = []
     total_value = max(float(cash_balance or 0), 0.0)
     for pos in tracked:
-        ticker = str((pos or {}).get("ticker", "")).upper().strip()
+        raw_ticker = str((pos or {}).get("ticker", "")).upper().strip()
+        ticker = _normalize_single_ticker(raw_ticker)
         shares = _safe_float(pos.get("shares"), 0.0)
         if not ticker or shares <= 0:
             continue
@@ -743,6 +807,7 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
             "stop_price": _position_stop_price(pos),
             "atr_pct": _safe_float(metrics.get("atr_pct"), np.nan),
             "beta": _safe_float(metrics.get("beta"), np.nan),
+            "is_cash": False,
         })
 
     total_value = total_value if total_value > 0 else np.nan
@@ -773,6 +838,37 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
             "position_risk_abs": position_risk_abs,
         })
 
+    if cash_balance and float(cash_balance) > 0:
+        cash_value = float(cash_balance)
+        cash_weight = (cash_value / total_value) if total_value and not np.isnan(total_value) else np.nan
+        rows.append({
+            "ticker": "CASH",
+            "name": "Cash",
+            "sector": "",
+            "industry": "",
+            "shares": cash_value,
+            "entry": 1.0,
+            "current_price": 1.0,
+            "current_value": cash_value,
+            "buy_date": "",
+            "currency": "USD",
+            "note": "Freie Liquidität",
+            "stop_pct": 0.0,
+            "stop_price": 1.0,
+            "atr_pct": 0.0,
+            "beta": 0.0,
+            "is_cash": True,
+            "weight": cash_weight,
+            "pnl_pct": 0.0,
+            "pnl_abs": 0.0,
+            "score": 0.0,
+            "risk_contribution": 0.0,
+            "max_weight": np.nan,
+            "max_position_value": np.nan,
+            "stop_distance_pct": 0.0,
+            "position_risk_abs": 0.0,
+        })
+
     df = pd.DataFrame(rows)
     if df.empty:
         summary = {
@@ -788,15 +884,16 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
         }
         return df, summary
 
-    invested_value = float(df["current_value"].sum(skipna=True))
+    invested_df = df[df["is_cash"] == False] if "is_cash" in df else df
+    invested_value = float(invested_df["current_value"].sum(skipna=True)) if not invested_df.empty else 0.0
     cash_value = max(float(cash_balance or 0), 0.0)
     total_value = invested_value + cash_value
     portfolio_atr_pct = float((df["weight"] * df["atr_pct"]).sum(skipna=True))
     beta_balancer = float(df["risk_contribution"].sum(skipna=True))
-    valid_risks = df["position_risk_abs"].dropna()
+    valid_risks = invested_df["position_risk_abs"].dropna() if not invested_df.empty else pd.Series(dtype=float)
     max_depot_loss_pct = (float(valid_risks.sum()) / total_value * 100) if total_value > 0 and len(valid_risks) else np.nan
     summary = {
-        "tracked_count": int(len(df)),
+        "tracked_count": int(len(invested_df)),
         "total_value": total_value,
         "invested_value": invested_value,
         "cash_balance": cash_value,
@@ -806,7 +903,9 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
         "max_depot_loss_pct": max_depot_loss_pct,
         "spx_atr_pct": spx_atr_pct,
     }
-    return df.sort_values("pnl_pct", ascending=False, na_position="last"), summary
+    df = df.assign(_cash_sort=df["is_cash"].astype(int)).sort_values(["_cash_sort", "pnl_pct"], ascending=[True, False], na_position="last").drop(columns=["_cash_sort"])
+    return df, summary
+
 
 def _portfolio_health_messages(summary: dict, positions_df: pd.DataFrame, settings: dict) -> list[tuple[str, str]]:
     messages = []
@@ -882,11 +981,9 @@ def _build_portfolio_curve(history: list[dict]) -> pd.DataFrame:
         index_values.append(index_values[-1] * (1 + day_return))
     hist["portfolio_index"] = index_values
 
-    bench = _dl("^GSPC", hist["date"].min() - timedelta(days=7), hist["date"].max() + timedelta(days=3))
-    if bench is not None and len(bench):
-        bench_series = bench["Close"].copy()
-        bench_series.index = pd.to_datetime(bench_series.index).normalize()
-        aligned = bench_series.reindex(hist["date"].dt.normalize(), method="ffill")
+    bench = _fetch_close_history("^GSPC", hist["date"].min() - timedelta(days=7), hist["date"].max() + timedelta(days=3))
+    if len(bench):
+        aligned = bench.reindex(hist["date"].dt.normalize(), method="ffill")
         hist["sp500_close"] = aligned.values
         first_valid = hist["sp500_close"].dropna()
         if len(first_valid):
@@ -897,6 +994,70 @@ def _build_portfolio_curve(history: list[dict]) -> pd.DataFrame:
     else:
         hist["sp500_index"] = np.nan
     return hist
+
+def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: float, start_date, end_date=None) -> pd.DataFrame:
+    tracked = _portfolio_positions_only(positions)
+    if not tracked:
+        return pd.DataFrame()
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date or datetime.utcnow().date()).normalize()
+    if end_ts < start_ts:
+        return pd.DataFrame()
+
+    bench = _fetch_close_history("^GSPC", start_ts, end_ts)
+    if len(bench):
+        calendar = pd.DatetimeIndex(bench.index).normalize().unique().sort_values()
+    else:
+        calendar = pd.date_range(start_ts, end_ts, freq="B")
+    if len(calendar) == 0:
+        return pd.DataFrame()
+
+    curve = pd.DataFrame(index=calendar)
+    curve["depot_value"] = float(cash_balance or 0.0)
+
+    for pos in tracked:
+        ticker = _normalize_single_ticker(pos.get("ticker", ""))
+        shares = _safe_float(pos.get("shares"), 0.0)
+        if not ticker or shares <= 0:
+            continue
+        try:
+            buy_ts = pd.Timestamp(pos.get("buy_date")).normalize() if pos.get("buy_date") else start_ts
+        except Exception:
+            buy_ts = start_ts
+        entry_price = _position_entry_price(pos)
+        entry_value = shares * entry_price if not np.isnan(entry_price) and entry_price > 0 else 0.0
+        if buy_ts > start_ts and entry_value > 0:
+            curve.loc[curve.index < buy_ts, "depot_value"] += entry_value
+        active_start = max(start_ts, buy_ts)
+        close = _fetch_close_history(ticker, active_start, end_ts)
+        if len(close) == 0:
+            continue
+        aligned = close.reindex(curve.index, method="ffill")
+        mask = curve.index >= active_start
+        curve.loc[mask, "depot_value"] += aligned.loc[mask].ffill().bfill().fillna(0.0) * shares
+
+    curve = curve.reset_index().rename(columns={"index": "date"})
+    curve["date"] = pd.to_datetime(curve["date"])
+    curve = curve[curve["depot_value"].notna()].copy()
+    curve = curve[curve["depot_value"] > 0].copy()
+    if curve.empty:
+        return pd.DataFrame()
+
+    first_value = float(curve["depot_value"].iloc[0])
+    curve["portfolio_index"] = (curve["depot_value"] / first_value * 100) if first_value > 0 else 100.0
+    if len(bench):
+        aligned = bench.reindex(curve["date"].dt.normalize(), method="ffill")
+        curve["sp500_close"] = aligned.values
+        valid = curve["sp500_close"].dropna()
+        if len(valid):
+            start_bench = float(valid.iloc[0])
+            curve["sp500_index"] = curve["sp500_close"] / start_bench * 100
+        else:
+            curve["sp500_index"] = np.nan
+    else:
+        curve["sp500_index"] = np.nan
+    return curve
+
 
 def _render_portfolio_72_area():
     _init_workspace_state()
@@ -1072,7 +1233,8 @@ def _render_portfolio_72_area():
         st.markdown("#### Einzelperformance und Risiko-Ranking")
         st.dataframe(display_df.round(2), use_container_width=True, hide_index=True)
 
-        worst = snapshot_df.sort_values("pnl_pct", ascending=True, na_position="last").head(3)[["ticker", "pnl_pct", "risk_contribution"]].copy()
+        worst_source = snapshot_df[snapshot_df["is_cash"] == False] if "is_cash" in snapshot_df else snapshot_df
+        worst = worst_source.sort_values("pnl_pct", ascending=True, na_position="last").head(3)[["ticker", "pnl_pct", "risk_contribution"]].copy()
         if len(worst):
             worst["pnl_pct"] = worst["pnl_pct"].round(2)
             worst["risk_contribution"] = worst["risk_contribution"].round(3)
@@ -1081,66 +1243,116 @@ def _render_portfolio_72_area():
     else:
         st.info("Für das Depotcockpit werden nur Positionen mit Stückzahl größer 0 berücksichtigt.")
 
-    st.markdown("#### Depotkurve als tägliches Cockpit")
-    history = st.session_state.get("portfolio_history", [])
-    hist_col1, hist_col2, hist_col3, hist_col4 = st.columns([1, 1, 1, 1.3])
-    with hist_col1:
-        snapshot_date = st.date_input("Datum", value=datetime.utcnow().date(), key="pf_hist_date")
-    with hist_col2:
-        snapshot_value = st.number_input("Depotwert", min_value=0.0, value=float(current_total_value or 0.0), step=100.0, key="pf_hist_value")
-    with hist_col3:
-        snapshot_deposit = st.number_input("Einzahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_deposit")
-    with hist_col4:
-        snapshot_withdrawal = st.number_input("Auszahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_withdrawal")
-    snapshot_note = st.text_input("Notiz zur Tageszeile", value="", key="pf_hist_note")
-    act_hist1, act_hist2 = st.columns(2)
-    with act_hist1:
-        if st.button("Tageszeile speichern", use_container_width=True, key="pf_hist_save"):
-            _append_portfolio_history_entry(snapshot_date, snapshot_value, snapshot_deposit, snapshot_withdrawal, snapshot_note)
-            st.success("Tageszeile gespeichert.")
-            st.rerun()
-    with act_hist2:
-        if st.button("Heutigen Depotwert übernehmen", use_container_width=True, key="pf_hist_take_today", disabled=not bool(current_total_value)):
-            _append_portfolio_history_entry(datetime.utcnow().date(), current_total_value, 0.0, 0.0, "Automatisch aus Depot übernommen")
-            st.success("Heutiger Depotwert übernommen.")
-            st.rerun()
+    st.markdown("#### Depotkurve")
+    default_curve_start = datetime.utcnow().date() - timedelta(days=180)
+    valid_buy_dates = []
+    for pos in tracked_positions:
+        try:
+            valid_buy_dates.append(pd.Timestamp(pos.get("buy_date")).date())
+        except Exception:
+            pass
+    if valid_buy_dates:
+        default_curve_start = min(valid_buy_dates)
 
-    curve_df = _build_portfolio_curve(history)
-    if not curve_df.empty:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["portfolio_index"], mode="lines+markers", name="Depotindex"))
-        if "sp500_index" in curve_df and curve_df["sp500_index"].notna().any():
-            fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["sp500_index"], mode="lines+markers", name="S&P 500 Index"))
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#0f172a",
-            plot_bgcolor="#0f172a",
-            height=380,
-            margin=dict(l=10, r=10, t=20, b=10),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
-            xaxis=dict(title="", gridcolor="#1e293b"),
-        )
-        st.plotly_chart(fig, use_container_width=True, key="pf_curve_chart")
-        hist_display = curve_df[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "sp500_index", "note"]].copy()
-        hist_display["date"] = hist_display["date"].dt.strftime("%Y-%m-%d")
-        hist_display = hist_display.rename(columns={
-            "date": "Datum",
-            "depot_value": "Depotwert",
-            "deposit": "Einzahlung",
-            "withdrawal": "Auszahlung",
-            "portfolio_index": "Depotindex",
-            "sp500_index": "S&P 500",
-            "note": "Notiz",
-        })
-        st.dataframe(hist_display.round(2), use_container_width=True, hide_index=True)
-        delete_date = st.selectbox("Tageszeile löschen", options=[""] + hist_display["Datum"].tolist(), key="pf_hist_delete_date")
-        if delete_date and st.button("Tageszeile löschen", use_container_width=True, key="pf_hist_delete_btn"):
-            _remove_portfolio_history_entry(delete_date)
-            st.success("Tageszeile gelöscht.")
-            st.rerun()
-    else:
-        st.info("Lege mindestens zwei Tageszeilen an, damit die Depotkurve gegen den S&P 500 sichtbar wird.")
+    curve_tab_auto, curve_tab_manual = st.tabs(["Automatisch aus Depotbestand", "Manuelle Tageszeilen"])
+
+    with curve_tab_auto:
+        st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Wenn ein Kaufdatum nach dem gewählten Start liegt, bleibt der entsprechende Einstand bis dahin als Cash im Modell.")
+        auto_col1, auto_col2 = st.columns([1, 1])
+        with auto_col1:
+            auto_start = st.date_input("Startdatum der Rekonstruktion", value=default_curve_start, key="pf_auto_curve_start")
+        with auto_col2:
+            auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
+        auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end)
+        if not auto_curve.empty:
+            fig_auto = go.Figure()
+            fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index"], mode="lines", name="Depotindex"))
+            if "sp500_index" in auto_curve and auto_curve["sp500_index"].notna().any():
+                fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["sp500_index"], mode="lines", name="S&P 500 Index"))
+            fig_auto.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="#0f172a",
+                plot_bgcolor="#0f172a",
+                height=380,
+                margin=dict(l=10, r=10, t=20, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
+                xaxis=dict(title="", gridcolor="#1e293b"),
+            )
+            st.plotly_chart(fig_auto, use_container_width=True, key="pf_curve_chart_auto")
+            auto_display = auto_curve[["date", "depot_value", "portfolio_index", "sp500_index"]].copy()
+            auto_display["date"] = auto_display["date"].dt.strftime("%Y-%m-%d")
+            auto_display = auto_display.rename(columns={
+                "date": "Datum",
+                "depot_value": "Depotwert",
+                "portfolio_index": "Depotindex",
+                "sp500_index": "S&P 500",
+            })
+            st.dataframe(auto_display.round(2), use_container_width=True, hide_index=True)
+        else:
+            st.info("Für die automatische Depotkurve fehlen aktuell verwertbare Kursdaten oder Positionen mit Stückzahl.")
+
+    with curve_tab_manual:
+        st.caption("Optional kannst du weiterhin echte Tagesstände mit Ein- und Auszahlungen speichern. Diese Variante ist genauer, wenn du auch Verkäufe, Teilverkäufe oder spätere Zukäufe historisch abbilden willst.")
+        history = st.session_state.get("portfolio_history", [])
+        hist_col1, hist_col2, hist_col3, hist_col4 = st.columns([1, 1, 1, 1.3])
+        with hist_col1:
+            snapshot_date = st.date_input("Datum", value=datetime.utcnow().date(), key="pf_hist_date")
+        with hist_col2:
+            snapshot_value = st.number_input("Depotwert", min_value=0.0, value=float(current_total_value or 0.0), step=100.0, key="pf_hist_value")
+        with hist_col3:
+            snapshot_deposit = st.number_input("Einzahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_deposit")
+        with hist_col4:
+            snapshot_withdrawal = st.number_input("Auszahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_withdrawal")
+        snapshot_note = st.text_input("Notiz zur Tageszeile", value="", key="pf_hist_note")
+        act_hist1, act_hist2 = st.columns(2)
+        with act_hist1:
+            if st.button("Tageszeile speichern", use_container_width=True, key="pf_hist_save"):
+                _append_portfolio_history_entry(snapshot_date, snapshot_value, snapshot_deposit, snapshot_withdrawal, snapshot_note)
+                st.success("Tageszeile gespeichert.")
+                st.rerun()
+        with act_hist2:
+            if st.button("Heutigen Depotwert übernehmen", use_container_width=True, key="pf_hist_take_today", disabled=not bool(current_total_value)):
+                _append_portfolio_history_entry(datetime.utcnow().date(), current_total_value, 0.0, 0.0, "Automatisch aus Depot übernommen")
+                st.success("Heutiger Depotwert übernommen.")
+                st.rerun()
+
+        curve_df = _build_portfolio_curve(history)
+        if not curve_df.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["portfolio_index"], mode="lines+markers", name="Depotindex"))
+            if "sp500_index" in curve_df and curve_df["sp500_index"].notna().any():
+                fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["sp500_index"], mode="lines+markers", name="S&P 500 Index"))
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="#0f172a",
+                plot_bgcolor="#0f172a",
+                height=380,
+                margin=dict(l=10, r=10, t=20, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
+                xaxis=dict(title="", gridcolor="#1e293b"),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="pf_curve_chart")
+            hist_display = curve_df[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "sp500_index", "note"]].copy()
+            hist_display["date"] = hist_display["date"].dt.strftime("%Y-%m-%d")
+            hist_display = hist_display.rename(columns={
+                "date": "Datum",
+                "depot_value": "Depotwert",
+                "deposit": "Einzahlung",
+                "withdrawal": "Auszahlung",
+                "portfolio_index": "Depotindex",
+                "sp500_index": "S&P 500",
+                "note": "Notiz",
+            })
+            st.dataframe(hist_display.round(2), use_container_width=True, hide_index=True)
+            delete_date = st.selectbox("Tageszeile löschen", options=[""] + hist_display["Datum"].tolist(), key="pf_hist_delete_date")
+            if delete_date and st.button("Tageszeile löschen", use_container_width=True, key="pf_hist_delete_btn"):
+                _remove_portfolio_history_entry(delete_date)
+                st.success("Tageszeile gelöscht.")
+                st.rerun()
+        else:
+            st.info("Lege mindestens zwei Tageszeilen an, damit die manuelle Depotkurve gegen den S&P 500 sichtbar wird.")
 
 
 def _render_workspace_sidebar():
