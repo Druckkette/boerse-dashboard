@@ -4662,6 +4662,91 @@ def render_breadth(mode,dist_pct):
     fp=min(100,abs(dist_pct)/12*100)
     st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div style="display:flex;justify-content:space-between;font-size:.65rem;color:#64748b;"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
 
+
+def _render_deep_analysis_content(component_bundle, sd, data):
+    close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
+    if close_frame is None or len(close_frame) <= 50:
+        st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse des NYSE/Nasdaq-Aktienuniversums.")
+        return None
+
+    br = compute_breadth_from_components(component_bundle)
+    if br is None or len(br) <= 20:
+        st.warning("Keine gültigen Handelstage gefunden.")
+        return None
+
+    last_trading_date = br.index[-1].strftime("%d.%m.%Y")
+    breadth_attrs = br.attrs
+    requested = breadth_attrs.get("requested_universe")
+    loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
+    coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
+    ratio_txt = f" / {requested}" if requested else ""
+    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
+    if requested and loaded < requested * 0.8:
+        st.warning(f"Hinweis: Es wurden nicht alle Titel des NYSE/Nasdaq-Aktienuniversums geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
+    st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
+
+    br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
+    if len(br_valid) == 0:
+        st.warning("Keine gültigen Handelstage gefunden.")
+        return br
+
+    bL = br_valid.iloc[-1]
+    bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
+    intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
+    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
+
+    kb1, kb2, kb3, kb4, kb5 = st.columns(5)
+    mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
+    p50 = bL["Pct_Above_50SMA"]; p200 = bL["Pct_Above_200SMA"]; dr = bL["Deemer_Ratio"]
+    with kb1:
+        st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—", "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "Neutral" if not np.isnan(mc) else "")
+    with kb2:
+        st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}", f"{nh_val} Hochs / {nl_val} Tiefs")
+    with kb3:
+        st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—", "Überhitzt" if p50 > 70 else "Schwach" if p50 < 30 else "")
+    with kb4:
+        st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
+    with kb5:
+        if not np.isnan(dr):
+            if dr >= 1.97:
+                dr_label, dr_delta = "🚀 Sehr gut", "Breakaway Momentum!"
+            elif dr >= 1.50:
+                dr_label, dr_delta = f"{dr:.2f}", "Gut — konstruktiv"
+            elif dr >= 1.00:
+                dr_label, dr_delta = f"{dr:.2f}", "Neutral"
+            else:
+                dr_label, dr_delta = f"{dr:.2f}", "Schlecht — schwache Breite"
+        else:
+            dr_label, dr_delta = "—", ""
+        st.metric("Deemer Ratio", dr_label, dr_delta)
+
+    with st.expander("Kennzahlen der Tiefenanalyse erklärt", expanded=False):
+        _render_market_glossary(["McClellan Osc.", "NH/NL Ratio", "% > 50-SMA", "% > 200-SMA", "Deemer Ratio"])
+
+    recent_thrust = br["Breadth_Thrust"].tail(20).any()
+    if recent_thrust:
+        st.success("🚀 Breitenschub (Deemer Ratio > 1.97) in den letzten 20 Tagen erkannt.")
+
+    if "S&P 500" in data:
+        spx = data["S&P 500"]
+        spx_at_high = spx["Close"].iloc[-1] >= spx["High"].rolling(20).max().iloc[-2] * 0.998
+        ad_at_high = br["AD_Line"].iloc[-1] >= br["AD_Line"].rolling(20).max().iloc[-2] * 0.998
+        if spx_at_high and not ad_at_high:
+            st.warning("⚠ Divergenz: S&P 500 nahe 20T-Hoch, aber A/D-Linie nicht — Marktbreite lässt nach")
+        elif spx_at_high and ad_at_high:
+            st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
+        render_check("Keine Divergenz Index vs. A/D-Linie", not (spx_at_high and not ad_at_high), "A/D-Linie bestätigt" if ad_at_high else "Divergenz aktiv")
+    render_check("McClellan > 0", mc > 0, f"McClellan: {mc:.1f}")
+    render_check("% über 50-SMA > 50%", p50 > 50, f"{p50:.0f}%")
+    render_check("NH/NL Ratio > 1", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
+    if not np.isnan(dr):
+        dr_status = "Sehr gut" if dr >= 1.97 else "Gut" if dr >= 1.50 else "Neutral" if dr >= 1.00 else "Schlecht"
+        render_check("Deemer Ratio", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
+    else:
+        render_check("Deemer Ratio", False, "Nicht verfügbar")
+    st.markdown("</div>", unsafe_allow_html=True)
+    return br
+
 def _x(idx): return [d.strftime("%Y-%m-%d") for d in idx]
 
 def _y(s): return [None if pd.isna(v) else round(float(v),2) for v in s]
@@ -6081,257 +6166,41 @@ def _tab_marktanalyse():
         render_check("Warnzeichen ≤2?", wc <= 2, f"{wc} aktiv")
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with st.expander("Datenwartung und Tiefenanalyse", expanded=False):
-        st.caption("Der technische Bereich ist bewusst ausgelagert. Hier verwaltest du NYSE/Nasdaq-Datenbank, Diagnose und die tiefe Marktbreitenanalyse.")
-        fred_key = ""
-        try:
-            fred_key = st.secrets.get("FRED_API_KEY", "")
-        except Exception:
-            pass
-        if not fred_key:
-            fred_key = os.environ.get("FRED_API_KEY", "")
-        if not fred_key:
-            fred_key = st.text_input("FRED API Key (optional)", type="password", help="Für Fed Funds Rate. Ohne Key werden nur die Marktbreite-Indikatoren angezeigt.")
-
-        store = _get_price_store()
-        st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
-        if store["backend"] != "neon":
-            st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon meist stabiler.")
-
-        current_requested = _get_cache_metadata(store, "last_refresh_requested_universe", "")
-        current_loaded = _get_cache_metadata(store, "last_refresh_loaded_universe", "")
-        current_rescue = _get_cache_metadata(store, "last_rescue_at", "")
-        current_auto_remap = _get_cache_metadata(store, "last_auto_remap_at", "")
-        current_refresh_at = _get_cache_metadata(store, "last_refresh_at", "")
-        status_bits = []
-        if current_loaded and current_requested:
-            try:
-                loaded_int = int(current_loaded)
-                requested_int = int(current_requested)
-                status_bits.append(f"Letzter bekannter Worker-Stand: {loaded_int} von {requested_int} Titeln")
-            except Exception:
-                pass
-        if current_refresh_at:
-            status_bits.append(f"Letzter Refresh: {current_refresh_at} UTC")
-        if current_rescue:
-            status_bits.append(f"Letzter Rescue-Lauf: {current_rescue} UTC")
-        if current_auto_remap:
-            status_bits.append(f"Letztes Auto-Remap: {current_auto_remap} UTC")
-        if status_bits:
-            st.caption(" · ".join(status_bits))
-
-        live_status = get_live_universe_store_status(store["backend"], _get_store_label(store), str(current_refresh_at or ""))
-        live_cols = st.columns(5)
-        live_cols[0].metric("Universe live", int(live_status.get("requested", 0)))
-        live_cols[1].metric("Im Cache", int(live_status.get("loaded", 0)))
-        live_cols[2].metric("Abdeckung", f"{float(live_status.get('coverage', 0.0) or 0.0):.0%}")
-        live_cols[3].metric("Mappings", int(live_status.get("mapped", 0)))
-        live_cols[4].metric("Ungeklärt", int(live_status.get("not_found", 0)) + int(live_status.get("no_history", 0)))
-        st.caption("Live-Zahlen werden direkt aus dem Cache gelesen und können höher sein als der letzte Worker-Stand, wenn zwischenzeitlich Remaps oder Analysen zusätzliche Ticker geladen haben.")
-
-        gh_cfg = _github_actions_config()
-        if gh_cfg.get("ready"):
-            st.caption(f"Externer Worker: GitHub Actions · {gh_cfg['owner']}/{gh_cfg['repo']} · Workflow: {gh_cfg['workflow']} · Ref: {gh_cfg['ref']}")
+    st.markdown("### 🔎 Tiefenanalyse (automatisch)")
+    with st.spinner("Lese Tiefenanalyse-Daten aus dem persistenten Datenspeicher …"):
+        component_bundle = load_nyse_breadth_data()
+    benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
+    if component_bundle is None:
+        benchmark_str = benchmark_last.strftime("%d.%m.%Y")
+        refresh_guard = f"_auto_refresh_requested_{benchmark_last.isoformat()}"
+        active_job = _get_active_refresh_job(_get_price_store())
+        if not st.session_state.get(refresh_guard) and not active_job:
+            result = _request_external_refresh_job("refresh_universe", payload={"trigger": "auto_open_no_data", "required_date": benchmark_last.isoformat()})
+            st.session_state[refresh_guard] = True
+            if result.get("ok"):
+                st.warning(f"Die Kursdaten werden gerade aktualisiert (Stand benötigt: {benchmark_str}). Bitte komm in ca. 10 Minuten erneut auf die Seite.")
+            else:
+                st.error(result.get("error") or "Die automatische Aktualisierung konnte nicht gestartet werden.")
         else:
-            st.warning("GitHub Actions ist noch nicht konfiguriert. Für den asynchronen Refresh brauchst du in Streamlit Secrets owner, repo, workflow, ref und token.")
-
-        active_job = _get_active_refresh_job(store)
-        latest_jobs = _list_recent_refresh_jobs(store, limit=6)
-        latest_job = latest_jobs[0] if latest_jobs else None
-        if latest_job:
-            with st.container(border=True):
-                left, middle, right, reload_col = st.columns([2.2, 1.3, 2.2, 1])
-                left.markdown(f"**Letzter Job:** {_job_type_label(latest_job.get('job_type'))}")
-                left.caption(f"Job-ID: {latest_job.get('job_id', '—')}")
-                middle.metric("Status", _job_status_badge(latest_job.get('status')))
-                progress_value = int(latest_job.get('progress') or 0)
-                right.markdown(f"**Schritt:** {latest_job.get('current_step') or '—'}")
-                right.caption(latest_job.get('message') or '—')
-                with reload_col:
-                    if st.button("Status neu laden", use_container_width=True):
-                        st.rerun()
-                st.progress(max(0, min(progress_value, 100)) / 100.0, text=f"Fortschritt: {progress_value}%")
-                meta_bits = []
-                if latest_job.get('requested_at'):
-                    meta_bits.append(f"Angelegt: {latest_job['requested_at']} UTC")
-                if latest_job.get('started_at'):
-                    meta_bits.append(f"Gestartet: {latest_job['started_at']} UTC")
-                if latest_job.get('finished_at'):
-                    meta_bits.append(f"Beendet: {latest_job['finished_at']} UTC")
-                if latest_job.get('runner_source'):
-                    meta_bits.append(f"Runner: {latest_job['runner_source']}")
-                if meta_bits:
-                    st.caption(" · ".join(meta_bits))
-                if latest_job.get('run_url'):
-                    st.markdown(f"[GitHub-Run öffnen]({latest_job['run_url']})")
-                result = latest_job.get('result') or {}
-                if latest_job.get('status') == 'done' and isinstance(result, dict) and result:
-                    cols = st.columns(4)
-                    if result.get('requested') is not None:
-                        cols[0].metric("Angefragt", int(result.get('requested') or 0))
-                    if result.get('loaded') is not None:
-                        cols[1].metric("Geladen", int(result.get('loaded') or 0))
-                    if result.get('coverage') is not None:
-                        cols[2].metric("Abdeckung", f"{float(result.get('coverage') or 0):.0%}")
-                    if result.get('rows_written') is not None:
-                        cols[3].metric("Kurszeilen", f"{int(result.get('rows_written') or 0):,}")
-                elif latest_job.get('status') == 'failed' and latest_job.get('message'):
-                    st.error(latest_job.get('message'))
-
-        btn_refresh, btn_rescue, btn_remap, btn_diag, btn_analyze = st.columns(5)
-        with btn_refresh:
-            refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True, disabled=bool(active_job))
-        with btn_rescue:
-            rescue_clicked = st.button("Fehlende nachladen", use_container_width=True, disabled=bool(active_job))
-        with btn_remap:
-            remap_clicked = st.button("Automatisch remappen", use_container_width=True, disabled=bool(active_job))
-        with btn_diag:
-            diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True)
-        with btn_analyze:
-            analyze_clicked = st.button("Tiefenanalyse starten", type="primary", use_container_width=True)
-
-        if refresh_clicked:
-            result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit"})
-            if result.get("ok"):
-                st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}. Der Worker übernimmt den Import jetzt außerhalb von Streamlit. Den Fortschritt siehst du darunter im Bereich Letzter Job oder direkt in GitHub Actions.")
-            else:
-                st.error(result.get("error") or "Der Refresh-Job konnte nicht gestartet werden.")
-
-        if rescue_clicked:
-            result = _request_external_refresh_job("rescue_missing", payload={"trigger": "streamlit"})
-            if result.get("ok"):
-                st.success(f"✓ Rescue-Job angelegt: {result['job']['job_id']}.")
-            else:
-                st.error(result.get("error") or "Der Rescue-Job konnte nicht gestartet werden.")
-
-        if remap_clicked:
-            result = _request_external_refresh_job("auto_remap", payload={"trigger": "streamlit"})
-            if result.get("ok"):
-                st.success(f"✓ Auto-Remap-Job angelegt: {result['job']['job_id']}.")
-            else:
-                st.error(result.get("error") or "Der Auto-Remap-Job konnte nicht gestartet werden.")
-
-        if diagnose_clicked:
-                    with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
-                        diag_stats = diagnose_missing_nyse_yahoo()
-                        st.cache_data.clear()
-                    if diag_stats.get("ok"):
-                        if diag_stats.get("missing_total", 0) == 0:
-                            st.success(diag_stats.get("message", "Es fehlen aktuell keine Ticker mehr im Datenspeicher."))
-                        else:
-                            counts = diag_stats.get("counts", {}) or {}
-                            hist_ok = int(counts.get("Historie vorhanden", 0))
-                            lookup_no_hist = int(counts.get("Yahoo kennt Symbol, aber keine Historie", 0))
-                            unknown = int(counts.get("Yahoo kennt Symbol nicht", 0))
-                            errors = int(counts.get("Diagnosefehler", 0))
-                            st.success(f"✓ Yahoo-Diagnose abgeschlossen · Stichprobe {diag_stats['sample_size']} von {diag_stats['missing_total']} fehlenden Tickern · Historie vorhanden: {hist_ok} · Yahoo kennt Symbol, aber keine Historie: {lookup_no_hist} · Yahoo kennt Symbol nicht: {unknown}" + (f" · Diagnosefehler: {errors}" if errors else ""))
-                            metric_cols = st.columns(4)
-                            metric_cols[0].metric("Stichprobe", diag_stats["sample_size"])
-                            metric_cols[1].metric("Historie vorhanden", hist_ok)
-                            metric_cols[2].metric("Yahoo kennt Symbol, aber keine Historie", lookup_no_hist)
-                            metric_cols[3].metric("Yahoo kennt Symbol nicht", unknown)
-                            results_df = diag_stats.get("results_df")
-                            if results_df is not None and not results_df.empty:
-                                st.dataframe(results_df, use_container_width=True, hide_index=True)
+            st.warning(f"Die Kursdaten werden aktualisiert (benötigter Stand: {benchmark_str}). Bitte komm in ca. 10 Minuten erneut auf die Seite.")
+    else:
+        br = _render_deep_analysis_content(component_bundle, sd, data)
+        if br is not None and len(br):
+            breadth_last = pd.Timestamp(br.index[-1]).date()
+            if breadth_last < benchmark_last:
+                benchmark_str = benchmark_last.strftime("%d.%m.%Y")
+                breadth_str = breadth_last.strftime("%d.%m.%Y")
+                refresh_guard = f"_auto_refresh_requested_{benchmark_last.isoformat()}"
+                active_job = _get_active_refresh_job(_get_price_store())
+                if not st.session_state.get(refresh_guard) and not active_job:
+                    result = _request_external_refresh_job("refresh_universe", payload={"trigger": "auto_open_stale", "required_date": benchmark_last.isoformat(), "cached_date": breadth_last.isoformat()})
+                    st.session_state[refresh_guard] = True
+                    if result.get("ok"):
+                        st.warning(f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite.")
                     else:
-                        st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
-
-        if analyze_clicked:
-            with st.spinner("Lese das NYSE/Nasdaq-Aktienuniversum aus dem persistenten Datenspeicher …"):
-                component_bundle = load_nyse_breadth_data()
-            if component_bundle is not None:
-                close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
-                if close_frame is None or len(close_frame) <= 50:
-                    st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse des NYSE/Nasdaq-Aktienuniversums.")
-                    return
-                br = compute_breadth_from_components(component_bundle)
-                if br is not None and len(br) > 20:
-                    last_trading_date = br.index[-1].strftime("%d.%m.%Y")
-                    breadth_attrs = br.attrs
-                    requested = breadth_attrs.get("requested_universe")
-                    loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
-                    coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
-                    ratio_txt = f" / {requested}" if requested else ""
-                    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
-                    if requested and loaded < requested * 0.8:
-                        st.warning(f"Hinweis: Es wurden nicht alle Titel des NYSE/Nasdaq-Aktienuniversums geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
-                    st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
-
-                    br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
-                    if len(br_valid) == 0:
-                        st.warning("Keine gültigen Handelstage gefunden.")
-                        return
-                    bL = br_valid.iloc[-1]
-                    bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
-                    intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
-                    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
-
-                    kb1, kb2, kb3, kb4, kb5 = st.columns(5)
-                    mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
-                    p50 = bL["Pct_Above_50SMA"]; p200 = bL["Pct_Above_200SMA"]; dr = bL["Deemer_Ratio"]
-                    with kb1:
-                        st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—", "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "Neutral" if not np.isnan(mc) else "")
-                    with kb2:
-                        st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}", f"{nh_val} Hochs / {nl_val} Tiefs")
-                    with kb3:
-                        st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—", "Überhitzt" if p50 > 70 else "Schwach" if p50 < 30 else "")
-                    with kb4:
-                        st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
-                    with kb5:
-                        if not np.isnan(dr):
-                            if dr >= 1.97:
-                                dr_label, dr_delta = "🚀 Sehr gut", "Breakaway Momentum!"
-                            elif dr >= 1.50:
-                                dr_label, dr_delta = f"{dr:.2f}", "Gut — konstruktiv"
-                            elif dr >= 1.00:
-                                dr_label, dr_delta = f"{dr:.2f}", "Neutral"
-                            else:
-                                dr_label, dr_delta = f"{dr:.2f}", "Schlecht — schwache Breite"
-                        else:
-                            dr_label, dr_delta = "—", ""
-                        st.metric("Deemer Ratio", dr_label, dr_delta)
-
-                    with st.expander("Kennzahlen der Tiefenanalyse erklärt", expanded=False):
-                        _render_market_glossary(["McClellan Osc.", "NH/NL Ratio", "% > 50-SMA", "% > 200-SMA", "Deemer Ratio"])
-
-                    recent_thrust = br["Breadth_Thrust"].tail(20).any()
-                    if recent_thrust:
-                        st.success("🚀 Breitenschub (Deemer Ratio > 1.97) in den letzten 20 Tagen erkannt.")
-
-                    if "S&P 500" in data:
-                        spx = data["S&P 500"]
-                        spx_at_high = spx["Close"].iloc[-1] >= spx["High"].rolling(20).max().iloc[-2] * 0.998
-                        ad_at_high = br["AD_Line"].iloc[-1] >= br["AD_Line"].rolling(20).max().iloc[-2] * 0.998
-                        if spx_at_high and not ad_at_high:
-                            st.warning("⚠ Divergenz: S&P 500 nahe 20T-Hoch, aber A/D-Linie nicht — Marktbreite lässt nach")
-                        elif spx_at_high and ad_at_high:
-                            st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
-                        render_check("Keine Divergenz Index vs. A/D-Linie", not (spx_at_high and not ad_at_high), "A/D-Linie bestätigt" if ad_at_high else "Divergenz aktiv")
-                    render_check("McClellan > 0", mc > 0, f"McClellan: {mc:.1f}")
-                    render_check("% über 50-SMA > 50%", p50 > 50, f"{p50:.0f}%")
-                    render_check("NH/NL Ratio > 1", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
-                    if not np.isnan(dr):
-                        dr_status = "Sehr gut" if dr >= 1.97 else "Gut" if dr >= 1.50 else "Neutral" if dr >= 1.00 else "Schlecht"
-                        render_check("Deemer Ratio", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
-                    else:
-                        render_check("Deemer Ratio", False, "Nicht verfügbar")
-                    st.markdown("</div>", unsafe_allow_html=True)
-            else:
-                st.error("Im persistenten Datenspeicher liegen noch nicht genug Daten für das NYSE/Nasdaq-Aktienuniversum. Bitte zuerst den Kursbestand aktualisieren.")
-
-            if fred_key:
-                with st.spinner("Lade Fed Funds Rate …"):
-                    fed = load_fed_funds_rate(fred_key)
-                if fed is not None and len(fed) > 10:
-                    st.markdown('<div class="info-card"><div class="card-label">Federal Funds Rate (FRED)</div>', unsafe_allow_html=True)
-                    st.plotly_chart(plot_fed_rate(fed), use_container_width=True, config={"displayModeBar": False})
-                    current_rate = fed["FedRate"].iloc[-1]
-                    prev_rate = fed["FedRate"].iloc[-30] if len(fed) > 30 else fed["FedRate"].iloc[0]
-                    rate_trend = "steigend" if current_rate > prev_rate else "fallend" if current_rate < prev_rate else "stabil"
-                    render_check("Zinstrend nicht steigend", rate_trend != "steigend", f"Fed Funds Rate: {current_rate:.2f}% ({rate_trend})", warn=(rate_trend == "steigend"))
-                    st.markdown("</div>", unsafe_allow_html=True)
-                elif fred_key:
-                    st.warning("FRED-Daten konnten nicht geladen werden. API-Key korrekt?")
+                        st.error(result.get("error") or "Die automatische Aktualisierung konnte nicht gestartet werden.")
+                else:
+                    st.warning(f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite.")
 
     st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
 
@@ -6339,6 +6208,74 @@ def _tab_marktanalyse():
 # ===== Main entry point =====
 
 
+
+
+def _render_technical_setup_area():
+    st.markdown("### ⚙️ Technisches Setup")
+    st.caption("Privater Wartungsbereich für Datenbankaktualisierung, Worker-Status und Diagnose.")
+    store = _get_price_store()
+    st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
+    if store["backend"] != "neon":
+        st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon meist stabiler.")
+
+    current_refresh_at = _get_cache_metadata(store, "last_refresh_at", "")
+    live_status = get_live_universe_store_status(store["backend"], _get_store_label(store), str(current_refresh_at or ""))
+    live_cols = st.columns(5)
+    live_cols[0].metric("Universe live", int(live_status.get("requested", 0)))
+    live_cols[1].metric("Im Cache", int(live_status.get("loaded", 0)))
+    live_cols[2].metric("Abdeckung", f"{float(live_status.get('coverage', 0.0) or 0.0):.0%}")
+    live_cols[3].metric("Mappings", int(live_status.get("mapped", 0)))
+    live_cols[4].metric("Ungeklärt", int(live_status.get("not_found", 0)) + int(live_status.get("no_history", 0)))
+
+    active_job = _get_active_refresh_job(store)
+    latest_jobs = _list_recent_refresh_jobs(store, limit=6)
+    latest_job = latest_jobs[0] if latest_jobs else None
+    if latest_job:
+        with st.container(border=True):
+            st.markdown(f"**Letzter Job:** {_job_type_label(latest_job.get('job_type'))} · **Status:** {_job_status_badge(latest_job.get('status'))}")
+            st.caption(f"Job-ID: {latest_job.get('job_id', '—')} · Schritt: {latest_job.get('current_step') or '—'}")
+            if st.button("Status neu laden", use_container_width=True, key="tech_status_reload"):
+                st.rerun()
+
+    btn_refresh, btn_rescue, btn_remap, btn_diag = st.columns(4)
+    with btn_refresh:
+        refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True, disabled=bool(active_job), key="tech_refresh_universe")
+    with btn_rescue:
+        rescue_clicked = st.button("Fehlende nachladen", use_container_width=True, disabled=bool(active_job), key="tech_rescue_missing")
+    with btn_remap:
+        remap_clicked = st.button("Automatisch remappen", use_container_width=True, disabled=bool(active_job), key="tech_auto_remap")
+    with btn_diag:
+        diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True, key="tech_yahoo_diag")
+
+    if refresh_clicked:
+        result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit_private_tech"})
+        if result.get("ok"):
+            st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der Refresh-Job konnte nicht gestartet werden.")
+    if rescue_clicked:
+        result = _request_external_refresh_job("rescue_missing", payload={"trigger": "streamlit_private_tech"})
+        if result.get("ok"):
+            st.success(f"✓ Rescue-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der Rescue-Job konnte nicht gestartet werden.")
+    if remap_clicked:
+        result = _request_external_refresh_job("auto_remap", payload={"trigger": "streamlit_private_tech"})
+        if result.get("ok"):
+            st.success(f"✓ Auto-Remap-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der Auto-Remap-Job konnte nicht gestartet werden.")
+    if diagnose_clicked:
+        with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
+            diag_stats = diagnose_missing_nyse_yahoo()
+            st.cache_data.clear()
+        if diag_stats.get("ok"):
+            st.success(diag_stats.get("message", "Yahoo-Diagnose abgeschlossen."))
+            results_df = diag_stats.get("results_df")
+            if results_df is not None and not results_df.empty:
+                st.dataframe(results_df, use_container_width=True, hide_index=True)
+        else:
+            st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
 
 def _tab_mein_bereich():
@@ -6359,7 +6296,7 @@ def _tab_mein_bereich():
             _lock_private_area()
             st.rerun()
 
-    area_tab1, area_tab2 = st.tabs(["📝 Arbeitsbereich", "💼 Depot 7.2"])
+    area_tab1, area_tab2, area_tab3 = st.tabs(["📝 Arbeitsbereich", "💼 Depot 7.2", "⚙️ Technisches Setup"])
 
     with area_tab1:
         left, right = st.columns([1.0, 1.0])
@@ -6431,6 +6368,9 @@ def _tab_mein_bereich():
 
     with area_tab2:
         _render_portfolio_72_area()
+
+    with area_tab3:
+        _render_technical_setup_area()
 
 
 def main():
