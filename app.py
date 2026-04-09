@@ -2106,6 +2106,7 @@ def _dl(symbol, start, end):
     except Exception as exc:
         logger.warning("Download failed for %s: %s", symbol, exc)
         return None
+@st.cache_data(ttl=300, show_spinner=False)
 def load_market_data(lookback_days=400):
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = {
@@ -2135,6 +2136,7 @@ SECTOR_ETFS = {
     "XLRE": "Real Estate",
 }
 
+@st.cache_data(ttl=900, show_spinner=False)
 def load_sector_data(lookback_days=200):
     """Load daily close prices for all sector ETFs."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
@@ -5468,6 +5470,10 @@ def _tab_marktanalyse():
         selected = st.radio("Index", available, horizontal=True, label_visibility="collapsed")
     with c2:
         sd = st.selectbox("Zeitraum", [60, 90, 130, 200], index=1, format_func=lambda x: f"{x} Tage")
+        if st.button("Daten neu laden", use_container_width=True, help="Leert den Kurzzeit-Cache und lädt Marktdaten frisch von der Quelle."):
+            load_market_data.clear()
+            st.cache_data.clear()
+            st.rerun()
 
     df = add_indicators(data[selected].copy())
     df = detect_distribution_days(df)
