@@ -674,11 +674,20 @@ def _get_portfolio_settings() -> dict:
     raw = st.session_state.get("portfolio_settings", {})
     if isinstance(raw, dict):
         settings.update(raw)
-    for key, fallback in _default_portfolio_settings().items():
+    numeric_fields = {
+        "cash_balance",
+        "risk_per_position_pct",
+        "target_risk_contribution",
+        "max_depot_loss_low",
+        "max_depot_loss_high",
+    }
+    for key in numeric_fields:
+        fallback = _default_portfolio_settings().get(key, 0.0)
         try:
             settings[key] = float(settings.get(key, fallback))
         except Exception:
             settings[key] = fallback
+    settings["curve_start_date"] = str(settings.get("curve_start_date", "") or "").strip()
     return settings
 
 def _save_portfolio_settings(settings: dict) -> None:
@@ -1292,10 +1301,14 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
         close = close_map.get(ticker)
         if close is None or len(close) == 0:
             close = _fetch_close_history(ticker, active_start, end_ts)
-        if close is None or len(close) == 0:
-            continue
-        aligned = close.reindex(pd.DatetimeIndex(curve["date"]), method="ffill")
         mask = curve["date"] >= active_start
+        if close is None or len(close) == 0:
+            if entry_price > 0:
+                fallback_idx = pd.DatetimeIndex(curve.loc[mask, "date"])
+                close = pd.Series(entry_price, index=fallback_idx, dtype=float)
+            else:
+                continue
+        aligned = close.reindex(pd.DatetimeIndex(curve["date"]), method="ffill")
         values = aligned.reindex(pd.DatetimeIndex(curve.loc[mask, "date"]), method="ffill").ffill().bfill().fillna(0.0).to_numpy()
         curve.loc[mask, "depot_value"] += values * shares
 
