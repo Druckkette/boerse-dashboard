@@ -187,6 +187,7 @@ def _workspace_payload():
         "positions": st.session_state.get("positions", []),
         "todos": st.session_state.get("todos", ""),
         "portfolio_history": st.session_state.get("portfolio_history", []),
+        "portfolio_cash_flows": st.session_state.get("portfolio_cash_flows", []),
         "portfolio_settings": settings,
     }
 
@@ -200,6 +201,7 @@ def _load_workspace_from_store():
         "positions": [],
         "todos": "",
         "portfolio_history": [],
+        "portfolio_cash_flows": [],
         "portfolio_settings": _default_portfolio_settings(),
     }
     for field, default in defaults.items():
@@ -220,6 +222,8 @@ def _load_workspace_from_store():
         payload["portfolio_settings"] = merged
     if not isinstance(payload.get("portfolio_history"), list):
         payload["portfolio_history"] = []
+    if not isinstance(payload.get("portfolio_cash_flows"), list):
+        payload["portfolio_cash_flows"] = []
     return payload
 
 def _sync_workspace() -> None:
@@ -234,6 +238,7 @@ def _sync_workspace() -> None:
             _workspace_meta_key("positions"): json.dumps(payload["positions"], ensure_ascii=False),
             _workspace_meta_key("todos"): json.dumps(payload["todos"], ensure_ascii=False),
             _workspace_meta_key("portfolio_history"): json.dumps(payload["portfolio_history"], ensure_ascii=False),
+            _workspace_meta_key("portfolio_cash_flows"): json.dumps(payload["portfolio_cash_flows"], ensure_ascii=False),
             _workspace_meta_key("portfolio_settings"): json.dumps(payload["portfolio_settings"], ensure_ascii=False),
             _workspace_meta_key("updated_at"): datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -249,7 +254,7 @@ def _init_workspace_state():
         stored = _load_workspace_from_store()
     except Exception as exc:
         logger.debug("workspace store load failed: %s", exc)
-    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_settings"]):
+    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_cash_flows", "portfolio_settings"]):
         local_stored = _safe_json_load(Path(WORKSPACE_FILE), {})
         if isinstance(local_stored, dict) and local_stored:
             stored = local_stored
@@ -259,6 +264,7 @@ def _init_workspace_state():
                 st.session_state["positions"] = stored.get("positions", [])
                 st.session_state["todos"] = stored.get("todos", "")
                 st.session_state["portfolio_history"] = stored.get("portfolio_history", [])
+                st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", [])
                 migrated_settings = dict(_default_portfolio_settings())
                 if isinstance(stored.get("portfolio_settings"), dict):
                     migrated_settings.update(stored.get("portfolio_settings", {}))
@@ -271,6 +277,7 @@ def _init_workspace_state():
     st.session_state["positions"] = stored.get("positions", []) if isinstance(stored, dict) else []
     st.session_state["todos"] = stored.get("todos", "") if isinstance(stored, dict) else ""
     st.session_state["portfolio_history"] = stored.get("portfolio_history", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_history", []), list) else []
+    st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_cash_flows", []), list) else []
     base_settings = dict(_default_portfolio_settings())
     if isinstance(stored, dict) and isinstance(stored.get("portfolio_settings"), dict):
         base_settings.update(stored.get("portfolio_settings", {}))
@@ -680,29 +687,47 @@ def _save_portfolio_settings(settings: dict) -> None:
     st.session_state["portfolio_settings"] = merged
     _sync_workspace()
 
-def _append_portfolio_history_entry(date_value, depot_value, deposit=0.0, withdrawal=0.0, note="") -> None:
+def _adjust_cash_balance(delta_usd: float) -> float:
+    _init_workspace_state()
+    settings = _get_portfolio_settings()
+    current_cash = _safe_float(settings.get("cash_balance"), 0.0)
+    new_cash = current_cash + float(delta_usd or 0.0)
+    settings["cash_balance"] = max(new_cash, 0.0)
+    st.session_state["portfolio_settings"] = settings
+    _sync_workspace()
+    return float(settings["cash_balance"])
+
+def _append_cash_flow_entry(date_value, flow_type: str, amount: float, note: str = "") -> None:
     _init_workspace_state()
     try:
         date_str = pd.Timestamp(date_value).strftime("%Y-%m-%d")
     except Exception:
         return
-    history = [row for row in st.session_state.get("portfolio_history", []) if str(row.get("date", "")) != date_str]
-    history.append({
+    amt = _safe_float(amount, np.nan)
+    if np.isnan(amt) or amt <= 0:
+        return
+    clean_type = "deposit" if str(flow_type).lower() == "deposit" else "withdrawal"
+    rows = list(st.session_state.get("portfolio_cash_flows", []))
+    rows.append({
         "date": date_str,
-        "depot_value": float(depot_value or 0),
-        "deposit": float(deposit or 0),
-        "withdrawal": float(withdrawal or 0),
+        "type": clean_type,
+        "amount": float(amt),
         "note": str(note or ""),
     })
-    history = sorted(history, key=lambda row: str(row.get("date", "")))
-    st.session_state["portfolio_history"] = history[-1500:]
+    rows = sorted(rows, key=lambda r: (str(r.get("date", "")), str(r.get("type", ""))))
+    st.session_state["portfolio_cash_flows"] = rows[-3000:]
     _sync_workspace()
 
-def _remove_portfolio_history_entry(date_value) -> None:
+def _remove_cash_flow_entry(index_value: int) -> None:
     _init_workspace_state()
-    date_str = str(date_value or "")
-    st.session_state["portfolio_history"] = [row for row in st.session_state.get("portfolio_history", []) if str(row.get("date", "")) != date_str]
+    rows = list(st.session_state.get("portfolio_cash_flows", []))
+    if 0 <= index_value < len(rows):
+        rows.pop(index_value)
+    st.session_state["portfolio_cash_flows"] = rows
     _sync_workspace()
+
+def _set_portfolio_curve_start_today() -> None:
+    st.session_state["pf_auto_curve_start"] = datetime.utcnow().date()
 
 def _position_entry_price(position: dict) -> float:
     return _safe_float(position.get("buy_price_usd") or position.get("buy_price"), np.nan)
@@ -720,6 +745,21 @@ def _position_stop_price(position: dict) -> float:
     if entry > 0 and not np.isnan(stop_pct):
         return entry * (1 - stop_pct / 100)
     return np.nan
+
+def _price_to_usd(price: float, currency: str, trade_date) -> tuple[float, float | None]:
+    value = float(price or 0.0)
+    if str(currency).upper() != "EUR":
+        return value, None
+    rate = None
+    try:
+        fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(trade_date) - timedelta(days=5), end=pd.Timestamp(trade_date) + timedelta(days=3))
+        if fx is not None and len(fx) > 0:
+            rate = float(fx["Close"].iloc[-1])
+    except Exception:
+        rate = None
+    if rate is None:
+        rate = 1.08
+    return value * float(rate), float(rate)
 
 def _normalize_single_ticker(value: str) -> str:
     t = str(value or "").strip().upper()
@@ -1205,48 +1245,7 @@ def _portfolio_health_messages(summary: dict, positions_df: pd.DataFrame, settin
             messages.append(("warning", f"Diese Positionen liegen über dem Ziel-Risikobeitrag von {target_rc:.2f}: {tickers}."))
     return messages
 
-def _build_portfolio_curve(history: list[dict]) -> pd.DataFrame:
-    if not history:
-        return pd.DataFrame()
-    hist = pd.DataFrame(history)
-    if hist.empty or "date" not in hist:
-        return pd.DataFrame()
-    hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
-    hist = hist.dropna(subset=["date"]).sort_values("date").drop_duplicates(subset=["date"], keep="last")
-    if hist.empty:
-        return pd.DataFrame()
-    for col in ["depot_value", "deposit", "withdrawal"]:
-        hist[col] = pd.to_numeric(hist.get(col, 0), errors="coerce").fillna(0.0)
-
-    index_values = [100.0]
-    for idx in range(1, len(hist)):
-        prev_value = float(hist.iloc[idx - 1]["depot_value"])
-        current_value = float(hist.iloc[idx]["depot_value"])
-        deposit = float(hist.iloc[idx]["deposit"])
-        withdrawal = float(hist.iloc[idx]["withdrawal"])
-        if prev_value <= 0:
-            day_return = 0.0
-        else:
-            adjusted_profit = current_value - prev_value - deposit + withdrawal
-            day_return = adjusted_profit / prev_value
-        index_values.append(index_values[-1] * (1 + day_return))
-    hist["portfolio_index"] = index_values
-
-    bench = _fetch_close_history("^GSPC", hist["date"].min() - timedelta(days=7), hist["date"].max() + timedelta(days=3))
-    if len(bench):
-        aligned = bench.reindex(hist["date"].dt.normalize(), method="ffill")
-        hist["sp500_close"] = aligned.values
-        first_valid = hist["sp500_close"].dropna()
-        if len(first_valid):
-            start_val = float(first_valid.iloc[0])
-            hist["sp500_index"] = hist["sp500_close"] / start_val * 100
-        else:
-            hist["sp500_index"] = np.nan
-    else:
-        hist["sp500_index"] = np.nan
-    return hist
-
-def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: float, start_date, end_date=None) -> pd.DataFrame:
+def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: float, start_date, end_date=None, cash_flows=None) -> pd.DataFrame:
     tracked = _portfolio_positions_only(positions)
     start_ts = pd.Timestamp(start_date).normalize()
     end_ts = pd.Timestamp(end_date or datetime.utcnow().date()).normalize()
@@ -1291,6 +1290,25 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
         values = aligned.reindex(pd.DatetimeIndex(curve.loc[mask, "date"]), method="ffill").ffill().bfill().fillna(0.0).to_numpy()
         curve.loc[mask, "depot_value"] += values * shares
 
+    flow_df = pd.DataFrame(cash_flows or [])
+    if not flow_df.empty and "date" in flow_df:
+        flow_df["date"] = pd.to_datetime(flow_df["date"], errors="coerce").dt.normalize()
+        flow_df = flow_df.dropna(subset=["date"]).copy()
+        flow_df["amount"] = pd.to_numeric(flow_df.get("amount", 0), errors="coerce").fillna(0.0)
+        flow_df["type"] = flow_df.get("type", "").astype(str).str.lower()
+        flow_df["deposit"] = np.where(flow_df["type"] == "deposit", flow_df["amount"], 0.0)
+        flow_df["withdrawal"] = np.where(flow_df["type"] == "withdrawal", flow_df["amount"], 0.0)
+        by_day = flow_df.groupby("date", as_index=False)[["deposit", "withdrawal"]].sum()
+        flow_map = by_day.set_index("date")
+        curve["deposit"] = curve["date"].dt.normalize().map(flow_map["deposit"]).fillna(0.0)
+        curve["withdrawal"] = curve["date"].dt.normalize().map(flow_map["withdrawal"]).fillna(0.0)
+        for row in by_day.itertuples(index=False):
+            day = pd.Timestamp(row.date).normalize()
+            curve.loc[curve["date"] < day, "depot_value"] += float(row.withdrawal) - float(row.deposit)
+    else:
+        curve["deposit"] = 0.0
+        curve["withdrawal"] = 0.0
+
     curve["date"] = pd.to_datetime(curve["date"], errors="coerce")
     curve = curve.dropna(subset=["date"]).copy()
     curve = curve[curve["depot_value"].notna()].copy()
@@ -1299,8 +1317,20 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
     if (curve["depot_value"] <= 0).all():
         return pd.DataFrame()
 
-    first_value = float(curve["depot_value"].iloc[0])
-    curve["portfolio_index"] = (curve["depot_value"] / first_value * 100) if first_value > 0 else 100.0
+    index_values = [100.0]
+    for idx in range(1, len(curve)):
+        prev_value = float(curve.iloc[idx - 1]["depot_value"])
+        current_value = float(curve.iloc[idx]["depot_value"])
+        net_flow = float(curve.iloc[idx]["deposit"]) - float(curve.iloc[idx]["withdrawal"])
+        if prev_value <= 0:
+            day_return = 0.0
+        else:
+            adjusted_profit = current_value - prev_value - net_flow
+            day_return = adjusted_profit / prev_value
+        index_values.append(index_values[-1] * (1 + day_return))
+    curve["portfolio_index"] = index_values
+    curve["portfolio_index_sma10"] = curve["portfolio_index"].rolling(10, min_periods=1).mean()
+    curve["portfolio_index_sma21"] = curve["portfolio_index"].rolling(21, min_periods=1).mean()
     if len(bench):
         aligned = bench.reindex(curve["date"].dt.normalize(), method="ffill")
         curve["sp500_close"] = aligned.values
@@ -1383,18 +1413,10 @@ def _render_portfolio_72_area():
         st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
 
         if st.button("Depotposition speichern", use_container_width=True, key="pf_save_position", disabled=not bool(pos_ticker)):
-            buy_price_usd = float(buy_price)
-            eur_usd_rate = None
-            if currency == "EUR":
-                try:
-                    fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
-                    if fx is not None and len(fx) > 0:
-                        eur_usd_rate = float(fx["Close"].iloc[-1])
-                        buy_price_usd = float(buy_price) * eur_usd_rate
-                except Exception:
-                    eur_usd_rate = None
-                if eur_usd_rate is None:
-                    buy_price_usd = float(buy_price) * 1.08
+            buy_price_usd, eur_usd_rate = _price_to_usd(float(buy_price), currency, buy_date)
+            previous_shares = _safe_float((selected_pos or {}).get("shares"), 0.0) if selected_pos else 0.0
+            delta_shares = max(float(shares) - previous_shares, 0.0)
+            buy_delta_value = delta_shares * float(buy_price_usd)
             _upsert_position({
                 "ticker": pos_ticker,
                 "buy_price": float(buy_price),
@@ -1406,6 +1428,10 @@ def _render_portfolio_72_area():
                 "stop_price": float(stop_price_preview),
                 "note": note,
             })
+            if buy_delta_value > 0:
+                new_cash = _adjust_cash_balance(-buy_delta_value)
+                if buy_delta_value > float(settings.get("cash_balance", 0.0)):
+                    st.warning(f"Kaufvolumen ({buy_delta_value:,.2f} USD) überstieg den verfügbaren Cashbestand. Cash wurde auf {new_cash:,.2f} USD begrenzt.")
             st.success(f"{pos_ticker} gespeichert.")
             st.rerun()
 
@@ -1438,6 +1464,60 @@ def _render_portfolio_72_area():
             st.metric("Beta-Balancer-Score", f"{score:.2f}" if not np.isnan(score) else "—")
             st.metric("Max. Gewicht via Balancer", f"{balancer_weight*100:.1f}%" if not np.isnan(balancer_weight) else "—")
             st.metric("Max. Stück via Balancer", f"{balancer_shares:,}" if balancer_shares else "—")
+
+    st.markdown("#### Transaktionen & Cash-Management")
+    txn_col_sell, txn_col_flow = st.columns([1.2, 1.0])
+    with txn_col_sell:
+        st.caption("Verkäufe buchen: ganz oder teilweise. Verkaufserlöse werden automatisch dem Cash gutgeschrieben.")
+        sell_options = [p.get("ticker", "") for p in tracked_positions if p.get("ticker")]
+        sell_ticker = st.selectbox("Position verkaufen", options=[""] + sell_options, key="pf_sell_ticker")
+        selected_sell = next((p for p in tracked_positions if p.get("ticker") == sell_ticker), None) if sell_ticker else None
+        max_sell_shares = float(_safe_float((selected_sell or {}).get("shares"), 0.0))
+        sell_col1, sell_col2, sell_col3 = st.columns(3)
+        with sell_col1:
+            sell_shares = st.number_input("Zu verkaufende Stück", min_value=0.0, max_value=max_sell_shares if max_sell_shares > 0 else 0.0, value=max_sell_shares if max_sell_shares > 0 else 0.0, step=1.0, key="pf_sell_shares")
+        with sell_col2:
+            sell_price = st.number_input("Verkaufspreis", min_value=0.0, value=float(_safe_float((selected_sell or {}).get("current_price"), 0.0)), step=0.01, key="pf_sell_price")
+        with sell_col3:
+            sell_currency = st.selectbox("Währung Verkauf", ["USD", "EUR"], index=0, key="pf_sell_currency")
+        sell_date = st.date_input("Verkaufsdatum", value=datetime.utcnow().date(), key="pf_sell_date")
+        if st.button("Verkauf buchen", use_container_width=True, key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
+            if not selected_sell:
+                st.warning("Bitte zuerst eine Position wählen.")
+            elif sell_shares > max_sell_shares:
+                st.error("Die Verkaufsmenge ist größer als die vorhandene Stückzahl.")
+            else:
+                sell_price_usd, _ = _price_to_usd(float(sell_price), sell_currency, sell_date)
+                proceeds = float(sell_shares) * float(sell_price_usd)
+                remaining = max(max_sell_shares - float(sell_shares), 0.0)
+                if remaining <= 0:
+                    _remove_position(selected_sell.get("ticker", ""))
+                else:
+                    updated = dict(selected_sell)
+                    updated["shares"] = remaining
+                    _upsert_position(updated)
+                _adjust_cash_balance(proceeds)
+                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} USD.")
+                st.rerun()
+
+    with txn_col_flow:
+        st.caption("Externe Cash-Flows (Ein-/Auszahlungen) beeinflussen den Depotindex zeitgewichtet.")
+        flow_date = st.date_input("Cash-Flow Datum", value=datetime.utcnow().date(), key="pf_flow_date")
+        flow_amount = st.number_input("Cash-Flow Betrag", min_value=0.0, value=0.0, step=100.0, key="pf_flow_amount")
+        flow_note = st.text_input("Cash-Flow Notiz", value="", key="pf_flow_note")
+        flow_act1, flow_act2 = st.columns(2)
+        with flow_act1:
+            if st.button("Einzahlung buchen", use_container_width=True, key="pf_flow_deposit", disabled=flow_amount <= 0):
+                _append_cash_flow_entry(flow_date, "deposit", flow_amount, flow_note)
+                _adjust_cash_balance(float(flow_amount))
+                st.success("Einzahlung erfasst.")
+                st.rerun()
+        with flow_act2:
+            if st.button("Auszahlung buchen", use_container_width=True, key="pf_flow_withdrawal", disabled=flow_amount <= 0):
+                _append_cash_flow_entry(flow_date, "withdrawal", flow_amount, flow_note)
+                _adjust_cash_balance(-float(flow_amount))
+                st.success("Auszahlung erfasst.")
+                st.rerun()
 
     metric_cols = st.columns(6)
     metric_map = [
@@ -1509,105 +1589,79 @@ def _render_portfolio_72_area():
     if valid_buy_dates:
         default_curve_start = min(valid_buy_dates)
 
-    curve_tab_auto, curve_tab_manual = st.tabs(["Automatisch aus Depotbestand", "Manuelle Tageszeilen"])
+    st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Per Klick kannst du den Start auf heute setzen.")
+    auto_col1, auto_col2, auto_col3 = st.columns([1, 1, 0.9])
+    with auto_col1:
+        auto_start = st.date_input("Startdatum der Rekonstruktion", value=default_curve_start, key="pf_auto_curve_start")
+    with auto_col2:
+        auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
+    with auto_col3:
+        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
+        st.button(
+            "Start = Heute",
+            use_container_width=True,
+            key="pf_auto_curve_start_today",
+            on_click=_set_portfolio_curve_start_today,
+        )
+    cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
 
-    with curve_tab_auto:
-        st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Wenn ein Kaufdatum nach dem gewählten Start liegt, bleibt der entsprechende Einstand bis dahin als Cash im Modell.")
-        auto_col1, auto_col2 = st.columns([1, 1])
-        with auto_col1:
-            auto_start = st.date_input("Startdatum der Rekonstruktion", value=default_curve_start, key="pf_auto_curve_start")
-        with auto_col2:
-            auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
-        auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end)
-        if not auto_curve.empty:
-            fig_auto = go.Figure()
-            fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index"], mode="lines", name="Depotindex"))
-            if "sp500_index" in auto_curve and auto_curve["sp500_index"].notna().any():
-                fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["sp500_index"], mode="lines", name="S&P 500 Index"))
-            fig_auto.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="#0f172a",
-                plot_bgcolor="#0f172a",
-                height=380,
-                margin=dict(l=10, r=10, t=20, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
-                xaxis=dict(title="", gridcolor="#1e293b"),
-            )
-            st.plotly_chart(fig_auto, use_container_width=True, key="pf_curve_chart_auto")
-            auto_display = auto_curve[["date", "depot_value", "portfolio_index", "sp500_index"]].copy()
-            auto_display["date"] = auto_display["date"].dt.strftime("%Y-%m-%d")
-            auto_display = auto_display.rename(columns={
-                "date": "Datum",
-                "depot_value": "Depotwert",
-                "portfolio_index": "Depotindex",
-                "sp500_index": "S&P 500",
-            })
-            st.dataframe(auto_display.round(2), use_container_width=True, hide_index=True)
-        else:
-            st.info("Für die automatische Depotkurve fehlen aktuell verwertbare Kursdaten oder Positionen mit Stückzahl.")
+    auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows)
+    if not auto_curve.empty:
+        fig_auto = go.Figure()
+        fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index"], mode="lines", name="Depotindex"))
+        fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma10"], mode="lines", name="10-Tage SMA", line=dict(width=1.6, dash="dot")))
+        fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma21"], mode="lines", name="21-Tage SMA", line=dict(width=1.6, dash="dash")))
+        if "sp500_index" in auto_curve and auto_curve["sp500_index"].notna().any():
+            fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["sp500_index"], mode="lines", name="S&P 500 Index"))
+        fig_auto.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#0f172a",
+            plot_bgcolor="#0f172a",
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
+            xaxis=dict(title="", gridcolor="#1e293b"),
+        )
+        st.plotly_chart(fig_auto, use_container_width=True, key="pf_curve_chart_auto")
+        auto_display = auto_curve[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]].copy()
+        auto_display["date"] = auto_display["date"].dt.strftime("%Y-%m-%d")
+        auto_display = auto_display.rename(columns={
+            "date": "Datum",
+            "depot_value": "Depotwert",
+            "deposit": "Einzahlung",
+            "withdrawal": "Auszahlung",
+            "portfolio_index": "Depotindex",
+            "portfolio_index_sma10": "SMA 10",
+            "portfolio_index_sma21": "SMA 21",
+            "sp500_index": "S&P 500",
+        })
+        st.dataframe(auto_display.round(2), use_container_width=True, hide_index=True)
+    else:
+        st.info("Für die Depotkurve fehlen aktuell verwertbare Kursdaten oder Positionen mit Stückzahl.")
 
-    with curve_tab_manual:
-        st.caption("Optional kannst du weiterhin echte Tagesstände mit Ein- und Auszahlungen speichern. Diese Variante ist genauer, wenn du auch Verkäufe, Teilverkäufe oder spätere Zukäufe historisch abbilden willst.")
-        history = st.session_state.get("portfolio_history", [])
-        hist_col1, hist_col2, hist_col3, hist_col4 = st.columns([1, 1, 1, 1.3])
-        with hist_col1:
-            snapshot_date = st.date_input("Datum", value=datetime.utcnow().date(), key="pf_hist_date")
-        with hist_col2:
-            snapshot_value = st.number_input("Depotwert", min_value=0.0, value=float(current_total_value or 0.0), step=100.0, key="pf_hist_value")
-        with hist_col3:
-            snapshot_deposit = st.number_input("Einzahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_deposit")
-        with hist_col4:
-            snapshot_withdrawal = st.number_input("Auszahlung", min_value=0.0, value=0.0, step=50.0, key="pf_hist_withdrawal")
-        snapshot_note = st.text_input("Notiz zur Tageszeile", value="", key="pf_hist_note")
-        act_hist1, act_hist2 = st.columns(2)
-        with act_hist1:
-            if st.button("Tageszeile speichern", use_container_width=True, key="pf_hist_save"):
-                _append_portfolio_history_entry(snapshot_date, snapshot_value, snapshot_deposit, snapshot_withdrawal, snapshot_note)
-                st.success("Tageszeile gespeichert.")
-                st.rerun()
-        with act_hist2:
-            if st.button("Heutigen Depotwert übernehmen", use_container_width=True, key="pf_hist_take_today", disabled=not bool(current_total_value)):
-                _append_portfolio_history_entry(datetime.utcnow().date(), current_total_value, 0.0, 0.0, "Automatisch aus Depot übernommen")
-                st.success("Heutiger Depotwert übernommen.")
-                st.rerun()
-
-        curve_df = _build_portfolio_curve(history)
-        if not curve_df.empty:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["portfolio_index"], mode="lines+markers", name="Depotindex"))
-            if "sp500_index" in curve_df and curve_df["sp500_index"].notna().any():
-                fig.add_trace(go.Scatter(x=curve_df["date"], y=curve_df["sp500_index"], mode="lines+markers", name="S&P 500 Index"))
-            fig.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="#0f172a",
-                plot_bgcolor="#0f172a",
-                height=380,
-                margin=dict(l=10, r=10, t=20, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
-                xaxis=dict(title="", gridcolor="#1e293b"),
-            )
-            st.plotly_chart(fig, use_container_width=True, key="pf_curve_chart")
-            hist_display = curve_df[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "sp500_index", "note"]].copy()
-            hist_display["date"] = hist_display["date"].dt.strftime("%Y-%m-%d")
-            hist_display = hist_display.rename(columns={
-                "date": "Datum",
-                "depot_value": "Depotwert",
-                "deposit": "Einzahlung",
-                "withdrawal": "Auszahlung",
-                "portfolio_index": "Depotindex",
-                "sp500_index": "S&P 500",
-                "note": "Notiz",
-            })
-            st.dataframe(hist_display.round(2), use_container_width=True, hide_index=True)
-            delete_date = st.selectbox("Tageszeile löschen", options=[""] + hist_display["Datum"].tolist(), key="pf_hist_delete_date")
-            if delete_date and st.button("Tageszeile löschen", use_container_width=True, key="pf_hist_delete_btn"):
-                _remove_portfolio_history_entry(delete_date)
-                st.success("Tageszeile gelöscht.")
-                st.rerun()
-        else:
-            st.info("Lege mindestens zwei Tageszeilen an, damit die manuelle Depotkurve gegen den S&P 500 sichtbar wird.")
+    if cash_flows:
+        flow_df = pd.DataFrame(cash_flows).copy()
+        flow_df["__idx"] = flow_df.index
+        flow_df["date"] = pd.to_datetime(flow_df["date"], errors="coerce")
+        flow_df = flow_df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
+        flow_df["Typ"] = flow_df["type"].map({"deposit": "Einzahlung", "withdrawal": "Auszahlung"}).fillna("—")
+        flow_df["Datum"] = flow_df["date"].dt.strftime("%Y-%m-%d")
+        flow_df["Betrag"] = pd.to_numeric(flow_df.get("amount", 0), errors="coerce").fillna(0.0)
+        flow_df["Notiz"] = flow_df.get("note", "").astype(str)
+        st.markdown("##### Erfasste Ein- und Auszahlungen")
+        st.dataframe(flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2), use_container_width=True, hide_index=True)
+        delete_idx = st.selectbox("Cash-Flow löschen", options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f}" for i, row in flow_df.iterrows()], key="pf_flow_delete_sel")
+        if delete_idx and st.button("Cash-Flow löschen", use_container_width=True, key="pf_flow_delete_btn"):
+            idx = int(str(delete_idx).split(":", 1)[0])
+            row = flow_df.iloc[idx]
+            if str(row.get("Typ")) == "Einzahlung":
+                _adjust_cash_balance(-float(row.get("Betrag", 0.0)))
+            elif str(row.get("Typ")) == "Auszahlung":
+                _adjust_cash_balance(float(row.get("Betrag", 0.0)))
+            _remove_cash_flow_entry(int(row.get("__idx", -1)))
+            st.success("Cash-Flow gelöscht.")
+            st.rerun()
 
 
 def _render_workspace_sidebar():
