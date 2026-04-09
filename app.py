@@ -1588,17 +1588,7 @@ def _render_portfolio_72_area():
         st.info("Für das Depotcockpit werden nur Positionen mit Stückzahl größer 0 berücksichtigt.")
 
     st.markdown("#### Depotkurve")
-    default_curve_start = datetime.utcnow().date() - timedelta(days=180)
-    valid_buy_dates = []
-    for pos in tracked_positions:
-        try:
-            valid_buy_dates.append(pd.Timestamp(pos.get("buy_date")).date())
-        except Exception:
-            pass
-    if valid_buy_dates:
-        default_curve_start = min(valid_buy_dates)
-
-    st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Per Klick kannst du den Start auf heute setzen.")
+    st.caption("Die Kurve startet erst mit Klick auf „Kurve starten“. Danach läuft sie dauerhaft ab diesem Starttag weiter.")
     saved_curve_start = None
     try:
         raw_curve_start = str(settings.get("curve_start_date", "") or "").strip()
@@ -1606,29 +1596,39 @@ def _render_portfolio_72_area():
             saved_curve_start = pd.Timestamp(raw_curve_start).date()
     except Exception:
         saved_curve_start = None
+
     if st.session_state.pop("pf_auto_curve_start_force_today", False):
         today = datetime.utcnow().date()
-        st.session_state["pf_auto_curve_start"] = today
         current_settings = _get_portfolio_settings()
         current_settings["curve_start_date"] = str(today)
         st.session_state["portfolio_settings"] = current_settings
         _sync_workspace()
-    if "pf_auto_curve_start" not in st.session_state:
-        st.session_state["pf_auto_curve_start"] = saved_curve_start or default_curve_start
-    auto_col1, auto_col2, auto_col3 = st.columns([1, 1, 0.9])
+        st.rerun()
+
+    auto_end = datetime.utcnow().date()
+    auto_col1, auto_col2 = st.columns([1, 1.2])
     with auto_col1:
-        auto_start = st.date_input("Startdatum der Rekonstruktion", value=st.session_state.get("pf_auto_curve_start", default_curve_start), key="pf_auto_curve_start", on_change=_persist_curve_start_from_widget)
+        if saved_curve_start is None:
+            if st.button("Kurve starten", use_container_width=True, key="pf_auto_curve_start_today"):
+                st.session_state["pf_auto_curve_start_force_today"] = True
+                st.rerun()
+        else:
+            st.success(f"Kurve aktiv seit {saved_curve_start.strftime('%Y-%m-%d')}")
     with auto_col2:
-        auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
-    with auto_col3:
-        st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        if st.button("Start = Heute", use_container_width=True, key="pf_auto_curve_start_today"):
-            st.session_state["pf_auto_curve_start_force_today"] = True
-            st.rerun()
+        if saved_curve_start is not None:
+            if st.button("Kurve neu starten (Heute)", use_container_width=True, key="pf_auto_curve_restart_today"):
+                st.session_state["pf_auto_curve_start_force_today"] = True
+                st.rerun()
+
+    auto_start = saved_curve_start
     cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
 
-    auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows)
-    if not auto_curve.empty:
+    auto_curve = pd.DataFrame()
+    if auto_start is not None:
+        auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows)
+    if auto_start is None:
+        st.info("Depotkurve ist noch nicht gestartet. Klicke auf „Kurve starten“, um den ersten Starttag festzulegen.")
+    elif not auto_curve.empty:
         fig_auto = go.Figure()
         fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index"], mode="lines", name="Depotindex"))
         fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma10"], mode="lines", name="10-Tage SMA", line=dict(width=1.6, dash="dot")))
