@@ -174,6 +174,7 @@ def _default_portfolio_settings():
         "target_risk_contribution": 0.20,
         "max_depot_loss_low": 8.0,
         "max_depot_loss_high": 12.0,
+        "curve_start_date": "",
     }
 
 def _workspace_payload():
@@ -724,6 +725,17 @@ def _remove_cash_flow_entry(index_value: int) -> None:
     if 0 <= index_value < len(rows):
         rows.pop(index_value)
     st.session_state["portfolio_cash_flows"] = rows
+    _sync_workspace()
+
+def _persist_curve_start_from_widget() -> None:
+    _init_workspace_state()
+    try:
+        selected = pd.Timestamp(st.session_state.get("pf_auto_curve_start")).date()
+    except Exception:
+        return
+    settings = _get_portfolio_settings()
+    settings["curve_start_date"] = str(selected)
+    st.session_state["portfolio_settings"] = settings
     _sync_workspace()
 
 def _position_entry_price(position: dict) -> float:
@@ -1587,15 +1599,31 @@ def _render_portfolio_72_area():
         default_curve_start = min(valid_buy_dates)
 
     st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Per Klick kannst du den Start auf heute setzen.")
+    saved_curve_start = None
+    try:
+        raw_curve_start = str(settings.get("curve_start_date", "") or "").strip()
+        if raw_curve_start:
+            saved_curve_start = pd.Timestamp(raw_curve_start).date()
+    except Exception:
+        saved_curve_start = None
+    if st.session_state.pop("pf_auto_curve_start_force_today", False):
+        today = datetime.utcnow().date()
+        st.session_state["pf_auto_curve_start"] = today
+        current_settings = _get_portfolio_settings()
+        current_settings["curve_start_date"] = str(today)
+        st.session_state["portfolio_settings"] = current_settings
+        _sync_workspace()
+    if "pf_auto_curve_start" not in st.session_state:
+        st.session_state["pf_auto_curve_start"] = saved_curve_start or default_curve_start
     auto_col1, auto_col2, auto_col3 = st.columns([1, 1, 0.9])
     with auto_col1:
-        auto_start = st.date_input("Startdatum der Rekonstruktion", value=default_curve_start, key="pf_auto_curve_start")
+        auto_start = st.date_input("Startdatum der Rekonstruktion", value=st.session_state.get("pf_auto_curve_start", default_curve_start), key="pf_auto_curve_start", on_change=_persist_curve_start_from_widget)
     with auto_col2:
         auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
     with auto_col3:
         st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
         if st.button("Start = Heute", use_container_width=True, key="pf_auto_curve_start_today"):
-            st.session_state["pf_auto_curve_start"] = datetime.utcnow().date()
+            st.session_state["pf_auto_curve_start_force_today"] = True
             st.rerun()
     cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
 
