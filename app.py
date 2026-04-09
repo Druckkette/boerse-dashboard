@@ -2107,6 +2107,7 @@ def _dl(symbol, start, end):
     except Exception as exc:
         logger.warning("Download failed for %s: %s", symbol, exc)
         return None
+@st.cache_data(ttl=900, show_spinner=False)
 def load_market_data(lookback_days=400):
     end = datetime.now(); start = end - timedelta(days=lookback_days)
     tickers = {
@@ -2136,6 +2137,7 @@ SECTOR_ETFS = {
     "XLRE": "Real Estate",
 }
 
+@st.cache_data(ttl=900, show_spinner=False)
 def load_sector_data(lookback_days=200):
     """Load daily close prices for all sector ETFs."""
     end = datetime.now(); start = end - timedelta(days=lookback_days)
@@ -3726,6 +3728,36 @@ def _get_nyse_stock_tickers_with_cache(store):
     if fresh:
         _store_universe_members(store, CACHE_UNIVERSE_NAME, fresh)
     return fresh
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_live_universe_store_status(store_backend: str, store_label: str, last_refresh_at: str = ""):
+    store = _get_price_store()
+    _init_price_cache_db(store)
+    tickers = _get_nyse_stock_tickers_with_cache(store)
+    if not tickers:
+        return {"requested": 0, "loaded": 0, "coverage": 0.0, "mapped": 0, "not_found": 0, "no_history": 0}
+    tickers = list(dict.fromkeys([_normalize_symbol(t) for t in tickers if t]))
+    last_dates = _get_cached_last_dates(store, tickers)
+    requested = len(tickers)
+    loaded = len(last_dates)
+    counts = {"mapped": 0, "not_found": 0, "no_history": 0}
+    try:
+        conn = _open_store_connection(store)
+        try:
+            if store["backend"] == "neon":
+                with conn.cursor() as cur:
+                    cur.execute("SELECT status, COUNT(*) FROM symbol_mappings WHERE universe=%s GROUP BY status", (CACHE_UNIVERSE_NAME,))
+                    rows = cur.fetchall()
+            else:
+                rows = conn.execute("SELECT status, COUNT(*) FROM symbol_mappings WHERE universe=? GROUP BY status", (CACHE_UNIVERSE_NAME,)).fetchall()
+            for status, count in rows:
+                if str(status) in counts:
+                    counts[str(status)] = int(count or 0)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return {"requested": requested, "loaded": loaded, "coverage": loaded / max(requested, 1), **counts}
 def _prepare_component_frame(frame):
     if frame is None or frame.empty:
         return None
@@ -3978,6 +4010,16 @@ def load_nyse_breadth_data(lookback_days=550):
     requested = len(tickers)
     loaded = int(close_frame.shape[1])
     coverage = loaded / max(requested, 1)
+    try:
+        stored_loaded = int(_get_cache_metadata(store, "last_refresh_loaded_universe", 0) or 0)
+    except Exception:
+        stored_loaded = 0
+    try:
+        stored_requested = int(_get_cache_metadata(store, "last_refresh_requested_universe", 0) or 0)
+    except Exception:
+        stored_requested = 0
+    if loaded > stored_loaded or requested != stored_requested:
+        _set_cache_metadata_many(store, {"last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
 
     attrs = {
         "requested_universe": requested,
@@ -4340,12 +4382,30 @@ def summarize_volatility_state(vol_df):
     }
 
 def detect_intermarket_divergence(data):
-    results=[]
-    for name in ["S&P 500","Nasdaq Composite","Russell 2000"]:
-        if name not in data: continue
-        df=data[name];h20=df["High"].rolling(20,min_periods=10).max()
-        results.append({"name":name,"at_20d_high":df["Close"].iloc[-1]>=h20.iloc[-2]*0.998,
-                        "pct":round((df["Close"].iloc[-1]/h20.iloc[-1]-1)*100,2)})
+    results = []
+    for name in ["S&P 500", "Nasdaq Composite", "Russell 2000"]:
+        if name not in data:
+            continue
+        df = data[name]
+        if df is None or len(df) < 5:
+            continue
+        close_series = pd.to_numeric(df["Close"], errors="coerce")
+        high_series = pd.to_numeric(df["High"], errors="coerce")
+        prev_close = close_series.shift(1)
+        current_close = float(close_series.iloc[-1])
+        day_pct = ((current_close / float(prev_close.iloc[-1])) - 1) * 100 if pd.notna(prev_close.iloc[-1]) and float(prev_close.iloc[-1]) != 0 else np.nan
+        prev_20d_high = high_series.shift(1).rolling(20, min_periods=10).max()
+        ref_high = float(prev_20d_high.iloc[-1]) if len(prev_20d_high) and pd.notna(prev_20d_high.iloc[-1]) else np.nan
+        dist_to_20d_high = ((current_close / ref_high) - 1) * 100 if pd.notna(ref_high) and ref_high != 0 else np.nan
+        at_20d_high = bool(pd.notna(ref_high) and current_close >= ref_high * 0.998)
+        results.append({
+            "name": name,
+            "at_20d_high": at_20d_high,
+            "pct": round(float(dist_to_20d_high), 2) if pd.notna(dist_to_20d_high) else np.nan,
+            "dist_to_20d_high_pct": round(float(dist_to_20d_high), 2) if pd.notna(dist_to_20d_high) else np.nan,
+            "day_pct": round(float(day_pct), 2) if pd.notna(day_pct) else np.nan,
+            "ref_high": round(float(ref_high), 2) if pd.notna(ref_high) else np.nan,
+        })
     return results
 
 def detect_sector_rotation(data):
@@ -4366,13 +4426,12 @@ def detect_failing_rally(df):
     rec=(df["Close"].iloc[-1]-lv);return round(rec/drop*100,1),round(drop/hv*100,1)
 
 def render_ampel_section(L):
-    """Render the full Trendwende-Ampel section with 3 lights, status, and Startschuss."""
+    """Render the full Trendwende-Ampel section with clickable inline rule explanations."""
     phase = L["Ampel_Phase"]
     anchor = L["Anchor_Date"]
     floor = L["Floor_Mark"]
     ss_low = L["Startschuss_Low"]
 
-    # Determine which light is active and why
     phase_info = {
         "rot": {
             "active": 0, "label": "ROT — Abwarten",
@@ -4405,108 +4464,97 @@ def render_ampel_section(L):
     }
     info = phase_info.get(phase, phase_info["neutral"])
 
-    # Colors for the 3 lights
-    colors_off = ["#3b1111", "#3b2d11", "#112b11"]  # dimmed versions
+    colors_off = ["#3b1111", "#3b2d11", "#112b11"]
     colors_on = ["#ef4444", "#f59e0b", "#22c55e"]
     labels = ["ROT", "GELB", "GRÜN"]
-    glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440",
-               "0 0 20px #f59e0b80, 0 0 40px #f59e0b40",
-               "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
+    glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440", "0 0 20px #f59e0b80, 0 0 40px #f59e0b40", "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
+    phase_rules = {
+        "rot": "ROT wird aktiv, wenn eine substanzielle Korrektur erkannt wird. Aktuell heißt das im Code: Drawdown von mehr als 8% vom jüngsten Hoch oder Schlusskurs unter der 50-SMA bei mindestens 4 Distribution Days im 25-Tage-Fenster.",
+        "gelb": "GELB wird aktiv, wenn nach einem Ankertag frühestens ab Tag 5 ein Startschuss auftritt: mindestens +1,0% zum Vortag, Volumen über Vortag und kein Unterschreiten der Bodenmarke intraday.",
+        "gruen": "GRÜN wird aktiv, wenn der Startschuss hält und nach GELB mehr als 2 weitere Handelstage vergehen, ohne dass das Startschuss-Tief per Schlusskurs gebrochen wird.",
+        "aufwaertstrend": "AUFWÄRTSTREND wird aktiv, wenn die grüne Phase mindestens 10 Tage Bestand hatte, der Index über der 200-SMA liegt und die MA-Ordnung 21-EMA > 50-SMA > 200-SMA bestätigt ist.",
+    }
 
-    # Build the 3 lights
+    light_keys = ["rot", "gelb", "gruen"]
     lights_html = ""
-    for i in range(3):
+    for i, key in enumerate(light_keys):
         is_active = i == info["active"]
         if phase == "aufwaertstrend" and i == 2:
-            bg = "#3b82f6"; glow = "0 0 20px #3b82f680, 0 0 40px #3b82f640"; is_active = True
+            bg = "#3b82f6"
+            glow = "0 0 20px #3b82f680, 0 0 40px #3b82f640"
+            is_active = True
         else:
             bg = colors_on[i] if is_active else colors_off[i]
             glow = glow_on[i] if is_active else "none"
         border = f"2px solid {colors_on[i]}40" if is_active else "2px solid #1e293b"
         lbl_c = "#e2e8f0" if is_active else "#4a5568"
         fw = "700" if is_active else "400"
+        phase_for_light = key if not (phase == "aufwaertstrend" and key == "gruen") else "aufwaertstrend"
+        rule_text = phase_rules.get(phase_for_light, phase_rules.get(key, ""))
+        title = "GRÜN / AUFWÄRTSTREND" if phase == "aufwaertstrend" and key == "gruen" else labels[i]
         lights_html += (
-            f'<div style="display:flex;flex-direction:column;align-items:center;gap:4px;">'
+            f'<details style="min-width:88px;max-width:120px;">'
+            f'<summary style="list-style:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;outline:none;">'
             f'<div style="width:42px;height:42px;border-radius:50%;background:{bg};box-shadow:{glow};border:{border};"></div>'
             f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
+            f'<div style="font-size:.55rem;color:#64748b;">Tippen für Regel</div>'
+            f'</summary>'
+            f'<div style="margin-top:6px;padding:8px;border:1px solid #1e293b;border-radius:8px;background:#0b1220;">'
+            f'<div style="font-size:.62rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;">{title}</div>'
+            f'<div style="font-size:.68rem;color:#e2e8f0;line-height:1.45;margin-top:4px;">{rule_text}</div>'
             f'</div>'
+            f'</details>'
         )
 
-    # Startschuss pistol icon — always visible, greyed out when not triggered
     if phase in ("gelb", "gruen") and ss_low and anchor:
         startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;'
-            f'background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
             f'<span style="font-size:1.4rem;">🔫</span>'
-            f'<div>'
-            f'<div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div>'
-            f'<div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div>'
-            f'</div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
         )
     else:
-        # Greyed out, with line-through
         if phase == "rot" and anchor:
-            ss_detail = f"Ankertag: {anchor} · Warte auf Tag ≥5 mit ≥1% Gewinn + Vol. &gt; Vortag"
+            ss_detail = f"Ankertag: {anchor} · Warte auf Tag ≥5 mit ≥1% Gewinn + Vol. > Vortag"
         elif phase == "rot":
             ss_detail = "Warte auf Ankertag, dann frühestens am 5. Tag möglich"
         else:
             ss_detail = "Kein aktiver Ampel-Zyklus"
         startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;'
-            f'background:#1e293b40;border:1px solid #1e293b;border-radius:8px;opacity:0.5;">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#1e293b40;border:1px solid #1e293b;border-radius:8px;opacity:0.5;">'
             f'<span style="font-size:1.4rem;filter:grayscale(1);">🔫</span>'
-            f'<div>'
-            f'<div style="font-size:.8rem;font-weight:700;color:#64748b;text-decoration:line-through;">Startschuss</div>'
-            f'<div style="font-size:.7rem;color:#4a5568;">{ss_detail}</div>'
-            f'</div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#64748b;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#4a5568;">{ss_detail}</div></div></div>'
         )
 
-    # Active phase label color
     active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
-
-    # Build the complete HTML as a single string (no f-string indentation issues)
     html = (
         '<div class="info-card" style="padding:20px;">'
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
         '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;'
-        'background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">'
-        f'<div style="display:flex;gap:12px;">{lights_html}</div>'
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">'
+        f'<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;justify-content:center;">{lights_html}</div>'
         '</div>'
-        '<div style="flex:1;min-width:200px;">'
-        f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">'
-        f'{info["label"]}</div>'
+        '<div style="flex:1;min-width:220px;">'
+        f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
         f'<div style="font-size:.8rem;color:#e2e8f0;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
-        f'<div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;'
-        f'background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">'
-        f'→ {info["action"]}</div>'
+        f'<div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
         f'{startschuss_html}'
-        '</div>'
-        '</div>'
-        '</div>'
+        '</div></div></div>'
     )
     st.markdown(html, unsafe_allow_html=True)
 
-    # Ampel details table below
     _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
     _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
-
     details = {
-        "Ankertag": anchor if anchor else "— (kein aktiver Zyklus)" if phase in ("neutral","aufwaertstrend") else "Warte auf Ankertag",
+        "Ankertag": anchor if anchor else "— (kein aktiver Zyklus)" if phase in ("neutral", "aufwaertstrend") else "Warte auf Ankertag",
         "Bodenmarke": f"{floor:,.2f}" if floor else "—",
         "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low else "—",
         "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
     }
-
     cols = st.columns(4)
     for i, (k, v) in enumerate(details.items()):
         with cols[i]:
-            st.markdown(
-                f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;">'
-                f'<div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div>'
-                f'<div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div>'
-                f'</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
 
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
@@ -4540,6 +4588,28 @@ def plot_volume(df,sd=90):
     dv=df.tail(sd);x=_x(dv.index);colors=["#22c55e" if p>=0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig=go.Figure();fig.add_trace(go.Bar(x=x,y=_y(dv["Volume"]),marker_color=colors,opacity=0.7));fig.add_trace(go.Scatter(x=x,y=_y(dv["Vol_SMA50"]),line=dict(color="#64748b",width=1,dash="dot")))
     fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#1e293b",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
+    return fig
+
+def plot_price_with_volume(df, sd=90):
+    dv = df.tail(sd).copy(); x = _x(dv.index)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.74, 0.26])
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["Close"]), name="Kurs", line=dict(color="#e2e8f0", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["EMA21"]), name="21-EMA", line=dict(color="#06b6d4", width=1, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA50"]), name="50-SMA", line=dict(color="#f97316", width=1, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA200"]), name="200-SMA", line=dict(color="#a855f7", width=1, dash="dash")), row=1, col=1)
+    fl = dv["Floor_Mark"].dropna()
+    if len(fl) > 0:
+        fig.add_hline(y=float(fl.iloc[-1]), line_dash="dash", line_color="#ef4444", line_width=1, annotation_text="Bodenmarke", annotation_font_color="#ef4444", row=1, col=1)
+    for col, nm, clr, sym, sz in [("Is_Distribution", "Dist.", "#ef4444", "triangle-down", 7), ("Is_Stall", "Stau", "#f59e0b", "diamond", 6), ("Intraday_Reversal_Down", "Umkehr↓", "#f97316", "x", 8)]:
+        m = dv[dv[col] == True]
+        if len(m) > 0:
+            fig.add_trace(go.Scatter(x=_x(m.index), y=_y(m["Close"] if "Stall" not in nm else m["High"]), name=nm, mode="markers", marker=dict(color=clr, size=sz, symbol=sym)), row=1, col=1)
+    vol_colors = ["#22c55e" if p >= 0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
+    fig.add_trace(go.Bar(x=x, y=_y(dv["Volume"]), marker_color=vol_colors, opacity=0.7, name="Volumen", showlegend=False), row=2, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["Vol_SMA50"]), name="Vol 50-SMA", line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=30, b=0), height=500, legend=dict(orientation="h", yanchor="top", y=1.10, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis2=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), tickformat=".2s"), hovermode="x unified")
+    fig.update_xaxes(showgrid=False, row=1, col=1)
+    fig.update_xaxes(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), row=2, col=1)
     return fig
 
 def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
@@ -5767,7 +5837,7 @@ def _tab_marktanalyse():
     warning_items.append(("Volumen an Aufwärtstagen", not vd, "Abnehmendes Vol." if vd else "OK", vd)); wc += int(vd)
     if div_r:
         ah = [r for r in div_r if r["at_20d_high"]]; nh = [r for r in div_r if not r["at_20d_high"]]; hd = len(ah) > 0 and len(nh) > 0
-        warning_items.append(("Intermarket-Konvergenz", not hd, " · ".join(f"{r['name']}: {r['pct']:+.1f}%" for r in div_r), hd)); wc += int(hd)
+        warning_items.append(("Intermarket-Konvergenz", not hd, " · ".join(f"{r['name']}: {r.get('dist_to_20d_high_pct', r.get('pct', np.nan)):+.1f}% zum 20T-Hoch" if pd.notna(r.get('dist_to_20d_high_pct', r.get('pct', np.nan))) else f"{r['name']}: n/a" for r in div_r), hd)); wc += int(hd)
     if rot is not None:
         warning_items.append(("Keine Sektorrotation in Defensive", not rot, f"Spread: {sp:+.1f}%", bool(rot))); wc += int(bool(rot))
     rp, drp = detect_failing_rally(df)
@@ -5809,11 +5879,7 @@ def _tab_marktanalyse():
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
 
-    chart_tab1, chart_tab2 = st.tabs(["Preis", "Volumen"])
-    with chart_tab1:
-        st.plotly_chart(plot_price(df, sd), use_container_width=True, config={"displayModeBar": False})
-    with chart_tab2:
-        st.plotly_chart(plot_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
 
     with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
         st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
@@ -5858,10 +5924,15 @@ def _tab_marktanalyse():
                             st.markdown(f'<span style="color:{c};font-size:.85rem;">{name}: {perf:+.1f}%</span>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
             if div_r:
-                st.markdown('<div class="info-card"><div class="card-label">Intermarket-Bild</div>', unsafe_allow_html=True)
+                st.markdown('<div class="info-card"><div class="card-label">Intermarket-Bild</div><div style="font-size:.72rem;color:#94a3b8;margin-bottom:8px;">Anzeige je Index: Tagesveränderung und Abstand zum vorherigen 20-Tage-Hoch. Negative Werte rechts bedeuten nicht zwingend einen negativen Tag, sondern Abstand zum Hoch.</div>', unsafe_allow_html=True)
                 for r in div_r:
-                    tone_c = "#22c55e" if r["pct"] >= 0 else "#ef4444"
-                    st.markdown(f'<div style="padding:4px 0;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span> <span class="mini-help">{r["pct"]:+.1f}%</span></div>', unsafe_allow_html=True)
+                    dist = r.get("dist_to_20d_high_pct", r.get("pct", np.nan))
+                    day = r.get("day_pct", np.nan)
+                    tone_c = "#22c55e" if pd.notna(day) and day >= 0 else "#ef4444"
+                    dist_c = "#22c55e" if pd.notna(dist) and dist >= 0 else "#ef4444"
+                    day_txt = f"{day:+.1f}% Tag" if pd.notna(day) else "n/a"
+                    dist_txt = f"{dist:+.1f}% zum 20T-Hoch" if pd.notna(dist) else "n/a"
+                    st.markdown(f'<div style="padding:4px 0;display:flex;justify-content:space-between;gap:12px;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span><span class="mini-help">{day_txt} · <span style="color:{dist_c};">{dist_txt}</span></span></div>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Marktbreite und Volatilität", expanded=True):
@@ -5935,14 +6006,17 @@ def _tab_marktanalyse():
         current_loaded = _get_cache_metadata(store, "last_refresh_loaded_universe", "")
         current_rescue = _get_cache_metadata(store, "last_rescue_at", "")
         current_auto_remap = _get_cache_metadata(store, "last_auto_remap_at", "")
+        current_refresh_at = _get_cache_metadata(store, "last_refresh_at", "")
         status_bits = []
         if current_loaded and current_requested:
             try:
                 loaded_int = int(current_loaded)
                 requested_int = int(current_requested)
-                status_bits.append(f"Zuletzt bekannt: {loaded_int} von {requested_int} Titeln im Datenspeicher")
+                status_bits.append(f"Letzter bekannter Worker-Stand: {loaded_int} von {requested_int} Titeln")
             except Exception:
                 pass
+        if current_refresh_at:
+            status_bits.append(f"Letzter Refresh: {current_refresh_at} UTC")
         if current_rescue:
             status_bits.append(f"Letzter Rescue-Lauf: {current_rescue} UTC")
         if current_auto_remap:
@@ -5950,6 +6024,14 @@ def _tab_marktanalyse():
         if status_bits:
             st.caption(" · ".join(status_bits))
 
+        live_status = get_live_universe_store_status(store["backend"], _get_store_label(store), str(current_refresh_at or ""))
+        live_cols = st.columns(5)
+        live_cols[0].metric("Universe live", int(live_status.get("requested", 0)))
+        live_cols[1].metric("Im Cache", int(live_status.get("loaded", 0)))
+        live_cols[2].metric("Abdeckung", f"{float(live_status.get('coverage', 0.0) or 0.0):.0%}")
+        live_cols[3].metric("Mappings", int(live_status.get("mapped", 0)))
+        live_cols[4].metric("Ungeklärt", int(live_status.get("not_found", 0)) + int(live_status.get("no_history", 0)))
+        st.caption("Live-Zahlen werden direkt aus dem Cache gelesen und können höher sein als der letzte Worker-Stand, wenn zwischenzeitlich Remaps oder Analysen zusätzliche Ticker geladen haben.")
 
         gh_cfg = _github_actions_config()
         if gh_cfg.get("ready"):
@@ -6015,7 +6097,7 @@ def _tab_marktanalyse():
         if refresh_clicked:
             result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit"})
             if result.get("ok"):
-                st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}. Der Worker übernimmt den Import jetzt außerhalb von Streamlit.")
+                st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}. Der Worker übernimmt den Import jetzt außerhalb von Streamlit. Den Fortschritt siehst du darunter im Bereich Letzter Job oder direkt in GitHub Actions.")
             else:
                 st.error(result.get("error") or "Der Refresh-Job konnte nicht gestartet werden.")
 
