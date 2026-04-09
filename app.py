@@ -726,9 +726,6 @@ def _remove_cash_flow_entry(index_value: int) -> None:
     st.session_state["portfolio_cash_flows"] = rows
     _sync_workspace()
 
-def _set_portfolio_curve_start_today() -> None:
-    st.session_state["pf_auto_curve_start"] = datetime.utcnow().date()
-
 def _position_entry_price(position: dict) -> float:
     return _safe_float(position.get("buy_price_usd") or position.get("buy_price"), np.nan)
 
@@ -1590,6 +1587,8 @@ def _render_portfolio_72_area():
         default_curve_start = min(valid_buy_dates)
 
     st.caption("Die Kurve wird aus deinen aktuellen Stückzahlen, Kaufdaten und den historischen Schlusskursen rekonstruiert. Per Klick kannst du den Start auf heute setzen.")
+    if st.session_state.pop("pf_auto_curve_start_force_today", False):
+        st.session_state["pf_auto_curve_start"] = datetime.utcnow().date()
     auto_col1, auto_col2, auto_col3 = st.columns([1, 1, 0.9])
     with auto_col1:
         auto_start = st.date_input("Startdatum der Rekonstruktion", value=default_curve_start, key="pf_auto_curve_start")
@@ -1597,12 +1596,9 @@ def _render_portfolio_72_area():
         auto_end = st.date_input("Enddatum", value=datetime.utcnow().date(), key="pf_auto_curve_end")
     with auto_col3:
         st.markdown("<div style='height:1.8rem'></div>", unsafe_allow_html=True)
-        st.button(
-            "Start = Heute",
-            use_container_width=True,
-            key="pf_auto_curve_start_today",
-            on_click=_set_portfolio_curve_start_today,
-        )
+        if st.button("Start = Heute", use_container_width=True, key="pf_auto_curve_start_today"):
+            st.session_state["pf_auto_curve_start_force_today"] = True
+            st.rerun()
     cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
 
     auto_curve = _build_reconstructed_portfolio_curve(all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows)
