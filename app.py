@@ -5245,6 +5245,9 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             return []
 
         results = []
+        # Safety alias: older branches used `out` as accumulator name.
+        # Keep alias to prevent NameError in mixed deployments/cached code paths.
+        out = results
         for i in range(min(3, len(same_q_points) - 1)):
             cur_year, cur = same_q_points[i]
             prev_year, prev = same_q_points[i + 1]
@@ -6860,6 +6863,19 @@ def _tab_marktanalyse():
     if not data:
         st.error("Keine Marktdaten.")
         return
+
+    # Last-resort UI guard: keep S&P selectable even if cached market load missed it.
+    if "S&P 500" not in data:
+        try:
+            end = datetime.now()
+            start = end - timedelta(days=400)
+            for sym in ["^GSPC", "^SPX", "SPY"]:
+                sp_df = _dl(sym, start, end)
+                if sp_df is not None and len(sp_df) > 20:
+                    data["S&P 500"] = sp_df
+                    break
+        except Exception as exc:
+            logger.warning("S&P fallback in _tab_marktanalyse failed: %s", exc)
 
     available = [i for i in ["S&P 500", "Nasdaq Composite", "Russell 2000"] if i in data]
     if not available:
