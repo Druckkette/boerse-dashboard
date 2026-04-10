@@ -5183,15 +5183,50 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         latest Q vs same Q last year, then last year vs two years ago, etc.
         Example: Q1'26 vs Q1'25, Q1'25 vs Q1'24, Q1'24 vs Q1'23.
         """
-        if len(vals) < 5: return []
+        if len(vals) < 2: return []
+        vals = vals.dropna()
+        if len(vals) < 2: return []
         results = []
-        # Use one quarter "anchor" and walk backwards in full-year (4-quarter) steps.
-        # k=0 -> idx 0 vs 4, k=1 -> idx 4 vs 8, k=2 -> idx 8 vs 12
+        # Preferred path: use quarter/year buckets (robust for sources with >4 datapoints/year)
+        idx_dt = pd.to_datetime(vals.index, errors="coerce")
+        if hasattr(idx_dt, "notna") and idx_dt.notna().any():
+            tmp = pd.DataFrame({"val": pd.to_numeric(vals.values, errors="coerce")}, index=idx_dt)
+            tmp = tmp[tmp.index.notna() & tmp["val"].notna()].sort_index(ascending=False)
+            if len(tmp) >= 2:
+                tmp["year"] = tmp.index.year
+                tmp["quarter"] = tmp.index.quarter
+                anchor_q = int(tmp.iloc[0]["quarter"])
+                same_q = tmp[tmp["quarter"] == anchor_q].copy()
+                if not same_q.empty:
+                    same_q = same_q.groupby("year", as_index=False).first().sort_values("year", ascending=False)
+                    for i in range(min(3, len(same_q) - 1)):
+                        cur_row = same_q.iloc[i]
+                        prev_row = same_q.iloc[i + 1]
+                        cur = float(cur_row["val"]); prev = float(prev_row["val"])
+                        if np.isnan(prev) or np.isnan(cur):
+                            continue
+                        lbl = f"{int(cur_row['year'])} Q{anchor_q}"
+                        if prev < 0 and cur > 0:
+                            results.append((lbl, None, "turnaround", cur, prev))
+                        elif prev < 0 and cur <= 0:
+                            results.append((lbl, None, "still_neg", cur, prev))
+                        elif prev > 0 and cur < 0:
+                            results.append((lbl, None, "turned_neg", cur, prev))
+                        elif prev == 0:
+                            results.append((lbl, None, "prev_zero", cur, prev))
+                        else:
+                            g = (cur / prev - 1) * 100
+                            results.append((lbl, round(g, 1), None, cur, prev))
+                    if results:
+                        return results
+
+        # Fallback: if index isn't usable as datetime, walk 4-step YoY slots.
+        if len(vals) < 5:
+            return []
         for k in range(3):
             cur_idx = 4 * k
             prev_idx = 4 * (k + 1)
-            if prev_idx >= len(vals):
-                break
+            if prev_idx >= len(vals): break
             cur = float(vals.iloc[cur_idx]); prev = float(vals.iloc[prev_idx])
             if np.isnan(prev) or np.isnan(cur): continue
             lbl = _fmt_qlabel(vals.index[cur_idx])
