@@ -5103,19 +5103,180 @@ def _cmf_rating(val):
     if val > -0.25: return "D","Moderate Distribution","#ef4444"
     return "E","Starke Distribution","#ef4444"
 
-def _calc_rs_rating(sc, sp):
-    if sc is None or sp is None or len(sc)<252 or len(sp)<252: return None
-    common = sc.index.intersection(sp.index)
-    if len(common)<200: return None
-    s = sc.reindex(common); m = sp.reindex(common)
-    windows = [(0,63,0.4),(63,126,0.2),(126,189,0.2),(189,252,0.2)]
-    score = 0
-    for a,b,w in windows:
-        if b > len(s): break
-        sp_ = s.iloc[-a-1]/s.iloc[-b]-1 if a==0 else s.iloc[-a]/s.iloc[-b]-1
-        mp_ = m.iloc[-a-1]/m.iloc[-b]-1 if a==0 else m.iloc[-a]/m.iloc[-b]-1
-        score += (sp_ - mp_) * w
-    return max(1, min(99, int(round(50 + score * 150))))
+def _build_relative_strength_line(stock_close, benchmark_close, normalize_to=100.0):
+    if stock_close is None or benchmark_close is None:
+        return None
+    s = pd.to_numeric(stock_close, errors="coerce").dropna()
+    b = pd.to_numeric(benchmark_close, errors="coerce").dropna()
+    common = s.index.intersection(b.index)
+    if len(common) < 60:
+        return None
+    rs = (s.reindex(common) / b.reindex(common)).replace([np.inf, -np.inf], np.nan).dropna()
+    if rs.empty:
+        return None
+    if normalize_to is not None:
+        base = rs.iloc[0]
+        if pd.notna(base) and base != 0:
+            rs = rs / base * float(normalize_to)
+    rs.name = "RS-Linie"
+    return rs
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_cached_universe_closes_for_rs(lookback_days=400):
+    try:
+        store = _get_price_store()
+        _init_price_cache_db(store)
+        tickers = _load_cached_universe_members(store, CACHE_UNIVERSE_NAME)
+        if not tickers:
+            tickers = get_app_stock_universe_tickers()
+        tickers = [str(t).strip().upper() for t in tickers if t]
+        if not tickers:
+            return None
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=lookback_days)
+        bundle = _read_cached_price_bundle(store, tickers, start.date().isoformat(), end.date().isoformat())
+        closes = bundle.get("close") if bundle else None
+        if closes is None or closes.empty:
+            return None
+        closes = closes.sort_index()
+        closes = closes.loc[:, ~closes.columns.duplicated()].apply(pd.to_numeric, errors="coerce")
+        min_obs = min(220, max(120, len(closes) // 2))
+        valid_cols = [c for c in closes.columns if closes[c].notna().sum() >= min_obs]
+        if valid_cols:
+            closes = closes[valid_cols]
+        return closes if not closes.empty else None
+    except Exception as exc:
+        logger.debug("load_cached_universe_closes_for_rs failed: %s", exc)
+        return None
+
+
+def _weighted_rs_score(rs_line, windows=((63, 0.4), (126, 0.2), (189, 0.2), (252, 0.2))):
+    if rs_line is None:
+        return None
+    series = pd.to_numeric(rs_line, errors="coerce").dropna()
+    if len(series) < 80:
+        return None
+    score = 0.0
+    weight_sum = 0.0
+    last = series.iloc[-1]
+    for lookback, weight in windows:
+        if len(series) <= lookback:
+            continue
+        prev = series.iloc[-lookback - 1]
+        if pd.isna(prev) or prev == 0:
+            continue
+        score += ((last / prev) - 1.0) * weight
+        weight_sum += weight
+    if weight_sum == 0:
+        return None
+    return score / weight_sum
+
+
+def _weighted_rs_scores_for_frame(ratio_frame, windows=((63, 0.4), (126, 0.2), (189, 0.2), (252, 0.2))):
+    if ratio_frame is None or ratio_frame.empty:
+        return pd.Series(dtype=float)
+    frame = ratio_frame.replace([np.inf, -np.inf], np.nan)
+    last = frame.iloc[-1]
+    score = pd.Series(0.0, index=frame.columns, dtype=float)
+    weight_sum = pd.Series(0.0, index=frame.columns, dtype=float)
+    for lookback, weight in windows:
+        if len(frame) <= lookback:
+            continue
+        prev = frame.iloc[-lookback - 1]
+        comp = (last / prev) - 1.0
+        valid = prev.notna() & last.notna() & (prev != 0)
+        score.loc[valid] = score.loc[valid] + comp.loc[valid] * weight
+        weight_sum.loc[valid] = weight_sum.loc[valid] + weight
+    out = score / weight_sum.replace(0, np.nan)
+    return out.replace([np.inf, -np.inf], np.nan).dropna()
+
+
+def _calc_rs_rating(stock_close, benchmark_close, universe_closes=None):
+    raw_rs = _build_relative_strength_line(stock_close, benchmark_close, normalize_to=None)
+    plot_rs = _build_relative_strength_line(stock_close, benchmark_close, normalize_to=100.0)
+    payload = {
+        "rating": None,
+        "score": None,
+        "method": "unavailable",
+        "universe_size": 0,
+        "rs_line": plot_rs,
+        "rs_line_raw": raw_rs,
+        "ema21": None,
+        "sma50": None,
+        "sma200": None,
+        "above_21": None,
+        "above_50": None,
+        "above_200": None,
+        "trend_5w": None,
+        "trend_13w": None,
+        "near_high_52w": None,
+        "new_high_52w": None,
+        "distance_to_high_pct": None,
+        "excess_return_3m": None,
+        "excess_return_6m": None,
+        "excess_return_12m": None,
+    }
+    if raw_rs is None or raw_rs.empty:
+        return payload
+
+    payload["score"] = _weighted_rs_score(raw_rs)
+    rs_line = plot_rs
+    ema21 = rs_line.ewm(span=21).mean() if rs_line is not None else None
+    sma50 = rs_line.rolling(50).mean() if rs_line is not None else None
+    sma200 = rs_line.rolling(200).mean() if rs_line is not None else None
+    payload["ema21"] = ema21
+    payload["sma50"] = sma50
+    payload["sma200"] = sma200
+
+    if rs_line is not None and len(rs_line) > 0:
+        last_rs = rs_line.iloc[-1]
+        if ema21 is not None and len(ema21) > 0 and pd.notna(ema21.iloc[-1]):
+            payload["above_21"] = bool(last_rs > ema21.iloc[-1])
+        if sma50 is not None and len(sma50) > 0 and pd.notna(sma50.iloc[-1]):
+            payload["above_50"] = bool(last_rs > sma50.iloc[-1])
+        if sma200 is not None and len(sma200) > 0 and pd.notna(sma200.iloc[-1]):
+            payload["above_200"] = bool(last_rs > sma200.iloc[-1])
+        if len(rs_line) > 25 and pd.notna(rs_line.iloc[-26]):
+            payload["trend_5w"] = bool(last_rs > rs_line.iloc[-26])
+        if len(rs_line) > 65 and pd.notna(rs_line.iloc[-66]):
+            payload["trend_13w"] = bool(last_rs > rs_line.iloc[-66])
+        if len(raw_rs) > 63 and pd.notna(raw_rs.iloc[-64]) and raw_rs.iloc[-64] != 0:
+            payload["excess_return_3m"] = float((raw_rs.iloc[-1] / raw_rs.iloc[-64] - 1) * 100)
+        if len(raw_rs) > 126 and pd.notna(raw_rs.iloc[-127]) and raw_rs.iloc[-127] != 0:
+            payload["excess_return_6m"] = float((raw_rs.iloc[-1] / raw_rs.iloc[-127] - 1) * 100)
+        if len(raw_rs) > 252 and pd.notna(raw_rs.iloc[-253]) and raw_rs.iloc[-253] != 0:
+            payload["excess_return_12m"] = float((raw_rs.iloc[-1] / raw_rs.iloc[-253] - 1) * 100)
+        high_52w = rs_line.rolling(252, min_periods=50).max().iloc[-1] if len(rs_line) >= 50 else np.nan
+        if pd.notna(high_52w) and high_52w != 0:
+            payload["distance_to_high_pct"] = float((last_rs / high_52w - 1) * 100)
+            payload["near_high_52w"] = bool(last_rs >= high_52w * 0.97)
+            payload["new_high_52w"] = bool(last_rs >= high_52w * 0.999)
+
+    universe_scores = pd.Series(dtype=float)
+    if universe_closes is not None and not universe_closes.empty:
+        common = universe_closes.index.intersection(raw_rs.index)
+        if len(common) >= 120:
+            bench = pd.to_numeric(benchmark_close, errors="coerce").reindex(common)
+            closes = universe_closes.reindex(common)
+            ratio_frame = closes.div(bench, axis=0).replace([np.inf, -np.inf], np.nan)
+            min_obs = min(220, max(120, len(ratio_frame) // 2))
+            ratio_frame = ratio_frame.loc[:, ratio_frame.notna().sum() >= min_obs]
+            universe_scores = _weighted_rs_scores_for_frame(ratio_frame)
+
+    payload["universe_size"] = int(len(universe_scores))
+    score = payload["score"]
+    if score is not None and len(universe_scores) >= 100:
+        ranked = pd.concat([universe_scores, pd.Series({"__TARGET__": score})])
+        pct_rank = float(ranked.rank(pct=True, method="average").loc["__TARGET__"])
+        payload["rating"] = int(np.clip(round(pct_rank * 99), 1, 99))
+        payload["method"] = "universe_percentile"
+    elif score is not None:
+        proxy = 50 + score * 500
+        payload["rating"] = int(np.clip(round(proxy), 1, 99))
+        payload["method"] = "weighted_proxy"
+
+    return payload
+
 
 def _atr_category(pct):
     if np.isnan(pct): return "—","#64748b"
@@ -5263,47 +5424,66 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
 
     return checks
 
-def evaluate_technicals(df, info, spx_df=None):
+def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe=None):
     checks = []; L = df.iloc[-1]; price = L["Close"]
 
-    # Price ≥ $15
     checks.append(("Preis ≥ $15", price >= 15, f"${price:,.2f}"))
 
-    # Near ATH
     h52 = df["High"].rolling(252, min_periods=20).max().iloc[-1]
     if not np.isnan(h52):
         d = (price / h52 - 1) * 100
         checks.append(("Nahe am 52W-Hoch", d > -10, f"{d:+.1f}% vom Hoch (${h52:,.2f})"))
 
-    # Dollar volume ≥ $30M
     avg_v = df["Volume"].tail(20).mean(); dol_v = avg_v * price / 1e6
     checks.append(("Dollar-Volumen ≥ $30 Mio.", dol_v >= 30, f"${dol_v:,.0f} Mio./Tag"))
 
-    # Up/Down Volume Ratio ≥ 1.0
     pc = df["Close"].pct_change()
     uv = df["Volume"].where(pc > 0).tail(50).sum(); dv = df["Volume"].where(pc < 0).tail(50).sum()
     if dv > 0:
         udv = uv / dv
         checks.append(("Up/Down Vol. Ratio ≥1.0", udv >= 1.0, f"{udv:.2f}" + (" (ideal ≥1.1)" if udv >= 1.1 else "")))
 
-    # RS Rating
-    rs = None
-    if spx_df is not None and len(spx_df) > 200:
-        rs = _calc_rs_rating(df["Close"], spx_df["Close"])
-    if rs is not None:
-        lbl = "Elite" if rs >= 90 else "Stark" if rs >= 80 else "Meiden (<70)" if rs < 70 else "OK"
-        checks.append(("RS-Bewertung ≥80", rs >= 80, f"RS: {rs} ({lbl})"))
+    rs_ctx = rs_ctx or _calc_rs_rating(df["Close"], spx_df["Close"] if spx_df is not None else None, universe_closes=rs_universe)
+    rs = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
+    if isinstance(rs_ctx, dict):
+        method = rs_ctx.get("method", "unavailable")
+        method_note = "Universums-Ranking" if method == "universe_percentile" else "Fallback-Proxy" if method == "weighted_proxy" else ""
+        universe_note = f" · {rs_ctx.get('universe_size', 0)} Aktien" if rs_ctx.get("universe_size") else ""
+        if rs is not None:
+            lbl = "Elite" if rs >= 90 else "Stark" if rs >= 80 else "Meiden (<70)" if rs < 70 else "OK"
+            checks.append(("RS-Bewertung ≥80", rs >= 80, f"RS: {rs} ({lbl})" + (f" · {method_note}{universe_note}" if method_note else "")))
+            checks.append(("RS-Bewertung ≥90", rs >= 90, f"Aktuell {rs}"))
+
+        rs_line = rs_ctx.get("rs_line")
+        ema21_rs = rs_ctx.get("ema21")
+        sma50_rs = rs_ctx.get("sma50")
+        if rs_line is not None and len(rs_line) > 0:
+            rs_now = rs_line.iloc[-1]
+            if ema21_rs is not None and len(ema21_rs) > 0 and pd.notna(ema21_rs.iloc[-1]):
+                checks.append(("RS-Linie über 21-EMA", bool(rs_ctx.get("above_21")), f"{rs_now:.2f} vs {ema21_rs.iloc[-1]:.2f}"))
+            if sma50_rs is not None and len(sma50_rs) > 0 and pd.notna(sma50_rs.iloc[-1]):
+                checks.append(("RS-Linie über 50-SMA", bool(rs_ctx.get("above_50")), f"{rs_now:.2f} vs {sma50_rs.iloc[-1]:.2f}"))
+            if rs_ctx.get("trend_5w") is not None:
+                ex3 = rs_ctx.get("excess_return_3m")
+                detail = f"Excess 3M: {ex3:+.1f}%" if ex3 is not None else "letzte 5 Wochen"
+                checks.append(("RS-Linie steigt über 5 Wochen", bool(rs_ctx.get("trend_5w")), detail))
+            if rs_ctx.get("trend_13w") is not None:
+                ex6 = rs_ctx.get("excess_return_6m")
+                detail = f"Excess 6M: {ex6:+.1f}%" if ex6 is not None else "letzte 13 Wochen"
+                checks.append(("RS-Linie steigt über 13 Wochen", bool(rs_ctx.get("trend_13w")), detail))
+            if rs_ctx.get("distance_to_high_pct") is not None:
+                dist = rs_ctx.get("distance_to_high_pct")
+                detail = "Neues RS-Hoch" if rs_ctx.get("new_high_52w") else f"{dist:+.1f}% zum RS-Hoch"
+                checks.append(("RS-Linie nahe 52W-Hoch", bool(rs_ctx.get("near_high_52w")), detail))
     elif spx_df is not None and len(df) >= 126 and len(spx_df) >= 126:
         sp = (df["Close"].iloc[-1] / df["Close"].iloc[-126] - 1) * 100
         mp = (spx_df["Close"].iloc[-1] / spx_df["Close"].iloc[-126] - 1) * 100
         checks.append(("Relative Stärke vs. S&P (6M)", sp > mp, f"Aktie: {sp:+.1f}% · S&P: {mp:+.1f}% · Diff: {sp-mp:+.1f}%"))
 
-    # CMF Rating A or B
     cmf = _calc_cmf(df, 20); cmf_val = cmf.iloc[-1] if len(cmf) > 0 else np.nan
     rat, meaning, _ = _cmf_rating(cmf_val)
     checks.append(("CMF Rating A oder B", rat in ("A","B"), f"CMF: {cmf_val:+.3f} → {rat} ({meaning})"))
 
-    # MAs
     e21 = df["Close"].ewm(span=21).mean().iloc[-1]
     s10 = df["Close"].rolling(10).mean().iloc[-1]
     s50 = df["Close"].rolling(50).mean().iloc[-1]
@@ -5315,7 +5495,6 @@ def evaluate_technicals(df, info, spx_df=None):
     if not any(np.isnan(x) for x in [e21, s50, s200]):
         checks.append(("MA-Ordnung (21>50>200)", e21 > s50 > s200, f"21:{e21:,.0f} · 50:{s50:,.0f} · 200:{s200:,.0f}"))
 
-    # ── MA Distance warnings (book thresholds) ──
     for nm, mv, thresh in [("10-SMA", s10, 10.0), ("21-EMA", e21, 14.0), ("50-SMA", s50, 25.0), ("200-SMA", s200, 70.0)]:
         if not np.isnan(mv):
             dist = (price / mv - 1) * 100
@@ -5323,9 +5502,10 @@ def evaluate_technicals(df, info, spx_df=None):
             checks.append((f"Abstand {nm} (<{thresh:.0f}%)", not extended,
                            f"{dist:+.1f}% ({'überdehnt' if dist > 0 else 'darunter'}, Schwelle: ±{thresh:.0f}%)"))
 
-    return checks, cmf_val, rs
+    return checks, cmf_val, rs_ctx
 
-def evaluate_chart_signs(df):
+
+def evaluate_chart_signs(df, rs_ctx=None):
     signs = {"positiv": [], "negativ": [], "neutral": []}
     if len(df) < 50: return signs
     c = df["Close"]; h = df["High"]; l = df["Low"]; o = df["Open"]; v = df["Volume"]
@@ -5333,7 +5513,6 @@ def evaluate_chart_signs(df):
     ema21 = c.ewm(span=21).mean(); sma50 = c.rolling(50).mean(); sma200 = c.rolling(200).mean()
     rng = h - l; cr_s = pd.Series(np.where(rng > 0, (c - l) / rng, 0.5), index=df.index)
 
-    # Up-vol vs down-vol days (20d)
     t20 = df.tail(20)
     uhv = ((t20["Close"] > t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
     dhv = ((t20["Close"] < t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
@@ -5375,10 +5554,32 @@ def evaluate_chart_signs(df):
     if ur >= 2: signs["positiv"].append(("Upside Reversals", f"{ur} in 10T"))
     if dr2 >= 2: signs["negativ"].append(("Downside Reversals", f"{dr2} in 10T"))
 
-    if len(c) >= 63:
-        rn = c.iloc[-1] / c.iloc[-21]; rp = c.iloc[-21] / c.iloc[-63]
-        if rn > rp: signs["positiv"].append(("Steigende RS-Linie", f"{rn:.3f} vs {rp:.3f}"))
-        elif rn < rp * 0.95: signs["negativ"].append(("Kippende RS-Linie", f"{rn:.3f} vs {rp:.3f}"))
+    if isinstance(rs_ctx, dict):
+        rs_line = rs_ctx.get("rs_line")
+        sma50_rs = rs_ctx.get("sma50")
+        rating = rs_ctx.get("rating")
+        if rs_line is not None and len(rs_line) > 0:
+            rs_now = rs_line.iloc[-1]
+            if rs_ctx.get("trend_5w"):
+                signs["positiv"].append(("RS-Linie steigt", "über 5 Wochen"))
+            elif rs_ctx.get("trend_5w") is False:
+                signs["negativ"].append(("RS-Linie fällt", "über 5 Wochen"))
+            if rs_ctx.get("above_21") and rs_ctx.get("above_50"):
+                signs["positiv"].append(("RS-Linie über ihren Durchschnitten", f"{rs_now:.2f} über 21-EMA und 50-SMA"))
+            elif rs_ctx.get("above_50") is False and sma50_rs is not None and len(sma50_rs) > 0 and pd.notna(sma50_rs.iloc[-1]):
+                signs["negativ"].append(("RS-Linie unter 50-SMA", f"{rs_now:.2f} vs {sma50_rs.iloc[-1]:.2f}"))
+            if rs_ctx.get("new_high_52w"):
+                signs["positiv"].append(("RS-Linie auf neuem 52W-Hoch", "Marktführerschaft bestätigt"))
+            elif rs_ctx.get("near_high_52w"):
+                dist = rs_ctx.get("distance_to_high_pct")
+                signs["neutral"].append(("RS-Linie knapp unter Hoch", f"{dist:+.1f}% zum 52W-Hoch"))
+            elif rs_ctx.get("distance_to_high_pct") is not None and rs_ctx.get("distance_to_high_pct") <= -10:
+                signs["negativ"].append(("RS-Linie deutlich unter Hoch", f"{rs_ctx.get('distance_to_high_pct'):+.1f}%"))
+        if rating is not None:
+            if rating >= 90:
+                signs["positiv"].append(("RS-Rating im Elite-Bereich", f"RS {rating}"))
+            elif rating < 70:
+                signs["negativ"].append(("Schwaches RS-Rating", f"RS {rating}"))
 
     avg_cr = cr_s.tail(5).mean()
     if avg_cr > 0.6: signs["positiv"].append(("Schlussposition obere 40%", f"Ø {avg_cr:.0%}"))
@@ -5414,6 +5615,7 @@ def _tab_aktienbewertung():
     with st.spinner(f"Lade {ticker} …"):
         df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
+        rs_universe = load_cached_universe_closes_for_rs()
 
     if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
@@ -5461,18 +5663,24 @@ def _tab_aktienbewertung():
     atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
     vol_ratio = float(L["Volume"] / df["Volume"].rolling(50).mean().iloc[-1]) if len(df) >= 50 and pd.notna(df["Volume"].rolling(50).mean().iloc[-1]) and df["Volume"].rolling(50).mean().iloc[-1] else np.nan
+    rs_ctx = _calc_rs_rating(df["Close"], spx_df["Close"] if spx_df is not None else None, universe_closes=rs_universe)
     rs_hint = ""
-    if spx_df is not None and len(spx_df) >= 63 and len(df) >= 63:
-        rs_now = (df["Close"].iloc[-1] / df["Close"].iloc[-21]) / (spx_df["Close"].iloc[-1] / spx_df["Close"].iloc[-21])
-        rs_prev = (df["Close"].iloc[-21] / df["Close"].iloc[-63]) / (spx_df["Close"].iloc[-21] / spx_df["Close"].iloc[-63])
-        rs_hint = "RS verbessert sich" if rs_now > rs_prev else "RS verliert etwas Tempo"
+    if isinstance(rs_ctx, dict):
+        if rs_ctx.get("trend_5w") is True:
+            rs_hint = "RS verbessert sich"
+        elif rs_ctx.get("trend_5w") is False:
+            rs_hint = "RS verliert etwas Tempo"
 
+    rs_rating_val = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
+    rs_rating_detail = "Perzentil im Universum" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "universe_percentile" else "Gewichtete RS" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "weighted_proxy" else "Vergleich zum S&P 500"
     change_cards = [
         {"title": "Heute", "value": f"{chg:+.2f}%", "detail": f"Schlusskurs ${price:,.2f}"},
         {"title": "Volumen", "value": f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—", "detail": "Werte >1 zeigen mehr Aktivität"},
         {"title": "Volatilität", "value": f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", "detail": "ATR als Risikomaß"},
     ]
-    if rs_hint:
+    if rs_rating_val is not None:
+        change_cards.append({"title": "RS-Rating", "value": f"{rs_rating_val}", "detail": rs_rating_detail})
+    elif rs_hint:
         change_cards.append({"title": "Rel. Stärke", "value": rs_hint, "detail": "Vergleich zum S&P 500"})
     _render_change_cards(change_cards[:4])
 
@@ -5494,24 +5702,33 @@ def _tab_aktienbewertung():
         st.metric("Closing Range", f"{cr_today:.0f}%")
         st.caption("Wie stark der Schluss im Tagesbereich lag")
 
-    low_metrics = st.columns(3)
+    low_metrics = st.columns(4)
     with low_metrics[0]:
         st.metric("ATR (21T)", f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", cat_lbl)
     with low_metrics[1]:
         st.metric("DRR (Ø21T)", f"{drr:.2f}%")
     with low_metrics[2]:
+        rs_metric_delta = "Elite" if rs_rating_val is not None and rs_rating_val >= 90 else "Stark" if rs_rating_val is not None and rs_rating_val >= 80 else ""
+        st.metric("RS-Rating", f"{rs_rating_val}" if rs_rating_val is not None else "—", rs_metric_delta)
+    with low_metrics[3]:
         st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
 
+    if isinstance(rs_ctx, dict) and rs_ctx.get("distance_to_high_pct") is not None:
+        st.caption(f"RS-Linie aktuell {rs_ctx.get('distance_to_high_pct'):+.1f}% von ihrem 52-Wochen-Hoch entfernt.")
+
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta"])
+        _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
 
     # Chart
     _ema21 = df["Close"].ewm(span=21).mean()
     _sma50 = df["Close"].rolling(50).mean()
     _sma200 = df["Close"].rolling(200).mean()
     _vol_sma50 = df["Volume"].rolling(50).mean()
+    rs_line = rs_ctx.get("rs_line") if isinstance(rs_ctx, dict) else None
+    rs_ema21 = rs_ctx.get("ema21") if isinstance(rs_ctx, dict) else None
+    rs_sma50 = rs_ctx.get("sma50") if isinstance(rs_ctx, dict) else None
 
-    fig_stock = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.75, 0.25])
+    fig_stock = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.62, 0.18, 0.20])
     x = df.index
     fig_stock.add_trace(go.Candlestick(
         x=x, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
@@ -5524,13 +5741,19 @@ def _tab_aktienbewertung():
     vol_colors = ["#22c55e" if df["Close"].iloc[i] >= df["Open"].iloc[i] else "#ef4444" for i in range(len(df))]
     fig_stock.add_trace(go.Bar(x=x, y=df["Volume"], marker_color=vol_colors, opacity=0.5, name="Volumen", showlegend=False), row=2, col=1)
     fig_stock.add_trace(go.Scatter(x=x, y=_vol_sma50, name="Vol 50-SMA", line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
+    if rs_line is not None and not rs_line.empty:
+        fig_stock.add_trace(go.Scatter(x=rs_line.index, y=rs_line, name="RS-Linie", line=dict(color="#facc15", width=1.6)), row=3, col=1)
+        if rs_ema21 is not None and len(rs_ema21) > 0:
+            fig_stock.add_trace(go.Scatter(x=rs_ema21.index, y=rs_ema21, name="RS 21-EMA", line=dict(color="#38bdf8", width=1.0, dash="dot")), row=3, col=1)
+        if rs_sma50 is not None and len(rs_sma50) > 0:
+            fig_stock.add_trace(go.Scatter(x=rs_sma50.index, y=rs_sma50, name="RS 50-SMA", line=dict(color="#fb923c", width=1.0, dash="dash")), row=3, col=1)
     six_months_ago = df.index[-1] - pd.Timedelta(days=180)
     fig_stock.update_layout(
         template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-        height=420, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
+        height=560, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
         xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#1e293b"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
-        yaxis=dict(title="", gridcolor="#1e293b"), yaxis2=dict(title="", gridcolor="#1e293b"), xaxis2=dict(gridcolor="#1e293b"),
+        yaxis=dict(title="", gridcolor="#1e293b"), yaxis2=dict(title="", gridcolor="#1e293b"), yaxis3=dict(title="", gridcolor="#1e293b"), xaxis2=dict(gridcolor="#1e293b"), xaxis3=dict(gridcolor="#1e293b"),
     )
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, use_container_width=True, key="stock_chart")
@@ -5548,7 +5771,7 @@ def _tab_aktienbewertung():
 
     with col_t:
         st.markdown('<div class="info-card"><div class="card-label">Technische Checkliste</div>', unsafe_allow_html=True)
-        tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df)
+        tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe=rs_universe)
         tok = sum(1 for _, ok, _ in tc if ok)
         for label, ok, detail in tc:
             render_check(label, ok, detail)
@@ -5556,7 +5779,7 @@ def _tab_aktienbewertung():
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(tc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    signs = evaluate_chart_signs(df)
+    signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
     st.markdown('<div class="card-label">Chartverhalten</div>', unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns(3)
     for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
