@@ -123,6 +123,8 @@ METRIC_GLOSSARY = {
     "% > 50-SMA": "Anteil der Aktien oberhalb ihrer 50-Tage-Linie. Zeigt, wie breit kurzfristige Trends sind.",
     "% > 200-SMA": "Anteil der Aktien oberhalb ihrer 200-Tage-Linie. Zeigt die langfristige Marktverfassung.",
     "Deemer Ratio": "Advancing Volume geteilt durch Declining Volume. Werte über 1.97 gelten als seltener Breitenschub.",
+    "RS-Linie": "Kurs der Aktie geteilt durch den S&P 500. Eine steigende RS-Linie zeigt Outperformance gegenüber dem Markt.",
+    "RS-Rating": "Perzentil-Rang der relativen Stärke gegenüber dem geladenen Aktienuniversum. Hohe Werte stehen für Marktführerschaft.",
 }
 
 def inject_css() -> None:
@@ -5103,15 +5105,39 @@ def _cmf_rating(val):
     if val > -0.25: return "D","Moderate Distribution","#ef4444"
     return "E","Starke Distribution","#ef4444"
 
+def _coerce_daily_series(series):
+    if series is None:
+        return None
+    try:
+        s = pd.to_numeric(series, errors="coerce")
+        if not isinstance(s, pd.Series):
+            s = pd.Series(s)
+        idx = pd.to_datetime(s.index, errors="coerce")
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        idx = pd.DatetimeIndex(idx).normalize()
+        s = pd.Series(s.to_numpy(), index=idx, name=getattr(series, "name", None))
+        s = s[~s.index.isna()]
+        s = s[~s.index.duplicated(keep="last")].sort_index().dropna()
+        return s
+    except Exception as exc:
+        logger.debug("_coerce_daily_series failed: %s", exc)
+        return None
+
+
 def _build_relative_strength_line(stock_close, benchmark_close, normalize_to=100.0):
     if stock_close is None or benchmark_close is None:
         return None
-    s = pd.to_numeric(stock_close, errors="coerce").dropna()
-    b = pd.to_numeric(benchmark_close, errors="coerce").dropna()
+    s = _coerce_daily_series(stock_close)
+    b = _coerce_daily_series(benchmark_close)
+    if s is None or b is None or s.empty or b.empty:
+        return None
     common = s.index.intersection(b.index)
     if len(common) < 60:
         return None
-    rs = (s.reindex(common) / b.reindex(common)).replace([np.inf, -np.inf], np.nan).dropna()
+    s_common = s.reindex(common)
+    b_common = b.reindex(common)
+    rs = (s_common / b_common).replace([np.inf, -np.inf], np.nan).dropna()
     if rs.empty:
         return None
     if normalize_to is not None:
@@ -5254,14 +5280,28 @@ def _calc_rs_rating(stock_close, benchmark_close, universe_closes=None):
 
     universe_scores = pd.Series(dtype=float)
     if universe_closes is not None and not universe_closes.empty:
-        common = universe_closes.index.intersection(raw_rs.index)
-        if len(common) >= 120:
-            bench = pd.to_numeric(benchmark_close, errors="coerce").reindex(common)
-            closes = universe_closes.reindex(common)
-            ratio_frame = closes.div(bench, axis=0).replace([np.inf, -np.inf], np.nan)
-            min_obs = min(220, max(120, len(ratio_frame) // 2))
-            ratio_frame = ratio_frame.loc[:, ratio_frame.notna().sum() >= min_obs]
-            universe_scores = _weighted_rs_scores_for_frame(ratio_frame)
+        closes = universe_closes.copy()
+        try:
+            closes.index = pd.to_datetime(closes.index, errors="coerce")
+            if getattr(closes.index, "tz", None) is not None:
+                closes.index = closes.index.tz_localize(None)
+            closes.index = pd.DatetimeIndex(closes.index).normalize()
+            closes = closes[~closes.index.isna()]
+            closes = closes.loc[~closes.index.duplicated(keep="last")]
+            closes = closes.sort_index().apply(pd.to_numeric, errors="coerce")
+        except Exception as exc:
+            logger.debug("universe RS index normalization failed: %s", exc)
+            closes = None
+        bench = _coerce_daily_series(benchmark_close)
+        if closes is not None and bench is not None and not closes.empty and not bench.empty:
+            common = closes.index.intersection(bench.index)
+            if len(common) >= 120:
+                bench = bench.reindex(common)
+                closes = closes.reindex(common)
+                ratio_frame = closes.div(bench, axis=0).replace([np.inf, -np.inf], np.nan)
+                min_obs = min(220, max(120, len(ratio_frame) // 2))
+                ratio_frame = ratio_frame.loc[:, ratio_frame.notna().sum() >= min_obs]
+                universe_scores = _weighted_rs_scores_for_frame(ratio_frame)
 
     payload["universe_size"] = int(len(universe_scores))
     score = payload["score"]
