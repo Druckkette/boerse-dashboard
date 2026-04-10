@@ -6897,9 +6897,15 @@ def _tab_mein_bereich():
             _lock_private_area()
             st.rerun()
 
-    area_tab1, area_tab2, area_tab3 = st.tabs(["📝 Arbeitsbereich", "💼 Depot 7.2", "⚙️ Technisches Setup"])
+    area_view = st.segmented_control(
+        "Bereich",
+        options=["📝 Arbeitsbereich", "💼 Depot 7.2", "⚙️ Technisches Setup"],
+        default="📝 Arbeitsbereich",
+        key="mein_bereich_view",
+        label_visibility="collapsed",
+    )
 
-    with area_tab1:
+    if area_view == "📝 Arbeitsbereich":
         left, right = st.columns([1.0, 1.0])
 
         with left:
@@ -6967,10 +6973,10 @@ def _tab_mein_bereich():
                 st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Reale Depotpositionen mit Stückzahl pflegst du im Tab „Depot 7.2“.</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    with area_tab2:
+    elif area_view == "💼 Depot 7.2":
         _render_portfolio_72_area()
 
-    with area_tab3:
+    elif area_view == "⚙️ Technisches Setup":
         _render_technical_setup_area()
 
 
@@ -6979,16 +6985,24 @@ def main():
     inject_css()
     _render_workspace_sidebar()
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"])
-    with tab1:
+
+    main_view = st.segmented_control(
+        "Navigation",
+        options=["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"],
+        default="📊 Marktanalyse",
+        key="main_view",
+        label_visibility="collapsed",
+    )
+
+    if main_view == "📊 Marktanalyse":
         _tab_marktanalyse()
-    with tab2:
+    elif main_view == "🏭 Sektoranalyse":
         _tab_sektoranalyse()
-    with tab3:
+    elif main_view == "📋 Aktienbewertung":
         _tab_aktienbewertung()
-    with tab4:
+    elif main_view == "🎯 Nach dem Kauf":
         _tab_nach_kauf()
-    with tab5:
+    elif main_view == "🔐 Mein Bereich":
         _tab_mein_bereich()
 
 if __name__ == "__main__":
