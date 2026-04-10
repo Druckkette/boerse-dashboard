@@ -207,8 +207,10 @@ def _load_workspace_from_store():
         "portfolio_cash_flows": [],
         "portfolio_settings": _default_portfolio_settings(),
     }
+    meta_keys = {field: _workspace_meta_key(field) for field in defaults}
+    raw_values = _get_cache_metadata_many(store, list(meta_keys.values()))
     for field, default in defaults.items():
-        raw = _get_cache_metadata(store, _workspace_meta_key(field), None)
+        raw = raw_values.get(meta_keys[field], None)
         if raw in (None, ""):
             payload[field] = default
             continue
@@ -1709,7 +1711,6 @@ def _render_portfolio_72_area():
 
 
 def _render_workspace_sidebar():
-    _init_workspace_state()
     with st.sidebar:
         st.markdown("### Arbeitsbereich")
         st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
@@ -1723,6 +1724,7 @@ def _render_workspace_sidebar():
         if not _is_private_unlocked():
             st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind aktuell ausgeblendet.</div>', unsafe_allow_html=True)
             return
+        _init_workspace_state()
         watchlist = st.session_state.get("watchlist", [])
         if watchlist:
             st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
@@ -2673,6 +2675,8 @@ def _set_cache_metadata_many(store, values):
         conn.commit()
     finally:
         conn.close()
+
+
 def _get_cache_metadata(store, key, default=None):
     conn = _get_cache_conn(store)
     try:
@@ -2683,6 +2687,27 @@ def _get_cache_metadata(store, key, default=None):
                 return row[0] if row else default
         row = conn.execute("SELECT value FROM app_metadata WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
+    finally:
+        conn.close()
+
+
+def _get_cache_metadata_many(store, keys):
+    key_list = [str(k) for k in (keys or []) if str(k)]
+    if not key_list:
+        return {}
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            placeholders = ", ".join(["%s"] * len(key_list))
+            sql = f"SELECT key, value FROM app_metadata WHERE key IN ({placeholders})"
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(key_list))
+                rows = cur.fetchall() or []
+        else:
+            placeholders = ", ".join(["?"] * len(key_list))
+            sql = f"SELECT key, value FROM app_metadata WHERE key IN ({placeholders})"
+            rows = conn.execute(sql, tuple(key_list)).fetchall() or []
+        return {row[0]: row[1] for row in rows}
     finally:
         conn.close()
 
@@ -6732,47 +6757,51 @@ def _tab_marktanalyse():
             component_bundle = load_nyse_breadth_data()
         store = _get_price_store()
         benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
-        refresh_guard = f"_auto_refresh_requested_{benchmark_last.isoformat()}"
         refresh_at_raw = _get_cache_metadata(store, "last_refresh_at", "")
         refresh_date = None
         if refresh_at_raw:
             parsed = pd.to_datetime(refresh_at_raw, errors="coerce")
             if pd.notna(parsed):
                 refresh_date = parsed.date()
-        if refresh_date is not None and refresh_date >= benchmark_last:
-            st.session_state.pop(refresh_guard, None)
         if component_bundle is None:
             benchmark_str = benchmark_last.strftime("%d.%m.%Y")
             active_job = _get_active_refresh_job(store)
-            if not st.session_state.get(refresh_guard) and not active_job:
-                result = _request_external_refresh_job("refresh_universe", payload={"trigger": "manual_open_no_data", "required_date": benchmark_last.isoformat()})
-                st.session_state[refresh_guard] = True
-                if result.get("ok"):
-                    st.warning(f"Die Kursdaten werden gerade aktualisiert (Stand benötigt: {benchmark_str}). Bitte komm in ca. 10 Minuten erneut auf die Seite.")
-                else:
-                    st.error(result.get("error") or "Die automatische Aktualisierung konnte nicht gestartet werden.")
+            if active_job:
+                st.warning(
+                    f"Die Kursdaten werden aktualisiert (benötigter Stand: {benchmark_str}). "
+                    "Bitte komm in ca. 10 Minuten erneut auf die Seite."
+                )
             else:
-                st.warning(f"Die Kursdaten werden aktualisiert (benötigter Stand: {benchmark_str}). Bitte komm in ca. 10 Minuten erneut auf die Seite.")
+                st.info(
+                    f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
+                    "Die Aktualisierung läuft zeitgesteuert über GitHub Actions. "
+                    "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
+                )
         else:
             br = _render_deep_analysis_content(component_bundle, sd, data)
             if br is not None and len(br):
                 breadth_last = pd.Timestamp(br.index[-1]).date()
-                refresh_is_current = refresh_date is not None and refresh_date >= benchmark_last
-                if breadth_last < benchmark_last and not refresh_is_current:
+                refresh_matches_cache = refresh_date is not None and refresh_date >= breadth_last
+                if breadth_last < benchmark_last and not refresh_matches_cache:
                     benchmark_str = benchmark_last.strftime("%d.%m.%Y")
                     breadth_str = breadth_last.strftime("%d.%m.%Y")
                     active_job = _get_active_refresh_job(store)
-                    if not st.session_state.get(refresh_guard) and not active_job:
-                        result = _request_external_refresh_job("refresh_universe", payload={"trigger": "manual_open_stale", "required_date": benchmark_last.isoformat(), "cached_date": breadth_last.isoformat()})
-                        st.session_state[refresh_guard] = True
-                        if result.get("ok"):
-                            st.warning(f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite.")
-                        else:
-                            st.error(result.get("error") or "Die automatische Aktualisierung konnte nicht gestartet werden.")
+                    if active_job:
+                        st.warning(
+                            f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                            "Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite."
+                        )
                     else:
-                        st.warning(f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite.")
-                elif breadth_last < benchmark_last and refresh_is_current:
-                    st.info(f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')}).")
+                        st.info(
+                            f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                            "Die Aktualisierung läuft zeitgesteuert über GitHub Actions. "
+                            "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
+                        )
+                elif breadth_last < benchmark_last and refresh_matches_cache:
+                    st.info(
+                        f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. "
+                        f"Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')})."
+                    )
 
     st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
 
@@ -6851,9 +6880,9 @@ def _render_technical_setup_area():
 
 
 def _tab_mein_bereich():
-    _init_workspace_state()
     if not _render_private_gate("🔐 Mein Bereich"):
         return
+    _init_workspace_state()
 
     st.markdown("### 🔐 Mein Bereich")
     st.caption(f"Persönlicher Arbeitsbereich mit persistentem Speicher über {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
@@ -6948,7 +6977,6 @@ def _tab_mein_bereich():
 def main():
     configure_page()
     inject_css()
-    _init_workspace_state()
     _render_workspace_sidebar()
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"])
