@@ -5253,16 +5253,58 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             prev_year, prev = same_q_points[i + 1]
             lbl = f"{cur_year} Q{anchor_q}"
             if prev < 0 and cur > 0:
-                results.append((lbl, None, "turnaround", cur, prev))
+                out.append((lbl, None, "turnaround", cur, prev))
             elif prev < 0 and cur <= 0:
-                results.append((lbl, None, "still_neg", cur, prev))
+                out.append((lbl, None, "still_neg", cur, prev))
             elif prev > 0 and cur < 0:
-                results.append((lbl, None, "turned_neg", cur, prev))
+                out.append((lbl, None, "turned_neg", cur, prev))
             elif prev == 0:
-                results.append((lbl, None, "prev_zero", cur, prev))
+                out.append((lbl, None, "prev_zero", cur, prev))
             else:
                 g = (cur / prev - 1) * 100
-                results.append((lbl, round(g, 1), None, cur, prev))
+                out.append((lbl, round(g, 1), None, cur, prev))
+
+        # Preferred path: build explicit year/quarter buckets and compare YoY per quarter.
+        idx_dt = pd.to_datetime(vals.index, errors="coerce")
+        if hasattr(idx_dt, "notna") and idx_dt.notna().any():
+            tmp = pd.DataFrame({"val": pd.to_numeric(vals.values, errors="coerce")}, index=idx_dt)
+            tmp = tmp[tmp.index.notna() & tmp["val"].notna()].copy()
+            if not tmp.empty:
+                tmp["year"] = tmp.index.year
+                tmp["quarter"] = tmp.index.quarter
+                # One value per fiscal quarter (keep latest filing/date if duplicates exist)
+                qvals = tmp.sort_index(ascending=False).groupby(["year", "quarter"], as_index=False).first()
+                qvals = qvals.sort_values(["year", "quarter"], ascending=[False, False])
+                qmap = {(int(r.year), int(r.quarter)): float(r.val) for r in qvals.itertuples(index=False)}
+
+                results = []
+                for cur_row in qvals.itertuples(index=False):
+                    if len(results) >= 3:
+                        break
+                    cy = int(cur_row.year)
+                    cq = int(cur_row.quarter)
+                    py = cy - 1
+                    if (py, cq) not in qmap:
+                        continue
+                    cur = float(cur_row.val)
+                    prev = float(qmap[(py, cq)])
+                    lbl = f"{cy} Q{cq}"
+                    _append_growth(results, lbl, cur, prev)
+                if results:
+                    return results
+
+        # Fallback: if index isn't usable as datetime, assume sequence is quarterly and use 4-lag YoY.
+        if len(vals) < 5:
+            return []
+        results = []
+        for k in range(min(3, len(vals))):
+            prev_idx = k + 4
+            if prev_idx >= len(vals):
+                break
+            cur = float(vals.iloc[k])
+            prev = float(vals.iloc[prev_idx])
+            lbl = _fmt_qlabel(vals.index[k])
+            _append_growth(results, lbl, cur, prev)
         return results
 
     # ── 0. Direct Yahoo API (qraw) — best source, may have 8+ quarters ──
