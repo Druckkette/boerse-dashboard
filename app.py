@@ -2221,6 +2221,15 @@ def load_market_data(lookback_days=400):
     for name, sym in tickers.items():
         df = _dl(sym, start, end)
         if df is not None and len(df) > 20: data[name] = df
+
+    # Yahoo can intermittently return empty/failed results for ^GSPC.
+    # Keep the S&P slot available by trying robust fallbacks.
+    if "S&P 500" not in data:
+        for sp_fallback in ["^SPX", "SPY"]:
+            df = _dl(sp_fallback, start, end)
+            if df is not None and len(df) > 20:
+                data["S&P 500"] = df
+                break
     return data
 
 SECTOR_ETFS = {
