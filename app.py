@@ -5177,17 +5177,69 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             return f"{idx.year} Q{(idx.month - 1) // 3 + 1}"
         return str(idx)[:7]
 
+    def _is_same_quarter_chain(items):
+        if not items:
+            return False
+        qset = set()
+        for lbl, *_ in items:
+            m = re.search(r"Q([1-4])", str(lbl))
+            if not m:
+                return False
+            qset.add(m.group(1))
+        return len(qset) == 1
+
     def _extract_yoy(vals):
-        """Compare each of the latest 3 quarters against the SAME quarter of the prior year."""
+        """
+        Compare SAME fiscal quarter across years in a chain:
+        latest Q vs same Q last year, then last year vs two years ago, etc.
+        Example: Q1'26 vs Q1'25, Q1'25 vs Q1'24, Q1'24 vs Q1'23.
+        """
         if len(vals) < 2:
             return []
-        vals = vals.dropna()
+        vals = vals.dropna().sort_index(ascending=False)
         if len(vals) < 2:
             return []
 
-        def _append_growth(out, lbl, cur, prev):
-            if np.isnan(prev) or np.isnan(cur):
-                return
+        def _parse_year_quarter(idx):
+            ts = pd.to_datetime(idx, errors="coerce")
+            if not pd.isna(ts):
+                return int(ts.year), int(ts.quarter)
+            s = str(idx)
+            m = re.search(r"(20\d{2}).*Q([1-4])", s, flags=re.IGNORECASE)
+            if m:
+                return int(m.group(1)), int(m.group(2))
+            return None
+
+        # Build unique (year, quarter) points, keep newest value per bucket.
+        bucket = {}
+        ordered_keys = []
+        for idx, raw_val in vals.items():
+            yq = _parse_year_quarter(idx)
+            if yq is None:
+                continue
+            try:
+                v = float(raw_val)
+            except Exception:
+                continue
+            if np.isnan(v):
+                continue
+            if yq not in bucket:
+                bucket[yq] = v
+                ordered_keys.append(yq)
+
+        if not ordered_keys:
+            return []
+
+        anchor_q = ordered_keys[0][1]
+        same_q_points = sorted([(y, bucket[(y, q)]) for (y, q) in bucket.keys() if q == anchor_q], key=lambda t: t[0], reverse=True)
+        if len(same_q_points) < 2:
+            return []
+
+        results = []
+        for i in range(min(3, len(same_q_points) - 1)):
+            cur_year, cur = same_q_points[i]
+            prev_year, prev = same_q_points[i + 1]
+            lbl = f"{cur_year} Q{anchor_q}"
             if prev < 0 and cur > 0:
                 out.append((lbl, None, "turnaround", cur, prev))
             elif prev < 0 and cur <= 0:
@@ -5251,7 +5303,8 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             vals = qraw[raw_key]
             if len(vals) >= 5:
                 res = _extract_yoy(vals)
-                if res: return res
+                if _is_same_quarter_chain(res):
+                    return res
 
     # ── 1. earnings_dates: epsActual for up to 12 quarters (EPS only) ──
     if field == "eps" and ed is not None and not ed.empty:
@@ -5265,7 +5318,8 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             eps_data = eps_data.sort_index(ascending=False)
             if len(eps_data) >= 5:
                 res = _extract_yoy(eps_data[eps_col])
-                if res: return res
+                if _is_same_quarter_chain(res):
+                    return res
 
     # ── 2. quarterly_income_stmt (try for revenue, usually 4-5 quarters) ──
     candidates = {
@@ -5277,7 +5331,8 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         vals = row.dropna().sort_index(ascending=False)
         if len(vals) >= 5:
             res = _extract_yoy(vals)
-            if res: return res
+            if _is_same_quarter_chain(res):
+                return res
 
     # ── 3. quarterly_earnings (deprecated fallback) ──
     if qe is not None and not qe.empty:
@@ -5286,7 +5341,8 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         if col and col in qe.columns:
             vals = qe[col].dropna().sort_index(ascending=False)
             res = _extract_yoy(vals)
-            if res: return res
+            if _is_same_quarter_chain(res):
+                return res
 
     return []
 
