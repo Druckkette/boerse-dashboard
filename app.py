@@ -5178,69 +5178,69 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         return str(idx)[:7]
 
     def _extract_yoy(vals):
-        """
-        Compare SAME fiscal quarter across years in a chain:
-        latest Q vs same Q last year, then last year vs two years ago, etc.
-        Example: Q1'26 vs Q1'25, Q1'25 vs Q1'24, Q1'24 vs Q1'23.
-        """
-        if len(vals) < 2: return []
+        """Compare each of the latest 3 quarters against the SAME quarter of the prior year."""
+        if len(vals) < 2:
+            return []
         vals = vals.dropna()
-        if len(vals) < 2: return []
-        results = []
-        # Preferred path: use quarter/year buckets (robust for sources with >4 datapoints/year)
+        if len(vals) < 2:
+            return []
+
+        def _append_growth(out, lbl, cur, prev):
+            if np.isnan(prev) or np.isnan(cur):
+                return
+            if prev < 0 and cur > 0:
+                out.append((lbl, None, "turnaround", cur, prev))
+            elif prev < 0 and cur <= 0:
+                out.append((lbl, None, "still_neg", cur, prev))
+            elif prev > 0 and cur < 0:
+                out.append((lbl, None, "turned_neg", cur, prev))
+            elif prev == 0:
+                out.append((lbl, None, "prev_zero", cur, prev))
+            else:
+                g = (cur / prev - 1) * 100
+                out.append((lbl, round(g, 1), None, cur, prev))
+
+        # Preferred path: build explicit year/quarter buckets and compare YoY per quarter.
         idx_dt = pd.to_datetime(vals.index, errors="coerce")
         if hasattr(idx_dt, "notna") and idx_dt.notna().any():
             tmp = pd.DataFrame({"val": pd.to_numeric(vals.values, errors="coerce")}, index=idx_dt)
-            tmp = tmp[tmp.index.notna() & tmp["val"].notna()].sort_index(ascending=False)
-            if len(tmp) >= 2:
+            tmp = tmp[tmp.index.notna() & tmp["val"].notna()].copy()
+            if not tmp.empty:
                 tmp["year"] = tmp.index.year
                 tmp["quarter"] = tmp.index.quarter
-                anchor_q = int(tmp.iloc[0]["quarter"])
-                same_q = tmp[tmp["quarter"] == anchor_q].copy()
-                if not same_q.empty:
-                    same_q = same_q.groupby("year", as_index=False).first().sort_values("year", ascending=False)
-                    for i in range(min(3, len(same_q) - 1)):
-                        cur_row = same_q.iloc[i]
-                        prev_row = same_q.iloc[i + 1]
-                        cur = float(cur_row["val"]); prev = float(prev_row["val"])
-                        if np.isnan(prev) or np.isnan(cur):
-                            continue
-                        lbl = f"{int(cur_row['year'])} Q{anchor_q}"
-                        if prev < 0 and cur > 0:
-                            results.append((lbl, None, "turnaround", cur, prev))
-                        elif prev < 0 and cur <= 0:
-                            results.append((lbl, None, "still_neg", cur, prev))
-                        elif prev > 0 and cur < 0:
-                            results.append((lbl, None, "turned_neg", cur, prev))
-                        elif prev == 0:
-                            results.append((lbl, None, "prev_zero", cur, prev))
-                        else:
-                            g = (cur / prev - 1) * 100
-                            results.append((lbl, round(g, 1), None, cur, prev))
-                    if results:
-                        return results
+                # One value per fiscal quarter (keep latest filing/date if duplicates exist)
+                qvals = tmp.sort_index(ascending=False).groupby(["year", "quarter"], as_index=False).first()
+                qvals = qvals.sort_values(["year", "quarter"], ascending=[False, False])
+                qmap = {(int(r.year), int(r.quarter)): float(r.val) for r in qvals.itertuples(index=False)}
 
-        # Fallback: if index isn't usable as datetime, walk 4-step YoY slots.
+                results = []
+                for cur_row in qvals.itertuples(index=False):
+                    if len(results) >= 3:
+                        break
+                    cy = int(cur_row.year)
+                    cq = int(cur_row.quarter)
+                    py = cy - 1
+                    if (py, cq) not in qmap:
+                        continue
+                    cur = float(cur_row.val)
+                    prev = float(qmap[(py, cq)])
+                    lbl = f"{cy} Q{cq}"
+                    _append_growth(results, lbl, cur, prev)
+                if results:
+                    return results
+
+        # Fallback: if index isn't usable as datetime, assume sequence is quarterly and use 4-lag YoY.
         if len(vals) < 5:
             return []
-        for k in range(3):
-            cur_idx = 4 * k
-            prev_idx = 4 * (k + 1)
-            if prev_idx >= len(vals): break
-            cur = float(vals.iloc[cur_idx]); prev = float(vals.iloc[prev_idx])
-            if np.isnan(prev) or np.isnan(cur): continue
-            lbl = _fmt_qlabel(vals.index[cur_idx])
-            if prev < 0 and cur > 0:
-                results.append((lbl, None, "turnaround", cur, prev))
-            elif prev < 0 and cur <= 0:
-                results.append((lbl, None, "still_neg", cur, prev))
-            elif prev > 0 and cur < 0:
-                results.append((lbl, None, "turned_neg", cur, prev))
-            elif prev == 0:
-                results.append((lbl, None, "prev_zero", cur, prev))
-            else:
-                g = (cur / prev - 1) * 100
-                results.append((lbl, round(g, 1), None, cur, prev))
+        results = []
+        for k in range(min(3, len(vals))):
+            prev_idx = k + 4
+            if prev_idx >= len(vals):
+                break
+            cur = float(vals.iloc[k])
+            prev = float(vals.iloc[prev_idx])
+            lbl = _fmt_qlabel(vals.index[k])
+            _append_growth(results, lbl, cur, prev)
         return results
 
     # ── 0. Direct Yahoo API (qraw) — best source, may have 8+ quarters ──
