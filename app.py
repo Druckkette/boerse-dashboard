@@ -5241,6 +5241,7 @@ def _calc_rs_rating(stock_close, benchmark_close, universe_closes=None):
         "excess_return_3m": None,
         "excess_return_6m": None,
         "excess_return_12m": None,
+        "benchmark_close": _coerce_daily_series(benchmark_close),
     }
     if raw_rs is None or raw_rs.empty:
         return payload
@@ -5545,6 +5546,274 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe=None):
     return checks, cmf_val, rs_ctx
 
 
+def _weekly_ohlc(df):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    weekly = pd.DataFrame({
+        "Open": df["Open"].resample("W-FRI").first(),
+        "High": df["High"].resample("W-FRI").max(),
+        "Low": df["Low"].resample("W-FRI").min(),
+        "Close": df["Close"].resample("W-FRI").last(),
+        "Volume": df["Volume"].resample("W-FRI").sum() if "Volume" in df.columns else np.nan,
+    })
+    return weekly.dropna(subset=["Open", "High", "Low", "Close"])
+
+
+def _find_local_pivots(series, kind="low", left=3, right=3, min_separation=5):
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if len(s) < left + right + 3:
+        return []
+    values = s.to_numpy(dtype=float)
+    idx = s.index
+    pivots = []
+    last_i = None
+    for i in range(left, len(s) - right):
+        current = values[i]
+        prev_vals = values[i - left:i]
+        next_vals = values[i + 1:i + 1 + right]
+        if np.isnan(current) or np.isnan(prev_vals).any() or np.isnan(next_vals).any():
+            continue
+        if kind == "low":
+            is_pivot = current <= prev_vals.min() and current <= next_vals.min() and (current < prev_vals.min() or current < next_vals.min())
+        else:
+            is_pivot = current >= prev_vals.max() and current >= next_vals.max() and (current > prev_vals.max() or current > next_vals.max())
+        if not is_pivot:
+            continue
+        if last_i is not None and i - last_i < min_separation:
+            prev_idx, prev_val = pivots[-1]
+            if (kind == "low" and current < prev_val) or (kind == "high" and current > prev_val):
+                pivots[-1] = (idx[i], float(current))
+                last_i = i
+            continue
+        pivots.append((idx[i], float(current)))
+        last_i = i
+    return pivots
+
+
+def _window_extreme(series, center_label, kind="low", radius=5):
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return None
+    try:
+        loc = s.index.get_loc(center_label)
+        if isinstance(loc, slice):
+            loc = loc.start
+        elif isinstance(loc, np.ndarray):
+            loc = int(loc[0])
+    except KeyError:
+        arr = s.index.get_indexer([center_label], method="nearest")
+        if len(arr) == 0 or arr[0] == -1:
+            return None
+        loc = int(arr[0])
+    start = max(0, loc - radius)
+    end = min(len(s), loc + radius + 1)
+    window = s.iloc[start:end].dropna()
+    if window.empty:
+        return None
+    return float(window.min() if kind == "low" else window.max())
+
+
+def _detect_recent_engulfing(df, lookback=15):
+    out = {"bullish": None, "bearish": None}
+    if df is None or len(df) < 2:
+        return out
+    start = max(1, len(df) - lookback)
+    for i in range(start, len(df)):
+        prev = df.iloc[i - 1]
+        cur = df.iloc[i]
+        date = pd.Timestamp(df.index[i]).strftime("%d.%m.%Y")
+        prev_red = prev["Close"] < prev["Open"]
+        prev_green = prev["Close"] > prev["Open"]
+        cur_green = cur["Close"] > cur["Open"]
+        cur_red = cur["Close"] < cur["Open"]
+        prev_body = abs(prev["Close"] - prev["Open"])
+        cur_body = abs(cur["Close"] - cur["Open"])
+        if prev_red and cur_green and cur["Open"] <= prev["Close"] and cur["Close"] >= prev["Open"] and cur_body >= prev_body * 0.9:
+            out["bullish"] = (date, f"{date} · Körper umschließt den roten Vortag")
+        if prev_green and cur_red and cur["Open"] >= prev["Close"] and cur["Close"] <= prev["Open"] and cur_body >= prev_body * 0.9:
+            out["bearish"] = (date, f"{date} · Körper umschließt den grünen Vortag")
+    return out
+
+
+def _detect_recent_outside_day(df, lookback=15):
+    out = {"bullish": None, "bearish": None}
+    if df is None or len(df) < 2:
+        return out
+    start = max(1, len(df) - lookback)
+    for i in range(start, len(df)):
+        prev = df.iloc[i - 1]
+        cur = df.iloc[i]
+        rng = cur["High"] - cur["Low"]
+        if not pd.notna(rng) or rng <= 0:
+            continue
+        if cur["High"] > prev["High"] and cur["Low"] < prev["Low"]:
+            close_pos = (cur["Close"] - cur["Low"]) / rng
+            date = pd.Timestamp(df.index[i]).strftime("%d.%m.%Y")
+            if cur["Close"] > cur["Open"] and cur["Close"] >= prev["Close"] and close_pos >= 0.6:
+                out["bullish"] = (date, f"{date} · Outside Day mit Schluss im oberen Bereich ({close_pos:.0%})")
+            elif cur["Close"] < cur["Open"] and cur["Close"] <= prev["Close"] and close_pos <= 0.4:
+                out["bearish"] = (date, f"{date} · Outside Day mit Schluss im unteren Bereich ({close_pos:.0%})")
+    return out
+
+
+def _detect_inside_week(df):
+    weekly = _weekly_ohlc(df)
+    if len(weekly) < 2:
+        return None
+    prev = weekly.iloc[-2]
+    cur = weekly.iloc[-1]
+    if cur["High"] <= prev["High"] and cur["Low"] >= prev["Low"]:
+        width = ((cur["High"] - cur["Low"]) / cur["Close"] * 100) if cur["Close"] else np.nan
+        date = pd.Timestamp(weekly.index[-1]).strftime("KW bis %d.%m.%Y")
+        detail = f"{date} · Wochenrange {width:.1f}% innerhalb der Vorwoche" if pd.notna(width) else f"{date} · Range innerhalb der Vorwoche"
+        return {"date": weekly.index[-1], "detail": detail}
+    return None
+
+
+def _detect_price_rs_divergence(
+    price_series,
+    benchmark_series,
+    rs_series=None,
+    lookback=126,
+    recent_bars=35,
+    pivot_span=3,
+    min_market_move_pct=0.75,
+    flat_tolerance_pct=1.0,
+    outperformance_gap_pct=3.0,
+):
+    if price_series is None or benchmark_series is None:
+        return {"positive": None, "negative": None}
+
+    price = _coerce_daily_series(price_series)
+    bench = _coerce_daily_series(benchmark_series)
+    rs = _coerce_daily_series(rs_series) if rs_series is not None else _build_relative_strength_line(price, bench, normalize_to=None)
+    if price is None or bench is None or rs is None or price.empty or bench.empty or rs.empty:
+        return {"positive": None, "negative": None}
+
+    common = price.index.intersection(bench.index).intersection(rs.index)
+    if len(common) < 40:
+        return {"positive": None, "negative": None}
+
+    price = price.reindex(common).tail(lookback)
+    bench = bench.reindex(price.index)
+    rs = rs.reindex(price.index)
+    valid = price.notna() & bench.notna() & rs.notna()
+    price = price.loc[valid]
+    bench = bench.loc[valid]
+    rs = rs.loc[valid]
+    if len(price) < 40:
+        return {"positive": None, "negative": None}
+
+    def _loc(index, label):
+        try:
+            loc = index.get_loc(label)
+            if isinstance(loc, slice):
+                return int(loc.start)
+            if isinstance(loc, np.ndarray):
+                return int(loc[0]) if len(loc) else None
+            return int(loc)
+        except Exception:
+            return None
+
+    def _strength_positive(stock_change_pct, market_change_pct, rs_change_pct):
+        rel_gap = stock_change_pct - market_change_pct
+        if stock_change_pct >= -flat_tolerance_pct and rs_change_pct > 0:
+            return "stark", "Markt macht tieferes Tief, Aktie bestätigt es nicht"
+        if rel_gap >= outperformance_gap_pct and rs_change_pct > 0:
+            return "mittel", "Aktie fällt deutlich weniger als der Markt"
+        if market_change_pct <= -min_market_move_pct and rel_gap > 0 and rs_change_pct > 0:
+            return "schwach", "Aktie hält sich leicht besser als der Markt"
+        return None, None
+
+    def _strength_negative(stock_change_pct, market_change_pct, rs_change_pct):
+        rel_gap = stock_change_pct - market_change_pct
+        if stock_change_pct <= flat_tolerance_pct and rs_change_pct < 0:
+            return "stark", "Markt macht höheres Hoch, Aktie bestätigt es nicht"
+        if rel_gap <= -outperformance_gap_pct and rs_change_pct < 0:
+            return "mittel", "Aktie steigt deutlich schwächer als der Markt"
+        if market_change_pct >= min_market_move_pct and rel_gap < 0 and rs_change_pct < 0:
+            return "schwach", "Aktie läuft dem Markt nur leicht hinterher"
+        return None, None
+
+    def _score(rel_gap, rs_change_pct, market_move_pct):
+        return round(max(0.0, abs(rel_gap)) * 1.5 + max(0.0, abs(rs_change_pct)) * 2.0 + max(0.0, abs(market_move_pct)) * 0.5, 1)
+
+    def _make_candidate(kind, d1, d2, pivot_label, stock_change_pct, market_change_pct, rs_change_pct, strength, summary):
+        rel_gap = stock_change_pct - market_change_pct
+        score = _score(rel_gap, rs_change_pct, market_change_pct)
+        detail = (
+            f"{pd.Timestamp(d1).strftime('%d.%m.')} → {pd.Timestamp(d2).strftime('%d.%m.%Y')}"
+            f" · {pivot_label} · {strength.capitalize()} · {summary}"
+        )
+        return {
+            "date": d2,
+            "kind": kind,
+            "strength": strength,
+            "score": score,
+            "detail": detail,
+            "price_change_pct": float(stock_change_pct),
+            "benchmark_change_pct": float(market_change_pct),
+            "rs_change_pct": float(rs_change_pct),
+            "excess_change_pct": float(rel_gap),
+            "stock_1": float(price.loc[d1]),
+            "stock_2": float(price.loc[d2]),
+            "benchmark_1": float(bench.loc[d1]),
+            "benchmark_2": float(bench.loc[d2]),
+            "rs_1": float(rs.loc[d1]),
+            "rs_2": float(rs.loc[d2]),
+        }
+
+    def _choose_better(existing, candidate):
+        if candidate is None:
+            return existing
+        if existing is None:
+            return candidate
+        if candidate["date"] > existing["date"]:
+            return candidate
+        if candidate["date"] == existing["date"] and candidate.get("score", 0) > existing.get("score", 0):
+            return candidate
+        return existing
+
+    positive_candidate = None
+    negative_candidate = None
+
+    low_pivots = _find_local_pivots(bench, kind="low", left=pivot_span, right=pivot_span, min_separation=7)
+    high_pivots = _find_local_pivots(bench, kind="high", left=pivot_span, right=pivot_span, min_separation=7)
+
+    for pivots, pivot_kind in ((low_pivots, "Markt-Tiefs"), (high_pivots, "Markt-Hochs")):
+        if len(pivots) < 2:
+            continue
+        for i in range(1, len(pivots)):
+            d1, _ = pivots[i - 1]
+            d2, _ = pivots[i]
+            loc2 = _loc(price.index, d2)
+            if loc2 is None or loc2 < len(price) - recent_bars:
+                continue
+            p1, p2 = price.loc[d1], price.loc[d2]
+            b1, b2 = bench.loc[d1], bench.loc[d2]
+            r1, r2 = rs.loc[d1], rs.loc[d2]
+            if any(pd.isna(x) for x in [p1, p2, b1, b2, r1, r2]) or p1 == 0 or b1 == 0 or r1 == 0:
+                continue
+            stock_change_pct = float((p2 / p1 - 1.0) * 100.0)
+            market_change_pct = float((b2 / b1 - 1.0) * 100.0)
+            rs_change_pct = float((r2 / r1 - 1.0) * 100.0)
+
+            if pivot_kind == "Markt-Tiefs":
+                if market_change_pct <= -min_market_move_pct and rs_change_pct > 0:
+                    strength, summary = _strength_positive(stock_change_pct, market_change_pct, rs_change_pct)
+                    if strength is not None:
+                        candidate = _make_candidate("positive", d1, d2, pivot_kind, stock_change_pct, market_change_pct, rs_change_pct, strength, summary)
+                        positive_candidate = _choose_better(positive_candidate, candidate)
+            else:
+                if market_change_pct >= min_market_move_pct and rs_change_pct < 0:
+                    strength, summary = _strength_negative(stock_change_pct, market_change_pct, rs_change_pct)
+                    if strength is not None:
+                        candidate = _make_candidate("negative", d1, d2, pivot_kind, stock_change_pct, market_change_pct, rs_change_pct, strength, summary)
+                        negative_candidate = _choose_better(negative_candidate, candidate)
+
+    return {"positive": positive_candidate, "negative": negative_candidate}
+
+
 def evaluate_chart_signs(df, rs_ctx=None):
     signs = {"positiv": [], "negativ": [], "neutral": []}
     if len(df) < 50: return signs
@@ -5552,6 +5821,12 @@ def evaluate_chart_signs(df, rs_ctx=None):
     pct = c.pct_change(); vol_avg = v.rolling(50).mean()
     ema21 = c.ewm(span=21).mean(); sma50 = c.rolling(50).mean(); sma200 = c.rolling(200).mean()
     rng = h - l; cr_s = pd.Series(np.where(rng > 0, (c - l) / rng, 0.5), index=df.index)
+    engulf = _detect_recent_engulfing(df, lookback=15)
+    outside = _detect_recent_outside_day(df, lookback=15)
+    inside_week = _detect_inside_week(df)
+    benchmark_close = rs_ctx.get("benchmark_close") if isinstance(rs_ctx, dict) else None
+    rs_line_raw = rs_ctx.get("rs_line_raw") if isinstance(rs_ctx, dict) else None
+    divergence = _detect_price_rs_divergence(c, benchmark_close, rs_series=rs_line_raw, lookback=126, recent_bars=35, pivot_span=3, min_market_move_pct=0.75, flat_tolerance_pct=1.0, outperformance_gap_pct=3.0) if benchmark_close is not None else {"positive": None, "negative": None}
 
     t20 = df.tail(20)
     uhv = ((t20["Close"] > t20["Close"].shift(1)) & (t20["Volume"] > vol_avg.tail(20))).sum()
@@ -5620,6 +5895,23 @@ def evaluate_chart_signs(df, rs_ctx=None):
                 signs["positiv"].append(("RS-Rating im Elite-Bereich", f"RS {rating}"))
             elif rating < 70:
                 signs["negativ"].append(("Schwaches RS-Rating", f"RS {rating}"))
+
+    if engulf.get("bullish"):
+        signs["positiv"].append(("Bullish Engulfing", engulf["bullish"][1]))
+    if engulf.get("bearish"):
+        signs["negativ"].append(("Bearish Engulfing", engulf["bearish"][1]))
+    if outside.get("bullish"):
+        signs["positiv"].append(("Positiver Outside Day", outside["bullish"][1]))
+    if outside.get("bearish"):
+        signs["negativ"].append(("Negativer Outside Day", outside["bearish"][1]))
+    if inside_week is not None:
+        signs["neutral"].append(("Inside Week", inside_week["detail"]))
+    if divergence.get("positive"):
+        det = divergence["positive"]
+        signs["positiv"].append(("Positive Divergenz", det["detail"] + f" · Aktie {det['price_change_pct']:+.1f}% vs Markt {det['benchmark_change_pct']:+.1f}% · RS {det['rs_change_pct']:+.1f}% · Relativ {det['excess_change_pct']:+.1f}% · Score {det['score']:.1f}"))
+    if divergence.get("negative"):
+        det = divergence["negative"]
+        signs["negativ"].append(("Negative Divergenz", det["detail"] + f" · Aktie {det['price_change_pct']:+.1f}% vs Markt {det['benchmark_change_pct']:+.1f}% · RS {det['rs_change_pct']:+.1f}% · Relativ {det['excess_change_pct']:+.1f}% · Score {det['score']:.1f}"))
 
     avg_cr = cr_s.tail(5).mean()
     if avg_cr > 0.6: signs["positiv"].append(("Schlussposition obere 40%", f"Ø {avg_cr:.0%}"))
