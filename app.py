@@ -6756,8 +6756,8 @@ def _tab_marktanalyse():
             br = _render_deep_analysis_content(component_bundle, sd, data)
             if br is not None and len(br):
                 breadth_last = pd.Timestamp(br.index[-1]).date()
-                refresh_is_current = refresh_date is not None and refresh_date >= benchmark_last
-                if breadth_last < benchmark_last and not refresh_is_current:
+                refresh_matches_cache = refresh_date is not None and refresh_date >= breadth_last
+                if breadth_last < benchmark_last and not refresh_matches_cache:
                     benchmark_str = benchmark_last.strftime("%d.%m.%Y")
                     breadth_str = breadth_last.strftime("%d.%m.%Y")
                     active_job = _get_active_refresh_job(store)
@@ -6772,8 +6772,11 @@ def _tab_marktanalyse():
                             "Die Aktualisierung läuft zeitgesteuert über GitHub Actions. "
                             "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
                         )
-                elif breadth_last < benchmark_last and refresh_is_current:
-                    st.info(f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')}).")
+                elif breadth_last < benchmark_last and refresh_matches_cache:
+                    st.info(
+                        f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. "
+                        f"Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')})."
+                    )
 
     st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
 
