@@ -1,15 +1,24 @@
 name: market-refresh
 
 on:
+  schedule:
+    # GitHub Cron läuft in UTC.
+    # Entspricht aktuell 08:15, 15:30, 18:00, 22:00 Uhr in Deutschland (CEST, UTC+2).
+    # Im Winter (CET, UTC+1) verschiebt sich die lokale Uhrzeit um +1h.
+    - cron: "15 6 * * 1-5"
+    - cron: "30 13 * * 1-5"
+    - cron: "0 16 * * 1-5"
+    - cron: "0 20 * * 1-5"
   workflow_dispatch:
     inputs:
       job_id:
         description: Refresh-Job-ID aus der Streamlit-App
-        required: true
+        required: false
         type: string
       job_type:
         description: refresh_universe | rescue_missing | auto_remap
-        required: true
+        required: false
+        default: refresh_universe
         type: string
       requested_by:
         description: Optionaler Auslöser
@@ -43,5 +52,20 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run refresh worker
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_JOB_ID: ${{ inputs.job_id }}
+          INPUT_JOB_TYPE: ${{ inputs.job_type }}
+          INPUT_REQUESTED_BY: ${{ inputs.requested_by }}
         run: |
-          python worker.py --job-id "${{ inputs.job_id }}" --job-type "${{ inputs.job_type }}"
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            python worker.py \
+              --job-type "refresh_universe" \
+              --requested-by "github_schedule" \
+              --create-job-if-missing
+          else
+            python worker.py \
+              --job-id "${INPUT_JOB_ID}" \
+              --job-type "${INPUT_JOB_TYPE}" \
+              --requested-by "${INPUT_REQUESTED_BY}"
+          fi
