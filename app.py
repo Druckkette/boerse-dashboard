@@ -2595,6 +2595,27 @@ def _get_neon_connection_url():
             return str(value).strip()
     return ""
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _can_connect_neon(dsn: str) -> bool:
+    """Best-effort Neon health check to avoid hard-crashing the app on DB outages."""
+    if not dsn or psycopg2 is None:
+        return False
+    conn = None
+    try:
+        conn = psycopg2.connect(dsn, connect_timeout=5)
+        return True
+    except Exception as exc:
+        logger.warning("Neon connection check failed, fallback to SQLite cache: %s", exc)
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _get_cache_db_path():
     base_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path(os.getcwd())
     cache_dir = base_dir / ".cache"
@@ -2603,7 +2624,7 @@ def _get_cache_db_path():
 
 def _get_price_store():
     neon_url = _get_neon_connection_url()
-    if neon_url and psycopg2 is not None:
+    if neon_url and psycopg2 is not None and _can_connect_neon(neon_url):
         return {"backend": "neon", "dsn": neon_url, "label": "Neon Postgres"}
     return {"backend": "sqlite", "db_path": _get_cache_db_path(), "label": "lokaler SQLite-Cache"}
 
@@ -2614,7 +2635,14 @@ def _get_cache_conn(store):
     if store["backend"] == "neon":
         if psycopg2 is None:
             raise RuntimeError("psycopg2-binary ist nicht installiert. Bitte in requirements.txt ergänzen.")
-        return psycopg2.connect(store["dsn"], connect_timeout=15)
+        try:
+            return psycopg2.connect(store["dsn"], connect_timeout=15)
+        except Exception as exc:
+            logger.warning("Neon-Verbindung fehlgeschlagen, nutze SQLite-Fallback: %s", exc)
+            fallback = sqlite3.connect(_get_cache_db_path(), timeout=30)
+            fallback.execute("PRAGMA journal_mode=WAL;")
+            fallback.execute("PRAGMA synchronous=NORMAL;")
+            return fallback
     conn = sqlite3.connect(store["db_path"], timeout=30)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
