@@ -5642,17 +5642,38 @@ def _detect_recent_engulfing(df, lookback=15):
     out = {"bullish": None, "bearish": None}
     if df is None or len(df) < 2:
         return out
+
+    # Keep the original engulfing logic but classify candle color with a tiny
+    # tolerance so near-flat candles are not mislabeled as green/red.
+    color_eps_pct = 0.0005  # 0.05%
+
+    def _candle_dir(row):
+        o = float(row["Open"])
+        c = float(row["Close"])
+        up = o * (1.0 + color_eps_pct)
+        down = o * (1.0 - color_eps_pct)
+        if c > up:
+            return 1
+        if c < down:
+            return -1
+        return 0
+
     start = max(1, len(df) - lookback)
     for i in range(start, len(df)):
         prev = df.iloc[i - 1]
         cur = df.iloc[i]
         date = pd.Timestamp(df.index[i]).strftime("%d.%m.%Y")
-        prev_red = prev["Close"] < prev["Open"]
-        prev_green = prev["Close"] > prev["Open"]
-        cur_green = cur["Close"] > cur["Open"]
-        cur_red = cur["Close"] < cur["Open"]
+
+        prev_dir = _candle_dir(prev)
+        cur_dir = _candle_dir(cur)
+        prev_red = prev_dir == -1
+        prev_green = prev_dir == 1
+        cur_green = cur_dir == 1
+        cur_red = cur_dir == -1
+
         prev_body = abs(prev["Close"] - prev["Open"])
         cur_body = abs(cur["Close"] - cur["Open"])
+
         if prev_red and cur_green and cur["Open"] <= prev["Close"] and cur["Close"] >= prev["Open"] and cur_body >= prev_body * 0.9:
             out["bullish"] = (date, f"{date} · Körper umschließt den roten Vortag")
         if prev_green and cur_red and cur["Open"] >= prev["Close"] and cur["Close"] <= prev["Open"] and cur_body >= prev_body * 0.9:
@@ -6897,9 +6918,15 @@ def _tab_mein_bereich():
             _lock_private_area()
             st.rerun()
 
-    area_tab1, area_tab2, area_tab3 = st.tabs(["📝 Arbeitsbereich", "💼 Depot 7.2", "⚙️ Technisches Setup"])
+    area_view = st.segmented_control(
+        "Bereich",
+        options=["📝 Arbeitsbereich", "💼 Depot 7.2", "⚙️ Technisches Setup"],
+        default="📝 Arbeitsbereich",
+        key="mein_bereich_view",
+        label_visibility="collapsed",
+    )
 
-    with area_tab1:
+    if area_view == "📝 Arbeitsbereich":
         left, right = st.columns([1.0, 1.0])
 
         with left:
@@ -6967,10 +6994,10 @@ def _tab_mein_bereich():
                 st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Reale Depotpositionen mit Stückzahl pflegst du im Tab „Depot 7.2“.</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    with area_tab2:
+    elif area_view == "💼 Depot 7.2":
         _render_portfolio_72_area()
 
-    with area_tab3:
+    elif area_view == "⚙️ Technisches Setup":
         _render_technical_setup_area()
 
 
@@ -6979,16 +7006,24 @@ def main():
     inject_css()
     _render_workspace_sidebar()
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"])
-    with tab1:
+
+    main_view = st.segmented_control(
+        "Navigation",
+        options=["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"],
+        default="📊 Marktanalyse",
+        key="main_view",
+        label_visibility="collapsed",
+    )
+
+    if main_view == "📊 Marktanalyse":
         _tab_marktanalyse()
-    with tab2:
+    elif main_view == "🏭 Sektoranalyse":
         _tab_sektoranalyse()
-    with tab3:
+    elif main_view == "📋 Aktienbewertung":
         _tab_aktienbewertung()
-    with tab4:
+    elif main_view == "🎯 Nach dem Kauf":
         _tab_nach_kauf()
-    with tab5:
+    elif main_view == "🔐 Mein Bereich":
         _tab_mein_bereich()
 
 if __name__ == "__main__":
