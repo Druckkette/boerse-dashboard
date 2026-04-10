@@ -5178,12 +5178,23 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         return str(idx)[:7]
 
     def _extract_yoy(vals):
+        """
+        Compare SAME fiscal quarter across years in a chain:
+        latest Q vs same Q last year, then last year vs two years ago, etc.
+        Example: Q1'26 vs Q1'25, Q1'25 vs Q1'24, Q1'24 vs Q1'23.
+        """
         if len(vals) < 5: return []
         results = []
-        for i in range(min(3, len(vals) - 4)):
-            cur = float(vals.iloc[i]); prev = float(vals.iloc[i + 4])
+        # Use one quarter "anchor" and walk backwards in full-year (4-quarter) steps.
+        # k=0 -> idx 0 vs 4, k=1 -> idx 4 vs 8, k=2 -> idx 8 vs 12
+        for k in range(3):
+            cur_idx = 4 * k
+            prev_idx = 4 * (k + 1)
+            if prev_idx >= len(vals):
+                break
+            cur = float(vals.iloc[cur_idx]); prev = float(vals.iloc[prev_idx])
             if np.isnan(prev) or np.isnan(cur): continue
-            lbl = _fmt_qlabel(vals.index[i])
+            lbl = _fmt_qlabel(vals.index[cur_idx])
             if prev < 0 and cur > 0:
                 results.append((lbl, None, "turnaround", cur, prev))
             elif prev < 0 and cur <= 0:
