@@ -2317,6 +2317,144 @@ def _read_secret_value(name: str) -> str:
     return value or ""
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _fetch_sec_ticker_cik_map():
+    """Load SEC ticker→CIK mapping."""
+    try:
+        url = "https://www.sec.gov/files/company_tickers.json"
+        headers = {"User-Agent": "boerse-dashboard/1.0 contact@example.com"}
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        out = {}
+        if isinstance(data, dict):
+            for item in data.values():
+                if not isinstance(item, dict):
+                    continue
+                tkr = str(item.get("ticker", "")).upper().strip()
+                cik = item.get("cik_str")
+                if tkr and cik is not None:
+                    out[tkr] = str(int(cik)).zfill(10)
+        return out
+    except Exception:
+        return {}
+
+
+def _merge_quarterly_raw(primary, secondary):
+    """Merge two qraw dictionaries, preferring primary values on date collisions."""
+    if primary is None:
+        return secondary
+    if secondary is None:
+        return primary
+    out = dict(primary)
+    for key in ["DilutedEPS", "TotalRevenue"]:
+        p = primary.get(key)
+        s = secondary.get(key)
+        if p is None and s is not None:
+            out[key] = s.sort_index(ascending=False)
+            continue
+        if p is not None and s is not None:
+            try:
+                merged = pd.concat([p, s[~s.index.isin(p.index)]])
+                out[key] = merged.sort_index(ascending=False)
+            except Exception:
+                out[key] = p
+    return out
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_quarterly_sec_companyfacts(ticker):
+    """Fetch quarterly EPS and Revenue from SEC companyfacts (US issuers only)."""
+    try:
+        ticker = str(ticker or "").upper().strip()
+        if not ticker:
+            return None, "Kein Ticker"
+        cik_map = _fetch_sec_ticker_cik_map()
+        cik = cik_map.get(ticker)
+        if not cik:
+            return None, "Nicht im SEC-Universum gefunden"
+
+        headers = {"User-Agent": "boerse-dashboard/1.0 contact@example.com"}
+        url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None, f"SEC HTTP {r.status_code}"
+        data = r.json()
+
+        facts = ((data or {}).get("facts") or {}).get("us-gaap") or {}
+        eps_concepts = [
+            "EarningsPerShareDiluted",
+            "EarningsPerShareBasicAndDiluted",
+            "IncomeLossFromContinuingOperationsPerDilutedShare",
+        ]
+        rev_concepts = [
+            "Revenues",
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "RevenueFromContractWithCustomerIncludingAssessedTax",
+            "SalesRevenueNet",
+        ]
+
+        def _extract_quarters(concepts, unit_keys, duration_filter=None):
+            by_end = {}
+            for concept in concepts:
+                node = facts.get(concept) or {}
+                units = node.get("units") or {}
+                for unit_key in unit_keys:
+                    entries = units.get(unit_key) or []
+                    for item in entries:
+                        form = str(item.get("form", ""))
+                        fp = str(item.get("fp", ""))
+                        if form not in ("10-Q", "10-K"):
+                            continue
+                        if fp not in ("Q1", "Q2", "Q3", "Q4"):
+                            continue
+                        end = item.get("end")
+                        val = item.get("val")
+                        if end is None or val is None:
+                            continue
+                        if duration_filter is not None:
+                            start = item.get("start")
+                            if start:
+                                try:
+                                    days = (pd.Timestamp(end) - pd.Timestamp(start)).days
+                                    if not duration_filter(days):
+                                        continue
+                                except Exception:
+                                    continue
+                        try:
+                            end_ts = pd.Timestamp(end)
+                            numeric_val = float(val)
+                        except Exception:
+                            continue
+                        filed = pd.Timestamp(item.get("filed")) if item.get("filed") else pd.Timestamp.min
+                        prev = by_end.get(end_ts)
+                        if prev is None or filed > prev[0]:
+                            by_end[end_ts] = (filed, numeric_val)
+            if not by_end:
+                return None
+            ser = pd.Series({k: v[1] for k, v in by_end.items()})
+            return ser.sort_index(ascending=False)
+
+        eps_series = _extract_quarters(eps_concepts, ["USD/shares"])
+        rev_series = _extract_quarters(rev_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
+
+        out = {}
+        if eps_series is not None and len(eps_series) > 0:
+            out["DilutedEPS"] = eps_series
+        if rev_series is not None and len(rev_series) > 0:
+            out["TotalRevenue"] = rev_series
+        if not out:
+            return None, "Keine SEC-Quartalsdaten gefunden"
+        return out, None
+    except requests.exceptions.Timeout:
+        return None, "SEC Timeout (>15s)"
+    except requests.exceptions.ConnectionError as e:
+        return None, f"SEC Verbindungsfehler: {str(e)[:60]}"
+    except Exception as e:
+        return None, f"SEC Fehler: {type(e).__name__}: {str(e)[:60]}"
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_quarterly_fmp(ticker, fmp_key):
     """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters)."""
@@ -2399,6 +2537,15 @@ def load_stock_full(ticker, lookback_days=500):
                 qraw, fmp_err = result
             else:
                 qraw = result
+
+        # SEC fallback/augment (especially useful when Yahoo/FMP provides only few quarters)
+        sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
+        if sec_raw is not None:
+            qraw = _merge_quarterly_raw(qraw, sec_raw)
+            if fmp_err and qraw is not None:
+                fmp_err = f"{fmp_err} | SEC ergänzt"
+        elif qraw is None and sec_err:
+            fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
 
         return df, info, qi, ai, ih, qe, ed, qraw, fmp_err
     except Exception as exc:
