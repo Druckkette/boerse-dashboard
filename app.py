@@ -14,7 +14,7 @@ import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from ftplib import FTP
 from pathlib import Path
 
@@ -245,7 +245,7 @@ def _sync_workspace() -> None:
             _workspace_meta_key("portfolio_history"): json.dumps(payload["portfolio_history"], ensure_ascii=False),
             _workspace_meta_key("portfolio_cash_flows"): json.dumps(payload["portfolio_cash_flows"], ensure_ascii=False),
             _workspace_meta_key("portfolio_settings"): json.dumps(payload["portfolio_settings"], ensure_ascii=False),
-            _workspace_meta_key("updated_at"): datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            _workspace_meta_key("updated_at"): datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
         _set_cache_metadata_many(store, values)
     except Exception as exc:
@@ -1277,7 +1277,7 @@ def _portfolio_health_messages(summary: dict, positions_df: pd.DataFrame, settin
 def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: float, start_date, end_date=None, cash_flows=None) -> pd.DataFrame:
     tracked = _portfolio_positions_only(positions)
     start_ts = pd.Timestamp(start_date).normalize()
-    end_ts = pd.Timestamp(end_date or datetime.utcnow().date()).normalize()
+    end_ts = pd.Timestamp(end_date or datetime.now(timezone.utc).date()).normalize()
     if end_ts < start_ts:
         return pd.DataFrame()
 
@@ -1432,9 +1432,9 @@ def _render_portfolio_72_area():
         date_col, curr_col, note_col = st.columns([1, 0.8, 1.4])
         with date_col:
             try:
-                default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.utcnow().date()
+                default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.now(timezone.utc).date()
             except Exception:
-                default_date = datetime.utcnow().date()
+                default_date = datetime.now(timezone.utc).date()
             buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
         with curr_col:
             curr_default = (selected_pos or {}).get("currency", "USD")
@@ -1513,7 +1513,7 @@ def _render_portfolio_72_area():
             sell_price = st.number_input("Verkaufspreis", min_value=0.0, value=float(_safe_float((selected_sell or {}).get("current_price"), 0.0)), step=0.01, key="pf_sell_price")
         with sell_col3:
             sell_currency = st.selectbox("Währung Verkauf", ["USD", "EUR"], index=0, key="pf_sell_currency")
-        sell_date = st.date_input("Verkaufsdatum", value=datetime.utcnow().date(), key="pf_sell_date")
+        sell_date = st.date_input("Verkaufsdatum", value=datetime.now(timezone.utc).date(), key="pf_sell_date")
         if st.button("Verkauf buchen", use_container_width=True, key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
             if not selected_sell:
                 st.warning("Bitte zuerst eine Position wählen.")
@@ -1535,7 +1535,7 @@ def _render_portfolio_72_area():
 
     with txn_col_flow:
         st.caption("Externe Cash-Flows (Ein-/Auszahlungen) beeinflussen den Depotindex zeitgewichtet.")
-        flow_date = st.date_input("Cash-Flow Datum", value=datetime.utcnow().date(), key="pf_flow_date")
+        flow_date = st.date_input("Cash-Flow Datum", value=datetime.now(timezone.utc).date(), key="pf_flow_date")
         flow_amount = st.number_input("Cash-Flow Betrag", min_value=0.0, value=0.0, step=100.0, key="pf_flow_amount")
         flow_note = st.text_input("Cash-Flow Notiz", value="", key="pf_flow_note")
         flow_act1, flow_act2 = st.columns(2)
@@ -1622,14 +1622,14 @@ def _render_portfolio_72_area():
         saved_curve_start = None
 
     if st.session_state.pop("pf_auto_curve_start_force_today", False):
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         current_settings = _get_portfolio_settings()
         current_settings["curve_start_date"] = str(today)
         st.session_state["portfolio_settings"] = current_settings
         _sync_workspace()
         st.rerun()
 
-    auto_end = datetime.utcnow().date()
+    auto_end = datetime.now(timezone.utc).date()
     auto_col1, auto_col2 = st.columns([1, 1.2])
     with auto_col1:
         if saved_curve_start is None:
@@ -2815,7 +2815,7 @@ def _set_cache_metadata(store, key, value, *, conn=None):
     own_conn = conn is None
     conn = conn or _get_cache_conn(store)
     try:
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         if store["backend"] == "neon":
             with conn.cursor() as cur:
                 cur.execute(
@@ -2853,26 +2853,34 @@ def _set_cache_metadata_many(store, values):
 
 
 def _get_cache_metadata(store, key, default=None):
-    conn = _get_cache_conn(store)
+    conn = None
     try:
-        if store["backend"] == "neon":
+        conn = _get_cache_conn(store)
+        is_sqlite = isinstance(conn, sqlite3.Connection)
+        if store["backend"] == "neon" and not is_sqlite:
             with conn.cursor() as cur:
                 cur.execute("SELECT value FROM app_metadata WHERE key=%s", (key,))
                 row = cur.fetchone()
                 return row[0] if row else default
         row = conn.execute("SELECT value FROM app_metadata WHERE key=?", (key,)).fetchone()
         return row[0] if row else default
+    except Exception as exc:
+        logger.warning("Konnte Cache-Metadaten '%s' nicht lesen (%s), nutze Default.", key, exc)
+        return default
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _get_cache_metadata_many(store, keys):
     key_list = [str(k) for k in (keys or []) if str(k)]
     if not key_list:
         return {}
-    conn = _get_cache_conn(store)
+    conn = None
     try:
-        if store["backend"] == "neon":
+        conn = _get_cache_conn(store)
+        is_sqlite = isinstance(conn, sqlite3.Connection)
+        if store["backend"] == "neon" and not is_sqlite:
             placeholders = ", ".join(["%s"] * len(key_list))
             sql = f"SELECT key, value FROM app_metadata WHERE key IN ({placeholders})"
             with conn.cursor() as cur:
@@ -2883,12 +2891,16 @@ def _get_cache_metadata_many(store, keys):
             sql = f"SELECT key, value FROM app_metadata WHERE key IN ({placeholders})"
             rows = conn.execute(sql, tuple(key_list)).fetchall() or []
         return {row[0]: row[1] for row in rows}
+    except Exception as exc:
+        logger.warning("Konnte Cache-Metadaten-Liste nicht lesen (%s), nutze leere Antwort.", exc)
+        return {}
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def _utc_now_str():
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _github_actions_config():
@@ -2935,7 +2947,7 @@ def _job_row_to_dict(columns, row):
 
 
 def _create_refresh_job(store, job_type, requested_by="streamlit", payload=None, trigger_mode="github_actions"):
-    job_id = f"job-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    job_id = f"job-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
     now = _utc_now_str()
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
     conn = _get_cache_conn(store)
@@ -3157,7 +3169,7 @@ def _store_universe_members(store, universe, tickers):
         return
     conn = _get_cache_conn(store)
     try:
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         if store["backend"] == "neon":
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM universe_members WHERE universe=%s", (universe,))
@@ -3182,7 +3194,7 @@ def _store_universe_members(store, universe, tickers):
     finally:
         conn.close()
     _set_cache_metadata(store, f"{universe}_member_count", len(tickers))
-    _set_cache_metadata(store, f"{universe}_members_updated_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"))
+    _set_cache_metadata(store, f"{universe}_members_updated_at", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
 def _load_cached_universe_members(store, universe):
     conn = _get_cache_conn(store)
@@ -3212,7 +3224,7 @@ def _upsert_symbol_mapping(store, universe, source_symbol, yahoo_symbol=None, st
     note = str(note or "")
     conn = _get_cache_conn(store)
     try:
-        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         if store["backend"] == "neon":
             with conn.cursor() as cur:
                 cur.execute(
@@ -3681,7 +3693,7 @@ def auto_remap_missing_nyse_yahoo(lookback_days=550, max_workers=8, max_candidat
         results_df = results_df.sort_values(["status", "symbol"]).reset_index(drop=True)
     counts = results_df["status"].value_counts().to_dict() if not results_df.empty else {}
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata(store, "last_auto_remap_at", now_str)
     _set_cache_metadata(store, "last_auto_remap_missing_before", len(missing_before))
     _set_cache_metadata(store, "last_auto_remap_missing_after", len(missing_after))
@@ -3765,7 +3777,7 @@ def diagnose_missing_nyse_yahoo(sample_size=80, lookback_days=550, max_workers=8
         df = df.sort_values(["status", "symbol"]).reset_index(drop=True)
 
     counts = df["status"].value_counts().to_dict() if not df.empty else {}
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata(store, "last_yahoo_diag_at", now_str)
     _set_cache_metadata(store, "last_yahoo_diag_sample", sample_size)
     _set_cache_metadata(store, "last_yahoo_diag_missing_total", len(missing))
@@ -3854,7 +3866,7 @@ def _write_price_bundle_to_cache(store, bundle):
                 """,
                 records,
             )
-        _set_cache_metadata(store, "prices_last_write_at", datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), conn=conn)
+        _set_cache_metadata(store, "prices_last_write_at", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), conn=conn)
         conn.commit()
     finally:
         conn.close()
@@ -4164,7 +4176,7 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata_many(store, {"last_refresh_at": now_str, "last_refresh_rows_written": rows_written, "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
 
     return {
@@ -4266,7 +4278,7 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
     coverage = loaded / max(requested, 1)
     new_symbols_loaded = len(missing_before) - len(missing_after)
 
-    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata_many(store, {"last_rescue_at": now_str, "last_rescue_rows_written": rows_written, "last_rescue_missing_before": len(missing_before), "last_rescue_missing_after": len(missing_after), "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
 
     return {
