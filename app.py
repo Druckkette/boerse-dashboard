@@ -2550,21 +2550,29 @@ def load_stock_full(ticker, lookback_days=500):
         fmp_key = _read_secret_value("FMP_API_KEY")
         qraw = None
         fmp_err = None
+        qraw_sources = []
         if fmp_key:
             result = _fetch_quarterly_fmp(ticker, fmp_key)
             if isinstance(result, tuple):
                 qraw, fmp_err = result
             else:
                 qraw = result
+            if qraw is not None:
+                qraw_sources.append("FMP")
 
         # SEC fallback/augment (especially useful when Yahoo/FMP provides only few quarters)
         sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
         if sec_raw is not None:
             qraw = _merge_quarterly_raw(qraw, sec_raw)
+            qraw_sources.append("SEC")
             if fmp_err and qraw is not None:
                 fmp_err = f"{fmp_err} | SEC ergänzt"
         elif qraw is None and sec_err:
             fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
+
+        if qraw is not None:
+            src = "+".join(dict.fromkeys(qraw_sources)) if qraw_sources else "Direktdaten"
+            qraw["_source"] = src
 
         return df, info, qi, ai, ih, qe, ed, qraw, fmp_err
     except Exception as exc:
@@ -5225,6 +5233,15 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             g = (cur / prev - 1) * 100
             acc.append((lbl, round(g, 1), None, cur, prev))
 
+    def _expected_anchor_quarter():
+        """Return the quarter that should normally be compared YoY right now.
+
+        We use the *last completed* calendar quarter as default anchor.
+        Example: in Q1 we still anchor on Q4 (Q1 reports are often not fully out yet).
+        """
+        now = pd.Timestamp.utcnow()
+        return ((int(now.quarter) - 2) % 4) + 1
+
     def _extract_yoy(vals):
         """
         Compare SAME fiscal quarter across years in a chain:
@@ -5267,8 +5284,27 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         if not ordered_keys:
             return []
 
-        anchor_q = ordered_keys[0][1]
-        same_q_points = sorted([(y, bucket[(y, q)]) for (y, q) in bucket.keys() if q == anchor_q], key=lambda t: t[0], reverse=True)
+        quarter_to_years = {}
+        for y, q in bucket.keys():
+            quarter_to_years.setdefault(q, set()).add(y)
+        latest_year = max(y for y, _ in bucket.keys())
+
+        expected_q = _expected_anchor_quarter()
+        quarter_priority = [((expected_q - i - 1) % 4) + 1 for i in range(4)]
+        anchor_q = None
+        for q in quarter_priority:
+            years_for_q = quarter_to_years.get(q, set())
+            if len(years_for_q) >= 2 and latest_year in years_for_q:
+                anchor_q = q
+                break
+        if anchor_q is None:
+            anchor_q = ordered_keys[0][1]
+
+        same_q_points = sorted(
+            [(y, bucket[(y, q)]) for (y, q) in bucket.keys() if q == anchor_q],
+            key=lambda t: t[0],
+            reverse=True,
+        )
         if len(same_q_points) < 2:
             return []
 
@@ -5294,22 +5330,7 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
                 if _is_same_quarter_chain(res):
                     return res
 
-    # ── 1. earnings_dates: epsActual for up to 12 quarters (EPS only) ──
-    if field == "eps" and ed is not None and not ed.empty:
-        eps_col = None
-        for col_name in ["Reported EPS", "EPS Actual", "epsActual", "Earnings/Share"]:
-            if col_name in ed.columns: eps_col = col_name; break
-        if eps_col:
-            eps_data = ed[[eps_col]].copy()
-            eps_data = eps_data[eps_data[eps_col].notna()]
-            eps_data = eps_data[~eps_data.index.duplicated(keep='first')]
-            eps_data = eps_data.sort_index(ascending=False)
-            if len(eps_data) >= 5:
-                res = _extract_yoy(eps_data[eps_col])
-                if _is_same_quarter_chain(res):
-                    return res
-
-    # ── 2. quarterly_income_stmt (try for revenue, usually 4-5 quarters) ──
+    # ── 1. quarterly_income_stmt (try for revenue, usually 4-5 quarters) ──
     candidates = {
         "eps": ["Diluted EPS", "Basic EPS"],
         "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
@@ -5322,7 +5343,7 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             if _is_same_quarter_chain(res):
                 return res
 
-    # ── 3. quarterly_earnings (deprecated fallback) ──
+    # ── 2. quarterly_earnings (deprecated fallback) ──
     if qe is not None and not qe.empty:
         col_map = {"eps": "Earnings", "revenue": "Revenue"}
         col = col_map.get(field)
@@ -5383,6 +5404,18 @@ def _check_growth_ok(items, threshold=20):
         if flag in ("still_neg", "turned_neg"): return False
         if g is not None and g < threshold: return False
     return True
+
+def _fmt_quarter_value_pairs(items, metric_label="EPS"):
+    """Format explicit quarterly values for transparency."""
+    if not items:
+        return ""
+    pairs = []
+    for lbl, _, _, cur, prev in items:
+        try:
+            pairs.append(f"{lbl}: {metric_label} {cur:.2f} vs {prev:.2f}")
+        except Exception:
+            continue
+    return " | ".join(pairs)
 
 def _sum_last_4q_eps(qi):
     """Sum of the last 4 quarterly EPS values."""
@@ -5637,8 +5670,11 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     # ── Debug: show data availability ──
     src_info = []
     if qraw is not None:
+        raw_source = str(qraw.get("_source", "Direktdaten")).strip()
         for key, series in qraw.items():
-            src_info.append(f"FMP {key}: {len(series)}Q")
+            if not isinstance(series, pd.Series):
+                continue
+            src_info.append(f"{raw_source} {key}: {len(series)}Q")
     elif fmp_err:
         src_info.append(f"FMP: {fmp_err}")
     else:
@@ -5667,6 +5703,9 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     epsg = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed, qraw=qraw)
     if epsg:
         details = " → ".join(_fmt_growth_item(item) for item in epsg)
+        value_trace = _fmt_quarter_value_pairs(epsg, metric_label="EPS")
+        if value_trace:
+            details = f"{details} · Werte: {value_trace}"
         all_ok = _check_growth_ok(epsg, threshold=20)
         checks.append((f"EPS ≥20% YoY ({len(epsg)}Q)", all_ok, details))
     else:
