@@ -4307,6 +4307,7 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
         "backend": store["backend"],
     }
 
+@st.cache_data(ttl=900, show_spinner=False)
 def load_nyse_breadth_data(lookback_days=550):
     """Read breadth data bundle from the persistent store without triggering a large network refresh."""
     end = datetime.now()
