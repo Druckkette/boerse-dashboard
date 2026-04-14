@@ -5287,12 +5287,14 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         quarter_to_years = {}
         for y, q in bucket.keys():
             quarter_to_years.setdefault(q, set()).add(y)
+        latest_year = max(y for y, _ in bucket.keys())
 
         expected_q = _expected_anchor_quarter()
         quarter_priority = [((expected_q - i - 1) % 4) + 1 for i in range(4)]
         anchor_q = None
         for q in quarter_priority:
-            if len(quarter_to_years.get(q, set())) >= 2:
+            years_for_q = quarter_to_years.get(q, set())
+            if len(years_for_q) >= 2 and latest_year in years_for_q:
                 anchor_q = q
                 break
         if anchor_q is None:
