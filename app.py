@@ -515,15 +515,16 @@ def _ampel_phase_label(phase: str) -> str:
 def _ampel_reason_line(L) -> str:
     phase = str(L.get('Ampel_Phase', '')).lower()
     anchor = L.get('Anchor_Date')
+    ss_date = L.get('Startschuss_Date')
     ss_low = L.get('Startschuss_Low', np.nan)
     floor = L.get('Floor_Mark', np.nan)
     if phase == 'gelb':
         if anchor and pd.notna(ss_low):
-            return f'Trendwende-Ampel: GELB — Startschuss aktiv seit {anchor} · Startschuss-Tief {float(ss_low):,.2f}'
+            return f'Trendwende-Ampel: GELB — Startschuss seit {ss_date or anchor} · Startschuss-Tief {float(ss_low):,.2f}'
         return 'Trendwende-Ampel: GELB — Startschuss aktiv'
     if phase == 'gruen':
         if pd.notna(ss_low):
-            return f'Trendwende-Ampel: GRÜN — Startschuss bestätigt · Absicherung über {float(ss_low):,.2f}'
+            return f'Trendwende-Ampel: GRÜN — Startschuss vom {ss_date or "—"} bestätigt · Absicherung über {float(ss_low):,.2f}'
         return 'Trendwende-Ampel: GRÜN — Startschuss bestätigt'
     if phase == 'aufwaertstrend':
         return 'Trendwende-Ampel: AUFWÄRTSTREND — MA-Ordnung bestätigt'
@@ -538,8 +539,10 @@ def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, v
     phase = str(phase or "").lower()
     breadth_mode = str(breadth_mode or "").lower()
     vol_regime = str(vol_regime or "").lower()
-    if phase == "rot" or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
+    if phase == "rot":
         return "Defensiv", "bad", "Ampel rot. Risiko reduzieren, keine aggressiven Neueinstiege und bestehende Positionen kritisch prüfen."
+    if phase not in {"gruen", "aufwaertstrend"} and (warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress"):
+        return "Defensiv", "bad", "Umfeld defensiv. Risiko reduzieren, nur selektiv agieren und bestehende Positionen enger managen."
     if phase == "gelb":
         if warning_count <= 2 and breadth_mode != "schutz" and vol_regime not in {"stress", "risk"}:
             return "Startschuss", "warn", "Startschuss aktiv. Erste Pilotpositionen sind erlaubt, aber nur selektiv und mit enger Risikokontrolle über das Startschuss-Tief."
@@ -553,6 +556,13 @@ def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, v
     if warning_count >= 2 or breadth_mode == "neutral" or vol_regime in {"risk", "vorsicht"}:
         return "Neutral", "warn", "Selektiv bleiben. Nur A-Setups und eher kleine Einstiege."
     return "Konstruktiv", "good", "Markt konstruktiv. Führende Aktien beobachten und Risiko schrittweise erhöhen."
+
+
+def _is_ma_order_ok(ema21, sma50, sma200, tol: float = 1e-8) -> bool:
+    vals = [ema21, sma50, sma200]
+    if any(pd.isna(v) for v in vals):
+        return False
+    return (float(ema21) >= float(sma50) - tol) and (float(sma50) >= float(sma200) - tol)
 
 def _build_market_reasons(L, warning_count: int, breadth_mode: str, vol_latest: pd.Series):
     reasons = []
@@ -4307,6 +4317,7 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
         "backend": store["backend"],
     }
 
+@st.cache_data(ttl=900, show_spinner=False)
 def load_nyse_breadth_data(lookback_days=550):
     """Read breadth data bundle from the persistent store without triggering a large network refresh."""
     end = datetime.now()
@@ -4460,7 +4471,7 @@ def detect_distribution_days(df):
 def compute_ampel(df):
     df=df.copy();n=len(df);phase="neutral"
     anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None
-    phases=["neutral"]*n;anchor_dates=[None]*n;floor_marks=[None]*n;startschuss_lows=[None]*n
+    phases=["neutral"]*n;anchor_dates=[None]*n;floor_marks=[None]*n;startschuss_lows=[None]*n;startschuss_dates=[None]*n
     c_=df["Close"].values;o_=df["Open"].values;h_=df["High"].values;l_=df["Low"].values
     v_=df["Volume"].values;pct_=df["Pct_Change"].values;cr_=df["Closing_Range"].values
     dc_=df["Dist_Count_25"].values;s50_=df["SMA50"].values;s200_=df["SMA200"].values;e21_=df["EMA21"].values
@@ -4474,7 +4485,7 @@ def compute_ampel(df):
         pi=pct_[i] if not np.isnan(pct_[i]) else 0.0;cri=cr_[i] if not np.isnan(cr_[i]) else 0.5
         if phase in ("neutral","aufwaertstrend"):
             if _corr(i): phase="rot";_clear()
-            elif phase=="aufwaertstrend" and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]<s50_[i]: phase="rot";_clear()
+            elif phase=="aufwaertstrend" and not _is_ma_order_ok(e21_[i], s50_[i], s200_[i]): phase="rot";_clear()
         elif phase=="rot":
             if anchor_idx is not None and i>anchor_idx and l_[i]<floor_mark: anchor_idx=None;floor_mark=None
             if anchor_idx is None:
@@ -4486,12 +4497,13 @@ def compute_ampel(df):
             elif startschuss_idx is not None and i>startschuss_idx+2: phase="gruen";gruen_since=i
         elif phase=="gruen":
             if startschuss_low is not None and c_[i]<startschuss_low: phase="rot";_clear()
-            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]>s50_[i] and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend";_clear()
+            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and _is_ma_order_ok(e21_[i], s50_[i], s200_[i]) and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend";_clear()
         phases[i]=phase
         if anchor_idx is not None: anchor_dates[i]=df.index[anchor_idx].strftime("%Y-%m-%d")
         if floor_mark is not None: floor_marks[i]=round(floor_mark,2)
         if startschuss_low is not None: startschuss_lows[i]=round(startschuss_low,2)
-    df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows
+        if startschuss_idx is not None: startschuss_dates[i]=df.index[startschuss_idx].strftime("%Y-%m-%d")
+    df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows;df["Startschuss_Date"]=startschuss_dates
     return df
 
 def compute_breadth_mode(df_ew):
@@ -4750,6 +4762,7 @@ def render_ampel_section(L):
     anchor = L["Anchor_Date"]
     floor = L["Floor_Mark"]
     ss_low = L["Startschuss_Low"]
+    ss_date = L.get("Startschuss_Date", None)
 
     phase_info = {
         "rot": {
@@ -4762,12 +4775,12 @@ def render_ampel_section(L):
         },
         "gelb": {
             "active": 1, "label": "GELB — Startschuss",
-            "reason": f"Startschuss erkannt! Ankertag: {anchor}. Validierungslinie (Startschuss-Tief): {ss_low:.0f}." if anchor and ss_low else "Startschuss aktiv.",
+            "reason": f"Startschuss erkannt! Ankertag: {anchor}. Startschuss-Tag: {ss_date or '—'}. Validierungslinie (Startschuss-Tief): {ss_low:.0f}." if anchor and ss_low else "Startschuss aktiv.",
             "action": "Erste Position(en) eröffnen (10–30% Kapital). Nur mit klarem Setup.",
         },
         "gruen": {
             "active": 2, "label": "GRÜN — Bestätigung",
-            "reason": f"Startschuss hält. Kurs über Startschuss-Tief ({ss_low:.0f})." if ss_low else "Startschuss bestätigt.",
+            "reason": f"Startschuss hält seit {ss_date or '—'}. Kurs über Startschuss-Tief ({ss_low:.0f})." if ss_low else "Startschuss bestätigt.",
             "action": "Frühe Bestätigungsphase. Vorsichtig Exponierung aufbauen.",
         },
         "aufwaertstrend": {
@@ -4829,7 +4842,7 @@ def render_ampel_section(L):
         startschuss_html = (
             f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
             f'<span style="font-size:1.4rem;">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tag: {ss_date or "—"} · Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
         )
     else:
         if phase == "rot" and anchor:
@@ -4863,14 +4876,15 @@ def render_ampel_section(L):
 
     _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
-    _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
+    _mao = _is_ma_order_ok(_e, _s5, _s2)
     details = {
         "Ankertag": anchor if anchor else "— (kein aktiver Zyklus)" if phase in ("neutral", "aufwaertstrend") else "Warte auf Ankertag",
+        "Startschuss-Tag": ss_date if ss_date else "—",
         "Bodenmarke": f"{floor:,.2f}" if floor else "—",
         "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low else "—",
         "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
     }
-    cols = st.columns(4)
+    cols = st.columns(5)
     for i, (k, v) in enumerate(details.items()):
         with cols[i]:
             st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)

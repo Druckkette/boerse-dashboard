@@ -2,13 +2,14 @@ name: market-refresh
 
 on:
   schedule:
-    # GitHub Cron läuft in UTC.
-    # Entspricht aktuell 08:15, 15:30, 18:00, 22:00 Uhr in Deutschland (CEST, UTC+2).
-    # Im Winter (CET, UTC+1) verschiebt sich die lokale Uhrzeit um +1h.
+    # GitHub Cron läuft in UTC. Für feste deutsche Zeiten (Europe/Berlin)
+    # triggern wir Sommer- und Winterzeit-Kandidaten und filtern unten im Job.
     - cron: "15 6 * * 1-5"
-    - cron: "30 13 * * 1-5"
-    - cron: "0 16 * * 1-5"
-    - cron: "0 20 * * 1-5"
+    - cron: "15 7 * * 1-5"
+    - cron: "0 14 * * 1-5"
+    - cron: "0 15 * * 1-5"
+    - cron: "15 20 * * 1-5"
+    - cron: "15 21 * * 1-5"
   workflow_dispatch:
     inputs:
       job_id:
@@ -59,10 +60,16 @@ jobs:
           INPUT_REQUESTED_BY: ${{ inputs.requested_by }}
         run: |
           if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            LOCAL_HM="$(TZ=Europe/Berlin date +%H:%M)"
+            if [[ "${LOCAL_HM}" != "08:15" && "${LOCAL_HM}" != "16:00" && "${LOCAL_HM}" != "22:15" ]]; then
+              echo "Skip schedule trigger at ${LOCAL_HM} Europe/Berlin (not a target refresh time)."
+              exit 0
+            fi
             python worker.py \
               --job-type "refresh_universe" \
               --requested-by "github_schedule" \
-              --create-job-if-missing
+              --create-job-if-missing \
+              --min-interval-hours 0
           else
             python worker.py \
               --job-id "${INPUT_JOB_ID}" \
