@@ -5695,7 +5695,7 @@ def load_cached_universe_closes_for_rs(lookback_days=400):
 def load_external_rs_ratings_map():
     api_url = "https://api.github.com/repos/Fred6725/rs-log/contents/output"
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "boerse-dashboard"}
-    payload = {"ok": False, "source": "external_csv", "file": "", "count": 0, "ratings": {}, "error": ""}
+    payload = {"ok": False, "source": "external_csv", "file": "", "files": [], "value_column": "", "count": 0, "ratings": {}, "error": ""}
     try:
         resp = requests.get(api_url, headers=headers, timeout=20)
         resp.raise_for_status()
@@ -5707,7 +5707,9 @@ def load_external_rs_ratings_map():
         if not csv_candidates:
             payload["error"] = "Keine CSV im output-Ordner gefunden."
             return payload
-        chosen = sorted(csv_candidates, key=lambda r: str(r.get("name", "")), reverse=True)[0]
+
+        preferred = next((r for r in csv_candidates if str(r.get("name", "")).lower() == "rs_stocks.csv"), None)
+        chosen = preferred if preferred is not None else sorted(csv_candidates, key=lambda r: str(r.get("name", "")), reverse=True)[0]
         download_url = chosen.get("download_url")
         if not download_url:
             payload["error"] = "Kein download_url für CSV vorhanden."
@@ -5718,10 +5720,26 @@ def load_external_rs_ratings_map():
         if df is None or df.empty:
             payload["error"] = "CSV ist leer."
             return payload
-
-        normalized_cols = {str(c).strip().lower(): c for c in df.columns}
+        normalized_cols = {str(c).strip().lower().replace(" ", "_"): c for c in df.columns}
         ticker_col = next((normalized_cols[k] for k in ["ticker", "symbol", "stock", "aktie"] if k in normalized_cols), None)
-        rs_col = next((normalized_cols[k] for k in ["rs_rating", "rs", "rating", "relative_strength_rating", "relative_strength", "rsrank", "rs_rank"] if k in normalized_cols), None)
+        rs_col = next(
+            (
+                normalized_cols[k]
+                for k in [
+                    "percentile",
+                    "rs_rating",
+                    "relative_strength_rating",
+                    "rs_rank",
+                    "rsrank",
+                    "rating",
+                    "relative_strength",
+                    "relative_strength_value",
+                    "rs",
+                ]
+                if k in normalized_cols
+            ),
+            None,
+        )
         if ticker_col is None or rs_col is None:
             payload["error"] = "Ticker- oder RS-Spalte in CSV nicht gefunden."
             return payload
@@ -5737,6 +5755,8 @@ def load_external_rs_ratings_map():
         payload.update({
             "ok": bool(ratings),
             "file": str(chosen.get("name", "")),
+            "files": [str(chosen.get("name", ""))],
+            "value_column": str(rs_col),
             "count": int(len(ratings)),
             "ratings": ratings,
             "error": "" if ratings else "CSV enthielt keine auswertbaren RS-Werte.",
@@ -5757,6 +5777,8 @@ def _apply_rs_source_override(ticker: str, rs_ctx: dict | None):
         "source": "csv_latest",
         "ok": bool(external.get("ok")),
         "file": str(external.get("file", "")),
+        "files": list(external.get("files", []) or []),
+        "value_column": str(external.get("value_column", "")),
         "count": int(external.get("count", 0) or 0),
         "error": str(external.get("error", "") or "").strip(),
         "matched": False,
@@ -6703,10 +6725,13 @@ def _tab_aktienbewertung():
         st.caption(f"RS-Linie aktuell {rs_ctx.get('distance_to_high_pct'):+.1f}% von ihrem 52-Wochen-Hoch entfernt.")
     if isinstance(rs_source_note, dict) and rs_source_note.get("source") == "csv_latest":
         if rs_source_note.get("matched"):
-            file_name = rs_source_note.get("file") or "latest.csv"
-            st.caption(f"RS-Rating kommt aus externer CSV ({file_name}).")
+            file_name = rs_source_note.get("file") or "rs_stocks*.csv"
+            value_col = rs_source_note.get("value_column") or "Percentile"
+            st.caption(f"RS-Rating kommt aus externer CSV ({file_name}) · Spalte: {value_col}.")
         elif rs_source_note.get("ok"):
-            st.caption("CSV-Modus aktiv, für diesen Ticker gab es keinen Eintrag. Fallback bleibt die bisherige Berechnung.")
+            file_name = rs_source_note.get("file") or "rs_stocks*.csv"
+            value_col = rs_source_note.get("value_column") or "Percentile"
+            st.caption(f"CSV-Modus aktiv ({file_name}, Spalte: {value_col}), für diesen Ticker gab es keinen Eintrag. Fallback bleibt die bisherige Berechnung.")
         elif rs_source_note.get("error"):
             st.caption(f"CSV-Modus aktiv, Laden fehlgeschlagen: {rs_source_note.get('error')}")
 
