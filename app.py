@@ -177,6 +177,7 @@ def _default_portfolio_settings():
         "max_depot_loss_low": 8.0,
         "max_depot_loss_high": 12.0,
         "curve_start_date": "",
+        "rs_rating_source": "computed",
     }
 
 def _workspace_payload():
@@ -702,7 +703,15 @@ def _get_portfolio_settings() -> dict:
         except Exception:
             settings[key] = fallback
     settings["curve_start_date"] = str(settings.get("curve_start_date", "") or "").strip()
+    rs_source = str(settings.get("rs_rating_source", "computed") or "computed").strip().lower()
+    settings["rs_rating_source"] = "csv_latest" if rs_source == "csv_latest" else "computed"
     return settings
+
+
+def _get_rs_rating_source_setting() -> str:
+    settings = _get_portfolio_settings()
+    source = str(settings.get("rs_rating_source", "computed") or "computed").strip().lower()
+    return "csv_latest" if source == "csv_latest" else "computed"
 
 def _save_portfolio_settings(settings: dict) -> None:
     merged = dict(_default_portfolio_settings())
@@ -2607,8 +2616,7 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_stock_full(ticker, lookback_days=500):
+def _load_stock_full_core(ticker, lookback_days=500):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -2632,7 +2640,70 @@ def load_stock_full(ticker, lookback_days=500):
                 logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
                 return None
 
+        def _merge_info(base: dict, extra: dict | None) -> dict:
+            out = dict(base or {})
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    if k not in out or out.get(k) in (None, "", "N/A"):
+                        out[k] = v
+            return out
+
+        def _fetch_yahoo_quote_summary_fallback(symbol: str) -> dict:
+            try:
+                url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+                params = {"modules": "assetProfile,financialData"}
+                headers = {"User-Agent": "Mozilla/5.0"}
+                resp = requests.get(url, params=params, headers=headers, timeout=12)
+                resp.raise_for_status()
+                data = resp.json() or {}
+                result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
+                if not result:
+                    return {}
+                node = result[0] or {}
+                asset = node.get("assetProfile", {}) or {}
+                fin = node.get("financialData", {}) or {}
+
+                def _extract_num(val):
+                    if isinstance(val, dict):
+                        raw = val.get("raw")
+                        return raw if raw is not None else val.get("fmt")
+                    return val
+
+                out = {}
+                if asset.get("sector"):
+                    out["sector"] = asset.get("sector")
+                if asset.get("industry"):
+                    out["industry"] = asset.get("industry")
+                roe_val = _extract_num(fin.get("returnOnEquity"))
+                if roe_val is not None:
+                    out["returnOnEquity"] = roe_val
+                beta_val = _extract_num(fin.get("beta"))
+                if beta_val is not None:
+                    out["beta"] = beta_val
+                return out
+            except Exception as exc:
+                logger.debug("quoteSummary fallback failed for %s: %s", symbol, exc)
+                return {}
+
         info = _safe_attr("info") or {}
+        if not isinstance(info, dict):
+            info = {}
+
+        fast_info = _safe_attr("fast_info")
+        fast_beta = None
+        if fast_info is not None:
+            try:
+                fast_beta = fast_info.get("beta")
+            except Exception:
+                fast_beta = None
+        if info.get("beta") in (None, "") and fast_beta is not None:
+            info["beta"] = fast_beta
+
+        needs_profile = any(info.get(k) in (None, "", "N/A") for k in ["sector", "industry", "returnOnEquity", "beta"])
+        if needs_profile:
+            fallback_info = _fetch_yahoo_quote_summary_fallback(ticker)
+            info = _merge_info(info, fallback_info)
+
         qi = _safe_attr("quarterly_income_stmt")
         ai = _safe_attr("income_stmt")
         ih = _safe_attr("institutional_holders")
@@ -2676,11 +2747,24 @@ def load_stock_full(ticker, lookback_days=500):
         return empty_result
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_sp500_for_rs(lookback_days=400):
+@st.cache_data(ttl=900, show_spinner=False)
+def load_stock_full(ticker, lookback_days=500):
+    return _load_stock_full_core(ticker, lookback_days=lookback_days)
+
+
+def _load_sp500_for_rs_core(lookback_days=400):
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
-    return _dl("^GSPC", start, end)
+    for sym in ("^GSPC", "^SPX", "SPY"):
+        df = _dl(sym, start, end)
+        if df is not None and len(df) >= 120:
+            return df
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sp500_for_rs(lookback_days=400):
+    return _load_sp500_for_rs_core(lookback_days=lookback_days)
 
 # ===== From cache_store.py =====
 try:
@@ -5607,6 +5691,86 @@ def load_cached_universe_closes_for_rs(lookback_days=400):
         return None
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_external_rs_ratings_map():
+    api_url = "https://api.github.com/repos/Fred6725/rs-log/contents/output"
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "boerse-dashboard"}
+    payload = {"ok": False, "source": "external_csv", "file": "", "count": 0, "ratings": {}, "error": ""}
+    try:
+        resp = requests.get(api_url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        rows = resp.json()
+        if not isinstance(rows, list):
+            payload["error"] = "Ungültige GitHub-API-Antwort."
+            return payload
+        csv_candidates = [r for r in rows if isinstance(r, dict) and str(r.get("name", "")).lower().endswith(".csv") and r.get("type") == "file"]
+        if not csv_candidates:
+            payload["error"] = "Keine CSV im output-Ordner gefunden."
+            return payload
+        chosen = sorted(csv_candidates, key=lambda r: str(r.get("name", "")), reverse=True)[0]
+        download_url = chosen.get("download_url")
+        if not download_url:
+            payload["error"] = "Kein download_url für CSV vorhanden."
+            return payload
+        csv_resp = requests.get(str(download_url), headers={"User-Agent": "boerse-dashboard"}, timeout=20)
+        csv_resp.raise_for_status()
+        df = pd.read_csv(io.StringIO(csv_resp.text))
+        if df is None or df.empty:
+            payload["error"] = "CSV ist leer."
+            return payload
+
+        normalized_cols = {str(c).strip().lower(): c for c in df.columns}
+        ticker_col = next((normalized_cols[k] for k in ["ticker", "symbol", "stock", "aktie"] if k in normalized_cols), None)
+        rs_col = next((normalized_cols[k] for k in ["rs_rating", "rs", "rating", "relative_strength_rating", "relative_strength", "rsrank", "rs_rank"] if k in normalized_cols), None)
+        if ticker_col is None or rs_col is None:
+            payload["error"] = "Ticker- oder RS-Spalte in CSV nicht gefunden."
+            return payload
+
+        rows = df[[ticker_col, rs_col]].copy()
+        rows[ticker_col] = rows[ticker_col].astype(str).str.upper().str.strip()
+        rows[rs_col] = pd.to_numeric(rows[rs_col], errors="coerce")
+        rows = rows.dropna(subset=[ticker_col, rs_col])
+        rows = rows[rows[ticker_col] != ""]
+        rows[rs_col] = rows[rs_col].clip(lower=1, upper=99).round().astype(int)
+        rows = rows.drop_duplicates(subset=[ticker_col], keep="last")
+        ratings = {str(r[ticker_col]).strip().upper(): int(r[rs_col]) for _, r in rows.iterrows()}
+        payload.update({
+            "ok": bool(ratings),
+            "file": str(chosen.get("name", "")),
+            "count": int(len(ratings)),
+            "ratings": ratings,
+            "error": "" if ratings else "CSV enthielt keine auswertbaren RS-Werte.",
+        })
+        return payload
+    except Exception as exc:
+        logger.debug("load_external_rs_ratings_map failed: %s", exc)
+        payload["error"] = f"RS-CSV konnte nicht geladen werden ({exc})."
+        return payload
+
+
+def _apply_rs_source_override(ticker: str, rs_ctx: dict | None):
+    source = _get_rs_rating_source_setting()
+    if source != "csv_latest":
+        return rs_ctx, None
+    external = load_external_rs_ratings_map()
+    note = {
+        "source": "csv_latest",
+        "ok": bool(external.get("ok")),
+        "file": str(external.get("file", "")),
+        "count": int(external.get("count", 0) or 0),
+        "error": str(external.get("error", "") or "").strip(),
+        "matched": False,
+    }
+    base_ctx = dict(rs_ctx or {})
+    ratings = external.get("ratings", {}) if isinstance(external, dict) else {}
+    value = ratings.get(str(ticker or "").strip().upper()) if isinstance(ratings, dict) else None
+    if value is not None:
+        base_ctx["rating"] = int(np.clip(value, 1, 99))
+        base_ctx["method"] = "external_csv"
+        note["matched"] = True
+    return base_ctx, note
+
+
 def _weighted_rs_score(rs_line, windows=((63, 0.4), (126, 0.2), (189, 0.2), (252, 0.2))):
     if rs_line is None:
         return None
@@ -5925,7 +6089,15 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe=None):
     rs = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
     if isinstance(rs_ctx, dict):
         method = rs_ctx.get("method", "unavailable")
-        method_note = "Universums-Ranking" if method == "universe_percentile" else "Fallback-Proxy" if method == "weighted_proxy" else ""
+        method_note = (
+            "CSV-Import"
+            if method == "external_csv"
+            else "Universums-Ranking"
+            if method == "universe_percentile"
+            else "Fallback-Proxy"
+            if method == "weighted_proxy"
+            else ""
+        )
         universe_note = f" · {rs_ctx.get('universe_size', 0)} Aktien" if rs_ctx.get("universe_size") else ""
         if rs is not None:
             lbl = "Elite" if rs >= 90 else "Stark" if rs >= 80 else "Meiden (<70)" if rs < 70 else "OK"
@@ -6408,6 +6580,21 @@ def _tab_aktienbewertung():
         rs_universe = load_cached_universe_closes_for_rs()
 
     if df is None or len(df) < 20:
+        try:
+            load_stock_full.clear()
+        except Exception:
+            pass
+        with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
+            df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker)
+
+    if spx_df is None or len(spx_df) < 120:
+        try:
+            load_sp500_for_rs.clear()
+        except Exception:
+            pass
+        spx_df = _load_sp500_for_rs_core()
+
+    if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
         return
 
@@ -6437,7 +6624,10 @@ def _tab_aktienbewertung():
             })
             st.success(f"{ticker} als Position vorgemerkt.")
     with act3:
-        st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
+        market_date = pd.Timestamp(df.index[-1]).date()
+        today_local = datetime.now().date()
+        freshness_note = "" if market_date >= today_local else " (letzter Handelstag)"
+        st.caption(f"Datenstand: {last_date}{freshness_note} · Quelle Yahoo Finance")
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
 
@@ -6454,6 +6644,7 @@ def _tab_aktienbewertung():
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
     vol_ratio = float(L["Volume"] / df["Volume"].rolling(50).mean().iloc[-1]) if len(df) >= 50 and pd.notna(df["Volume"].rolling(50).mean().iloc[-1]) and df["Volume"].rolling(50).mean().iloc[-1] else np.nan
     rs_ctx = _calc_rs_rating(df["Close"], spx_df["Close"] if spx_df is not None else None, universe_closes=rs_universe)
+    rs_ctx, rs_source_note = _apply_rs_source_override(ticker, rs_ctx)
     rs_hint = ""
     if isinstance(rs_ctx, dict):
         if rs_ctx.get("trend_5w") is True:
@@ -6462,7 +6653,12 @@ def _tab_aktienbewertung():
             rs_hint = "RS verliert etwas Tempo"
 
     rs_rating_val = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
-    rs_rating_detail = "Perzentil im Universum" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "universe_percentile" else "Gewichtete RS" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "weighted_proxy" else "Vergleich zum S&P 500"
+    rs_rating_detail = (
+        "CSV-Import (rs-log/output)" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "external_csv"
+        else "Perzentil im Universum" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "universe_percentile"
+        else "Gewichtete RS" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "weighted_proxy"
+        else "Vergleich zum S&P 500"
+    )
     change_cards = [
         {"title": "Heute", "value": f"{chg:+.2f}%", "detail": f"Schlusskurs ${price:,.2f}"},
         {"title": "Volumen", "value": f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—", "detail": "Werte >1 zeigen mehr Aktivität"},
@@ -6505,6 +6701,14 @@ def _tab_aktienbewertung():
 
     if isinstance(rs_ctx, dict) and rs_ctx.get("distance_to_high_pct") is not None:
         st.caption(f"RS-Linie aktuell {rs_ctx.get('distance_to_high_pct'):+.1f}% von ihrem 52-Wochen-Hoch entfernt.")
+    if isinstance(rs_source_note, dict) and rs_source_note.get("source") == "csv_latest":
+        if rs_source_note.get("matched"):
+            file_name = rs_source_note.get("file") or "latest.csv"
+            st.caption(f"RS-Rating kommt aus externer CSV ({file_name}).")
+        elif rs_source_note.get("ok"):
+            st.caption("CSV-Modus aktiv, für diesen Ticker gab es keinen Eintrag. Fallback bleibt die bisherige Berechnung.")
+        elif rs_source_note.get("error"):
+            st.caption(f"CSV-Modus aktiv, Laden fehlgeschlagen: {rs_source_note.get('error')}")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
@@ -7342,6 +7546,25 @@ def _tab_mein_bereich():
         if _private_area_enabled() and st.button("🔒 Bereich sperren", use_container_width=True, key="private_lock_btn"):
             _lock_private_area()
             st.rerun()
+
+    settings = _get_portfolio_settings()
+    rs_source_labels = {
+        "computed": "Berechnet (bisher)",
+        "csv_latest": "Aus aktueller CSV (rs-log/output)",
+    }
+    inverse_rs_labels = {v: k for k, v in rs_source_labels.items()}
+    current_rs_source = settings.get("rs_rating_source", "computed")
+    selected_rs_label = st.selectbox(
+        "RS-Rating Quelle",
+        options=list(inverse_rs_labels.keys()),
+        index=0 if current_rs_source == "computed" else 1,
+        key="mein_bereich_rs_source",
+        help="Steuert, ob das RS-Rating intern berechnet wird oder aus der neuesten CSV-Datei aus rs-log/output kommt.",
+    )
+    if st.button("Einstellungen speichern", use_container_width=False, key="mein_bereich_save_settings"):
+        settings["rs_rating_source"] = inverse_rs_labels.get(selected_rs_label, "computed")
+        _save_portfolio_settings(settings)
+        st.success("Einstellungen gespeichert.")
 
     area_view = st.segmented_control(
         "Bereich",
