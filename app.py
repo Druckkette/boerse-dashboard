@@ -2616,8 +2616,7 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_stock_full(ticker, lookback_days=500):
+def _load_stock_full_core(ticker, lookback_days=500):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -2689,14 +2688,6 @@ def load_stock_full(ticker, lookback_days=500):
         info = _safe_attr("info") or {}
         if not isinstance(info, dict):
             info = {}
-        if not info:
-            try:
-                info = t.get_info() or {}
-            except Exception as exc:
-                logger.debug("get_info failed for %s: %s", ticker, exc)
-                info = {}
-        if not isinstance(info, dict):
-            info = {}
 
         fast_info = _safe_attr("fast_info")
         fast_beta = None
@@ -2756,11 +2747,24 @@ def load_stock_full(ticker, lookback_days=500):
         return empty_result
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_sp500_for_rs(lookback_days=400):
+@st.cache_data(ttl=900, show_spinner=False)
+def load_stock_full(ticker, lookback_days=500):
+    return _load_stock_full_core(ticker, lookback_days=lookback_days)
+
+
+def _load_sp500_for_rs_core(lookback_days=400):
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
-    return _dl("^GSPC", start, end)
+    for sym in ("^GSPC", "^SPX", "SPY"):
+        df = _dl(sym, start, end)
+        if df is not None and len(df) >= 120:
+            return df
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_sp500_for_rs(lookback_days=400):
+    return _load_sp500_for_rs_core(lookback_days=lookback_days)
 
 # ===== From cache_store.py =====
 try:
@@ -6576,6 +6580,21 @@ def _tab_aktienbewertung():
         rs_universe = load_cached_universe_closes_for_rs()
 
     if df is None or len(df) < 20:
+        try:
+            load_stock_full.clear()
+        except Exception:
+            pass
+        with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
+            df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker)
+
+    if spx_df is None or len(spx_df) < 120:
+        try:
+            load_sp500_for_rs.clear()
+        except Exception:
+            pass
+        spx_df = _load_sp500_for_rs_core()
+
+    if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
         return
 
@@ -6605,7 +6624,10 @@ def _tab_aktienbewertung():
             })
             st.success(f"{ticker} als Position vorgemerkt.")
     with act3:
-        st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
+        market_date = pd.Timestamp(df.index[-1]).date()
+        today_local = datetime.now().date()
+        freshness_note = "" if market_date >= today_local else " (letzter Handelstag)"
+        st.caption(f"Datenstand: {last_date}{freshness_note} · Quelle Yahoo Finance")
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
 
