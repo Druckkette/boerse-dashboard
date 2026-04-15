@@ -2641,7 +2641,78 @@ def load_stock_full(ticker, lookback_days=500):
                 logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
                 return None
 
+        def _merge_info(base: dict, extra: dict | None) -> dict:
+            out = dict(base or {})
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    if k not in out or out.get(k) in (None, "", "N/A"):
+                        out[k] = v
+            return out
+
+        def _fetch_yahoo_quote_summary_fallback(symbol: str) -> dict:
+            try:
+                url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+                params = {"modules": "assetProfile,financialData"}
+                headers = {"User-Agent": "Mozilla/5.0"}
+                resp = requests.get(url, params=params, headers=headers, timeout=12)
+                resp.raise_for_status()
+                data = resp.json() or {}
+                result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
+                if not result:
+                    return {}
+                node = result[0] or {}
+                asset = node.get("assetProfile", {}) or {}
+                fin = node.get("financialData", {}) or {}
+
+                def _extract_num(val):
+                    if isinstance(val, dict):
+                        raw = val.get("raw")
+                        return raw if raw is not None else val.get("fmt")
+                    return val
+
+                out = {}
+                if asset.get("sector"):
+                    out["sector"] = asset.get("sector")
+                if asset.get("industry"):
+                    out["industry"] = asset.get("industry")
+                roe_val = _extract_num(fin.get("returnOnEquity"))
+                if roe_val is not None:
+                    out["returnOnEquity"] = roe_val
+                beta_val = _extract_num(fin.get("beta"))
+                if beta_val is not None:
+                    out["beta"] = beta_val
+                return out
+            except Exception as exc:
+                logger.debug("quoteSummary fallback failed for %s: %s", symbol, exc)
+                return {}
+
         info = _safe_attr("info") or {}
+        if not isinstance(info, dict):
+            info = {}
+        if not info:
+            try:
+                info = t.get_info() or {}
+            except Exception as exc:
+                logger.debug("get_info failed for %s: %s", ticker, exc)
+                info = {}
+        if not isinstance(info, dict):
+            info = {}
+
+        fast_info = _safe_attr("fast_info")
+        fast_beta = None
+        if fast_info is not None:
+            try:
+                fast_beta = fast_info.get("beta")
+            except Exception:
+                fast_beta = None
+        if info.get("beta") in (None, "") and fast_beta is not None:
+            info["beta"] = fast_beta
+
+        needs_profile = any(info.get(k) in (None, "", "N/A") for k in ["sector", "industry", "returnOnEquity", "beta"])
+        if needs_profile:
+            fallback_info = _fetch_yahoo_quote_summary_fallback(ticker)
+            info = _merge_info(info, fallback_info)
+
         qi = _safe_attr("quarterly_income_stmt")
         ai = _safe_attr("income_stmt")
         ih = _safe_attr("institutional_holders")
