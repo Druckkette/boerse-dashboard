@@ -1987,6 +1987,97 @@ def _parse_nasdaq_listed_text(text):
     return _normalize_ticker_list(symbols)
 
 
+def _parse_nasdaq_traded_text(text):
+    """Parse Nasdaq Trader nasdaqtraded.txt and keep only common stocks."""
+    try:
+        df = pd.read_csv(io.StringIO(text), sep="|", dtype=str, engine="python")
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+
+    df.columns = [str(c).strip() for c in df.columns]
+    first_col = df.columns[0]
+    df = df[~df[first_col].fillna("").str.startswith("File Creation Time", na=False)].copy()
+    df = df.dropna(how="all")
+    lower_cols = {str(c).strip().lower(): c for c in df.columns}
+
+    symbol_col = lower_cols.get("symbol")
+    if symbol_col is None:
+        return []
+
+    etf_col = lower_cols.get("etf")
+    test_col = lower_cols.get("test issue")
+    nextshares_col = lower_cols.get("nextshares")
+    name_col = lower_cols.get("security name")
+
+    if etf_col is not None:
+        df[etf_col] = df[etf_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[etf_col] != "Y"]
+    if test_col is not None:
+        df[test_col] = df[test_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[test_col] != "Y"]
+    if nextshares_col is not None:
+        df[nextshares_col] = df[nextshares_col].fillna("").astype(str).str.strip().str.upper()
+        df = df[df[nextshares_col] != "Y"]
+
+    def _looks_like_equity_name(name):
+        low = f" {str(name or '').lower()} "
+        reject_patterns = (
+            r"\bpreferred\b",
+            r"\bdepositary\b",
+            r"\bwarrants?\b",
+            r"\brights?\b",
+            r"\bunits?\b",
+            r"\bnotes?\b",
+            r"\bbonds?\b",
+            r"\bdebentures?\b",
+            r"\betn\b",
+            r"\betf\b",
+            r"\bclosed\s+end\b",
+            r"\bmutual\s+fund\b",
+            r"\btrust\s+units?\b",
+            r"\bbeneficial\s+interest\b",
+            r"\badr\b",
+            r"\badrs\b",
+        )
+        return low.strip() and not any(re.search(p, low) for p in reject_patterns)
+
+    symbols = []
+    for _, row in df.iterrows():
+        name = row.get(name_col, "") if name_col is not None else ""
+        if name_col is not None and not _looks_like_equity_name(name):
+            continue
+        symbol = str(row.get(symbol_col, "") or "").strip().upper()
+        if symbol and symbol != "NAN":
+            symbols.append(symbol)
+    return _normalize_ticker_list(symbols)
+
+
+def _get_common_stocks_from_nasdaq_traded_http():
+    """Primary universe source: nasdaqtraded.txt (exclude ETFs + test issues)."""
+    urls = [
+        "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt",
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt",
+        "https://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqtraded.txt",
+        "http://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqtraded.txt",
+    ]
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,*/*"}
+    best = []
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=30, headers=headers)
+            resp.raise_for_status()
+            tickers = _parse_nasdaq_traded_text(resp.text)
+            if len(tickers) > len(best):
+                best = tickers
+            if len(tickers) >= 2500:
+                return tickers
+        except Exception:
+            continue
+    return best if len(best) >= 1000 else []
+
+
 def _get_nasdaq_stocks_from_nasdaq_trader_ftp():
     buf = io.BytesIO()
     ftp = None
@@ -2154,6 +2245,11 @@ def get_nasdaq_stock_tickers():
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_app_stock_universe_tickers():
     """Combined internal stock universe for cache coverage, diagnostics and portfolio support."""
+    traded = _normalize_ticker_list(_get_common_stocks_from_nasdaq_traded_http())
+    if len(traded) >= 2500:
+        return traded
+
+    # Fallback to previous approach when nasdaqtraded.txt is unavailable.
     nyse = _normalize_ticker_list(get_nyse_stock_tickers())
     nasdaq = _normalize_ticker_list(get_nasdaq_stock_tickers())
 
