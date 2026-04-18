@@ -226,6 +226,199 @@ code, pre, .card-label, [data-testid="stMetricLabel"], [data-testid="stMetricVal
 
 /* ── Divider ── */
 hr{border:none;border-top:1px solid var(--border);margin:1rem 0}
+
+/* ── Input fields ── */
+[data-baseweb="input"],[data-baseweb="textarea"]{
+  background:var(--panel)!important;
+  border:1.5px solid var(--border)!important;
+  border-radius:var(--radius-sm)!important;
+}
+[data-baseweb="input"]:focus-within,[data-baseweb="textarea"]:focus-within{
+  border-color:var(--accent)!important;
+  box-shadow:0 0 0 3px var(--accent-l)!important;
+}
+[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea,
+[data-testid="stTextInput"] input,
+[data-testid="stNumberInput"] input,
+[data-testid="stTextArea"] textarea,
+[data-testid="stDateInput"] input{
+  background:var(--panel)!important;
+  color:var(--text)!important;
+  font-family:'Lora',Georgia,serif!important;
+}
+[data-testid="stNumberInput"] button{
+  background:var(--panel-3)!important;
+  color:var(--text)!important;
+  border-color:var(--border)!important;
+}
+
+/* ── Select / Multiselect ── */
+[data-baseweb="select"]>div{
+  background:var(--panel)!important;
+  border:1.5px solid var(--border)!important;
+  border-radius:var(--radius-sm)!important;
+  color:var(--text)!important;
+}
+[data-baseweb="select"] span,[data-baseweb="select"] div{color:var(--text)!important}
+[data-baseweb="select"]>div:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-l)!important}
+[data-baseweb="menu"],[data-baseweb="popover"]{background:var(--panel)!important;border:1px solid var(--border)!important;box-shadow:var(--shadow-md)!important}
+[data-baseweb="option"]{background:var(--panel)!important;color:var(--text)!important}
+[data-baseweb="option"]:hover{background:var(--accent-l)!important;color:var(--accent)!important}
+[data-testid="stMultiSelect"] [data-baseweb="tag"]{background:var(--accent-l)!important;color:var(--accent)!important;border:1px solid var(--accent-m)!important}
+
+/* ── Buttons ── */
+.stButton>button,.stDownloadButton>button,.stFormSubmitButton>button{
+  background:var(--panel)!important;
+  color:var(--text)!important;
+  border:1.5px solid var(--border)!important;
+  border-radius:var(--radius-sm)!important;
+  font-family:'Lora',Georgia,serif!important;
+  box-shadow:var(--shadow-sm)!important;
+  transition:all .15s!important;
+}
+.stButton>button:hover,.stDownloadButton>button:hover{
+  background:var(--panel-3)!important;
+  border-color:var(--accent-m)!important;
+  color:var(--accent)!important;
+}
+.stButton>button[kind="primary"],.stFormSubmitButton>button{
+  background:var(--accent)!important;
+  color:#ffffff!important;
+  border-color:var(--accent)!important;
+}
+.stButton>button[kind="primary"]:hover{background:#1d4ed8!important}
+
+/* ── Segmented control (Navigation) ── */
+[data-testid="stSegmentedControl"]{
+  background:var(--panel)!important;
+  border:1.5px solid var(--border)!important;
+  border-radius:var(--radius-sm)!important;
+  padding:3px!important;
+  box-shadow:var(--shadow-sm)!important;
+}
+[data-testid="stSegmentedControl"] button{
+  color:var(--text-2)!important;
+  background:transparent!important;
+  font-family:'Lora',Georgia,serif!important;
+  border-radius:8px!important;
+}
+[data-testid="stSegmentedControl"] button[aria-checked="true"],
+[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+[data-testid="stSegmentedControl"] button[data-selected="true"]{
+  background:var(--accent)!important;
+  color:#ffffff!important;
+  font-weight:600!important;
+}
+[data-testid="stSegmentedControl"] p,[data-testid="stSegmentedControl"] span{color:inherit!important}
+
+/* ── Radio buttons (horizontal pills like S&P 500) ── */
+[data-testid="stRadio"]>div{
+  background:var(--panel)!important;
+  border:1.5px solid var(--border)!important;
+  border-radius:var(--radius-sm)!important;
+  padding:3px!important;
+  box-shadow:var(--shadow-sm)!important;
+  gap:2px!important;
+}
+[data-testid="stRadio"] label{
+  color:var(--text-2)!important;
+  background:transparent!important;
+  font-family:'Lora',Georgia,serif!important;
+  border-radius:8px!important;
+  padding:5px 12px!important;
+  cursor:pointer!important;
+  transition:all .15s!important;
+}
+[data-testid="stRadio"] label:has(input:checked){
+  background:var(--accent)!important;
+  color:#ffffff!important;
+  font-weight:600!important;
+}
+[data-testid="stRadio"] label:hover{background:var(--accent-l)!important;color:var(--accent)!important}
+[data-testid="stRadio"] input[type="radio"]{display:none!important}
+[data-testid="stRadio"] p{color:inherit!important;font-size:.88rem!important}
+[data-testid="stRadio"] div[role="radiogroup"]{gap:0!important}
+
+/* ── Expanders ── */
+[data-testid="stExpander"]{
+  border:1px solid var(--border)!important;
+  border-radius:var(--radius)!important;
+  background:var(--panel)!important;
+  box-shadow:var(--shadow-sm)!important;
+  overflow:hidden!important;
+}
+[data-testid="stExpander"]>details{background:var(--panel)!important}
+[data-testid="stExpander"]>details>summary{
+  color:var(--text)!important;
+  background:var(--panel)!important;
+  font-family:'Lora',Georgia,serif!important;
+  padding:12px 16px!important;
+}
+[data-testid="stExpander"]>details>summary *{color:var(--text)!important}
+[data-testid="stExpander"]>details>summary:hover{background:var(--panel-3)!important}
+[data-testid="stExpander"]>details[open]>summary{border-bottom:1px solid var(--border)!important}
+[data-testid="stExpanderDetails"]{background:var(--panel)!important;padding:12px 16px!important}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"]{background:var(--panel)!important;border-right:1px solid var(--border)!important}
+[data-testid="stSidebar"] *{color:var(--text)!important}
+[data-testid="stSidebar"] [data-baseweb="input"]>div{background:var(--panel-3)!important}
+[data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea{background:var(--panel-3)!important;color:var(--text)!important}
+
+/* ── Slider ── */
+[data-testid="stSlider"] [data-baseweb="slider"] div{background:var(--border)!important}
+[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"]{background:var(--accent)!important;border-color:var(--accent)!important}
+
+/* ── Checkbox / Radio (standard) ── */
+[data-baseweb="checkbox"] label,[data-baseweb="radio"] label{color:var(--text)!important}
+[data-testid="stCheckbox"] span{color:var(--text)!important}
+[data-testid="stCheckbox"] p{color:var(--text)!important}
+
+/* ── Info / Warning / Error / Success boxes ── */
+[data-testid="stAlert"]{border-radius:var(--radius-sm)!important}
+[data-testid="stAlert"] *{color:inherit!important}
+
+/* ── General text override (catch-all for very light text) ── */
+.stMarkdown p,.stMarkdown li,.stMarkdown span{color:var(--text)!important}
+[data-testid="stText"]{color:var(--text)!important}
+[data-testid="stWidgetLabel"] p,[data-testid="stWidgetLabel"] label{color:var(--text)!important}
+
+/* ── Override Streamlit's injected theme CSS variables ── */
+:root,[data-theme="light"],[data-theme="dark"]{
+  --background-color:#f0f4f9!important;
+  --secondary-background-color:#ffffff!important;
+  --text-color:#0f172a!important;
+}
+
+/* ── Form container ── */
+[data-testid="stForm"]{
+  background:var(--panel)!important;
+  border:1px solid var(--border)!important;
+  border-radius:var(--radius)!important;
+  padding:16px!important;
+}
+
+/* ── All buttons (nuclear override) ── */
+button:not([data-testid="stSegmentedControl"] button):not([data-testid="stRadio"] button){
+  background-color:#ffffff!important;
+  color:#0f172a!important;
+  border:1.5px solid #e2e8f0!important;
+}
+.stButton>button{background:#ffffff!important;color:#0f172a!important;border:1.5px solid #e2e8f0!important;font-family:'Lora',Georgia,serif!important}
+.stButton>button:hover{background:#eff6ff!important;color:#2563eb!important;border-color:#bfdbfe!important}
+[data-testid="stFormSubmitButton"]>button{background:#2563eb!important;color:#ffffff!important;border-color:#2563eb!important;font-weight:600!important}
+[data-testid="stFormSubmitButton"]>button:hover{background:#1d4ed8!important}
+
+/* ── All input backgrounds ── */
+input:not([type="radio"]):not([type="checkbox"]),textarea,select{
+  background-color:#ffffff!important;
+  color:#0f172a!important;
+  border-color:#e2e8f0!important;
+}
+
+/* ── Caption text ── */
+[data-testid="stCaptionContainer"] p{color:#64748b!important;font-size:.78rem!important}
 </style>"""
 
 def configure_page() -> None:
