@@ -47,58 +47,172 @@ APP_CSS = """<style>
   --bg:#0b1220;
   --panel:#111827;
   --panel-2:#0f172a;
+  --panel-3:#0d1117;
   --border:#1e293b;
+  --border-2:#253347;
   --muted:#94a3b8;
   --text:#e5eefb;
   --accent:#06b6d4;
+  --accent-2:#3b82f6;
   --good:#22c55e;
   --warn:#f59e0b;
   --bad:#ef4444;
+  --radius:14px;
+  --radius-sm:10px;
 }
 html, body, [class*="css"] {font-family:'Inter',system-ui,sans-serif;}
 .stApp{background-color:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif}
-.main .block-container{padding-top:1.1rem;max-width:1220px}
+.main .block-container{padding-top:1.2rem;max-width:1240px}
 h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em}
-h1{font-size:1.85rem!important;font-weight:800!important;background:linear-gradient(135deg,#22d3ee,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-h2{font-size:1.25rem!important}
-h3{font-size:1.05rem!important}
+h1{font-size:1.75rem!important;font-weight:800!important;background:linear-gradient(135deg,#22d3ee,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-.04em}
+h2{font-size:1.2rem!important}
+h3{font-size:1.0rem!important}
 p, li, label, .stMarkdown, .stCaption {font-family:'Inter',system-ui,sans-serif!important}
 code, pre, .card-label, [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace!important}
-[data-testid="stMetric"]{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:0 0 0 1px rgba(255,255,255,.01) inset}
+
+/* ── Metric cards ── */
+[data-testid="stMetric"]{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:14px 16px;
+  box-shadow:0 2px 12px rgba(0,0,0,.25),0 0 0 1px rgba(255,255,255,.015) inset;
+  transition:box-shadow .2s,border-color .2s;
+}
+[data-testid="stMetric"]:hover{
+  box-shadow:0 4px 20px rgba(0,0,0,.38),0 0 0 1px rgba(255,255,255,.03) inset;
+  border-color:var(--border-2);
+}
 [data-testid="stMetricLabel"]{color:#7c8aa0!important;font-size:.72rem!important;text-transform:uppercase;letter-spacing:.08em}
 [data-testid="stMetricValue"]{color:var(--text)!important;font-size:1.32rem!important;font-weight:700!important}
+
+/* ── Navigation tabs ── */
 .stTabs [data-baseweb="tab-list"]{gap:6px;background:transparent;flex-wrap:wrap}
-.stTabs [data-baseweb="tab"]{background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--muted);padding:8px 14px;font-size:.86rem}
-.stTabs [aria-selected="true"]{background:#06b6d415;border-color:#0891b2;color:#67e8f9}
-.summary-hero,.change-card,.info-card,.workspace-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
-.summary-hero{padding:18px 20px;background:linear-gradient(135deg,rgba(6,182,212,.08),rgba(59,130,246,.06))}
-.ampel-box{border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px}
+.stTabs [data-baseweb="tab"]{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);
+  color:var(--muted);padding:8px 14px;font-size:.86rem;
+  transition:background .15s,color .15s,border-color .15s,box-shadow .15s;
+}
+.stTabs [aria-selected="true"]{
+  background:#06b6d418!important;border-color:#0891b2!important;color:#67e8f9!important;
+  box-shadow:0 0 14px rgba(6,182,212,.2)!important;
+}
+
+/* ── Cards ── */
+.summary-hero,.change-card,.info-card,.workspace-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:16px 18px;
+  box-shadow:0 4px 20px rgba(0,0,0,.28);
+}
+.summary-hero{
+  padding:20px 22px;
+  background:linear-gradient(135deg,rgba(6,182,212,.11),rgba(59,130,246,.08));
+  border:1px solid rgba(6,182,212,.22);
+  border-left:4px solid var(--accent);
+  box-shadow:0 4px 32px rgba(6,182,212,.07),0 4px 20px rgba(0,0,0,.28);
+}
+.ampel-box{border-radius:var(--radius);padding:16px 20px;display:flex;align-items:center;gap:16px}
 .ampel-dot{width:48px;height:48px;border-radius:50%;flex-shrink:0}
-.check-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+
+/* ── Check items ── */
+.check-item{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
 .check-item:last-child{border-bottom:none}
 .check-icon{width:22px;height:22px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.check-ok{background:#22c55e20;border:1.5px solid #22c55e50;color:var(--good)}
-.check-fail{background:#ef444420;border:1.5px solid #ef444450;color:var(--bad)}
-.check-warn{background:#f59e0b20;border:1.5px solid #f59e0b50;color:var(--warn)}
+.check-ok  {background:#22c55e20;border:1.5px solid #22c55e50;color:var(--good);box-shadow:0 0 6px #22c55e18}
+.check-fail{background:#ef444420;border:1.5px solid #ef444450;color:var(--bad); box-shadow:0 0 6px #ef444418}
+.check-warn{background:#f59e0b20;border:1.5px solid #f59e0b50;color:var(--warn);box-shadow:0 0 6px #f59e0b18}
+
+/* ── Cards inner layout ── */
 .info-card,.workspace-card{margin-bottom:12px}
 .card-label{font-size:.7rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 .mini-help{font-size:.76rem;color:#7c8aa0;line-height:1.45;margin-top:6px}
-.hero-title{font-size:1.25rem;font-weight:800;color:var(--text);margin-bottom:4px}
-.hero-subtitle{font-size:.9rem;color:var(--muted);margin-bottom:14px}
-.hero-action{font-size:.95rem;font-weight:700;padding:10px 12px;border-radius:10px;margin-top:10px}
+.hero-title{font-size:1.3rem;font-weight:800;color:var(--text);margin-bottom:4px;letter-spacing:-.02em}
+.hero-subtitle{font-size:.85rem;color:var(--muted);margin-bottom:14px}
+.hero-action{font-size:.93rem;font-weight:700;padding:10px 14px;border-radius:var(--radius-sm);margin-top:12px;letter-spacing:.01em}
 .hero-good{background:#22c55e18;color:#86efac;border:1px solid #22c55e40}
 .hero-warn{background:#f59e0b18;color:#fcd34d;border:1px solid #f59e0b40}
-.hero-bad{background:#ef444418;color:#fca5a5;border:1px solid #ef444440}
-.change-card{padding:14px 16px}
+.hero-bad {background:#ef444418;color:#fca5a5;border:1px solid #ef444440}
+
+/* ── Change cards ── */
+.change-card{
+  padding:14px 16px;
+  border-left:3px solid var(--accent);
+  transition:transform .15s,box-shadow .15s;
+}
+.change-card:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(0,0,0,.42)}
 .change-title{font-size:.72rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
 .change-value{font-size:1rem;font-weight:700;color:var(--text)}
 .change-detail{font-size:.8rem;color:var(--muted);margin-top:4px;line-height:1.35}
-.kpi-explainer{background:rgba(15,23,42,.85);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:.8rem;color:var(--muted)}
-.pill-wrap{display:flex;flex-wrap:wrap;gap:8px}
-.pill{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#0f172a;border:1px solid var(--border);color:var(--text);font-size:.82rem}
+
+/* ── Custom KPI cards (colored metrics) ── */
+.kpi-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:14px 16px;
+  box-shadow:0 2px 12px rgba(0,0,0,.25);
+  transition:box-shadow .2s,border-color .2s,transform .15s;
+  height:100%;
+}
+.kpi-card:hover{transform:translateY(-1px);box-shadow:0 6px 22px rgba(0,0,0,.38);border-color:var(--border-2)}
+.kpi-card.kpi-warn{background:rgba(245,158,11,.07);border-color:rgba(245,158,11,.28);box-shadow:0 2px 16px rgba(245,158,11,.06)}
+.kpi-card.kpi-bad {background:rgba(239,68,68,.07); border-color:rgba(239,68,68,.28); box-shadow:0 2px 16px rgba(239,68,68,.06)}
+.kpi-card.kpi-good{background:rgba(34,197,94,.07);  border-color:rgba(34,197,94,.28);  box-shadow:0 2px 16px rgba(34,197,94,.06)}
+.kpi-label  {font-size:.68rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.09em;font-family:'JetBrains Mono',monospace;margin-bottom:6px}
+.kpi-value  {font-size:1.28rem;font-weight:700;color:var(--text);font-family:'JetBrains Mono',monospace;letter-spacing:-.01em;line-height:1.2}
+.kpi-delta  {font-size:.78rem;margin-top:5px;font-weight:600}
+.kpi-caption{font-size:.71rem;color:#64748b;margin-top:6px;line-height:1.35}
+
+/* ── Section headers ── */
+.section-header{
+  display:flex;align-items:center;gap:10px;
+  padding:4px 0 10px;
+  border-bottom:1px solid var(--border);
+  margin-bottom:18px;margin-top:2px;
+}
+.section-header-icon {font-size:1.05rem}
+.section-header-title{font-size:.95rem;font-weight:700;color:var(--text);letter-spacing:-.01em}
+.section-header-sub  {font-size:.76rem;color:var(--muted);margin-left:auto}
+
+/* ── KPI explainer ── */
+.kpi-explainer{background:rgba(15,23,42,.85);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:.8rem;color:var(--muted)}
+
+/* ── Pills ── */
+.pill-wrap{display:flex;flex-wrap:wrap;gap:6px}
+.pill{
+  display:inline-flex;align-items:center;
+  padding:4px 10px;border-radius:999px;
+  background:#0f172a;border:1px solid var(--border);
+  color:var(--text);font-size:.8rem;
+  transition:background .15s,border-color .15s;
+}
+.pill:hover{background:#1e293b;border-color:var(--border-2)}
 .workspace-note{font-size:.82rem;color:var(--muted);line-height:1.45}
+
+/* ── Breadth track ── */
 .breadth-track{height:10px;border-radius:5px;background:var(--border);position:relative;overflow:hidden;margin:8px 0}
 .breadth-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444);transition:width .5s}
+
+/* ── Sidebar ── */
+.sidebar-status-badge{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 12px;border-radius:var(--radius-sm);
+  background:var(--panel-3);border:1px solid var(--border);
+  margin-bottom:8px;
+}
+.sidebar-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+
+/* ── DataFrames ── */
+.stDataFrame{border-radius:var(--radius)!important;overflow:hidden}
+.stDataFrame thead tr th{
+  background:#0d1117!important;font-size:.73rem!important;
+  text-transform:uppercase;letter-spacing:.05em;color:#7c8aa0!important;
+}
+.stDataFrame tbody tr:hover td{background:rgba(30,41,59,.4)!important}
+
+/* ── Divider ── */
 hr{border:none;border-top:1px solid var(--border);margin:1rem 0}
 </style>"""
 
@@ -649,6 +763,34 @@ def _render_market_glossary(keys):
             items.append(f"<strong>{key}</strong> — {text}")
     if items:
         st.markdown('<div class="kpi-explainer">' + "<br>".join(items) + "</div>", unsafe_allow_html=True)
+
+
+def _render_kpi_card(label: str, value: str, delta: str = "", tone: str = "neutral", caption: str = "") -> None:
+    tone_cls = {"good": " kpi-good", "warn": " kpi-warn", "bad": " kpi-bad"}.get(tone, "")
+    delta_color = {"good": "var(--good)", "warn": "var(--warn)", "bad": "var(--bad)"}.get(tone, "var(--muted)")
+    delta_html = f'<div class="kpi-delta" style="color:{delta_color};">{delta}</div>' if delta else ""
+    caption_html = f'<div class="kpi-caption">{caption}</div>' if caption else ""
+    st.markdown(
+        f'<div class="kpi-card{tone_cls}">'
+        f'<div class="kpi-label">{label}</div>'
+        f'<div class="kpi-value">{value}</div>'
+        f'{delta_html}'
+        f'{caption_html}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_section_header(icon: str, title: str, subtitle: str = "") -> None:
+    sub_html = f'<span class="section-header-sub">{subtitle}</span>' if subtitle else ""
+    st.markdown(
+        f'<div class="section-header">'
+        f'<span class="section-header-icon">{icon}</span>'
+        f'<span class="section-header-title">{title}</span>'
+        f'{sub_html}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
 def _simple_position_health(position: dict):
     ticker = position.get("ticker", "")
@@ -1731,26 +1873,81 @@ def _render_portfolio_72_area():
 
 def _render_workspace_sidebar():
     with st.sidebar:
-        st.markdown("### Arbeitsbereich")
-        st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
+        st.markdown(
+            '<div style="font-size:1rem;font-weight:800;color:#e5eefb;letter-spacing:-.03em;margin-bottom:10px;">'
+            '🚦 Arbeitsbereich</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Market status badge (populated after first market tab load)
+        ampel_phase = st.session_state.get("_sidebar_ampel_phase", "")
+        ampel_colors = {
+            "rot": "#ef4444", "gelb": "#f59e0b", "gruen": "#22c55e",
+            "aufwaertstrend": "#3b82f6", "neutral": "#64748b",
+        }
+        ampel_labels = {
+            "rot": "ROT — Abwarten", "gelb": "GELB — Startschuss",
+            "gruen": "GRÜN — Bestätigung", "aufwaertstrend": "Aufwärtstrend ↑",
+            "neutral": "Neutral",
+        }
+        if ampel_phase and ampel_phase in ampel_colors:
+            color = ampel_colors[ampel_phase]
+            label = ampel_labels[ampel_phase]
+            st.markdown(
+                f'<div class="sidebar-status-badge">'
+                f'<div class="sidebar-dot" style="background:{color};box-shadow:0 0 8px {color}80;"></div>'
+                f'<span style="font-size:.8rem;font-weight:700;color:{color};">{label}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown(
+            f'<div style="font-size:.7rem;color:#4a5568;margin-bottom:10px;">'
+            f'Speicher: {_workspace_backend_label()}</div>',
+            unsafe_allow_html=True,
+        )
+
         if _private_area_enabled():
-            state_label = "entsperrt" if _is_private_unlocked() else "gesperrt"
-            st.caption(f"Privater Bereich: {state_label}")
-            if _is_private_unlocked():
+            unlocked = _is_private_unlocked()
+            dot_color = "#22c55e" if unlocked else "#4a5568"
+            state_label = "entsperrt" if unlocked else "gesperrt"
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">'
+                f'<div style="width:7px;height:7px;border-radius:50%;background:{dot_color};"></div>'
+                f'<span style="font-size:.75rem;color:#64748b;">Privater Bereich {state_label}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            if unlocked:
                 if st.button("🔒 Sperren", use_container_width=True, key="sidebar_lock_private"):
                     _lock_private_area()
                     st.rerun()
         if not _is_private_unlocked():
-            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind aktuell ausgeblendet.</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:.8rem;color:#4a5568;padding:8px 0;line-height:1.45;">'
+                'Watchlist und Depot sind gesperrt.</div>',
+                unsafe_allow_html=True,
+            )
             return
+
         _init_workspace_state()
+        st.markdown('<div class="card-label" style="margin-top:4px;">Watchlist</div>', unsafe_allow_html=True)
         watchlist = st.session_state.get("watchlist", [])
         if watchlist:
-            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.markdown('<div class="workspace-note">Noch keine Watchlist gespeichert.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="workspace-note">Noch keine Watchlist.</div>', unsafe_allow_html=True)
+
         positions = st.session_state.get("positions", [])
-        st.caption(f"{len(positions)} Positionen · {len(st.session_state.get('recent_tickers', []))} zuletzt genutzt")
+        recents = st.session_state.get("recent_tickers", [])
+        st.markdown(
+            f'<div style="font-size:.73rem;color:#4a5568;margin-top:10px;">'
+            f'{len(positions)} Positionen · {len(recents)} zuletzt genutzt</div>',
+            unsafe_allow_html=True,
+        )
 
 # ===== From market_data.py =====
 logger = logging.getLogger(__name__)
@@ -6589,8 +6786,7 @@ def evaluate_chart_signs(df, rs_ctx=None):
 
 def _tab_aktienbewertung():
     _init_workspace_state()
-    st.markdown("### 📋 Aktienbewertung")
-    st.caption("Einzelaktien-Check mit komfortabler Suche, Watchlist und schneller Einordnung für Fundamentaldaten, Technik und Chartverhalten.")
+    _render_section_header("📋", "Aktienbewertung", "Fundamentals · Technik · Chartverhalten")
 
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
@@ -6833,8 +7029,7 @@ def _tab_aktienbewertung():
 
 def _tab_nach_kauf():
     _init_workspace_state()
-    st.markdown("### 🎯 Nach dem Kauf")
-    st.caption("Überwache bestehende Positionen ohne Vorauswahl. Du gibst den Ticker direkt ein und vorhandene Depotdaten werden erst danach übernommen.")
+    _render_section_header("🎯", "Nach dem Kauf", "Positions-Monitoring · P&L · Verhalten seit Kauf")
 
     private_ok = _is_private_unlocked()
     saved_positions = st.session_state.get("positions", []) if private_ok else []
@@ -7081,8 +7276,7 @@ def _tab_nach_kauf():
 
 def _tab_sektoranalyse():
     """Tab 2: Sector performance ranking table."""
-    st.markdown("### 🏭 Sektoranalyse — Performance-Ranking")
-    st.caption("S&P 500 Sektor-ETFs gerankt nach Performance. Bester Sektor steht oben.")
+    _render_section_header("🏭", "Sektoranalyse — Performance-Ranking", "S&P 500 ETFs · Bester Sektor oben")
 
     with st.spinner("Lade Sektor-Daten …"):
         sector_closes = load_sector_data()
@@ -7222,6 +7416,8 @@ def _tab_marktanalyse():
         st.error("Keine Index-Daten.")
         return
 
+    _render_section_header("📊", "Marktanalyse", "Index · Indikatoren · Marktbreite · Volatilität")
+
     c1, c2 = st.columns([3, 1])
     with c1:
         selected = st.radio("Index", available, horizontal=True, label_visibility="collapsed")
@@ -7285,32 +7481,34 @@ def _tab_marktanalyse():
     reasons = _build_market_reasons(L, wc, breadth_label, vol_latest)
     freshness = _format_data_freshness(selected, df, vol_dashboard)
     changes = _build_market_changes(df, selected, wc, vol_dashboard, breadth_label)
+
+    # Store ampel phase for sidebar badge
+    st.session_state["_sidebar_ampel_phase"] = L.get("Ampel_Phase", "neutral")
+
+    # Hero → Ampel (most important signal) → Change cards
     _render_hero_card(mode, tone, reasons, action, freshness)
+    render_ampel_section(L)
     _render_change_cards(changes)
 
-    # Trendwende-Ampel wieder als zentrales Element sichtbar machen
-    render_ampel_section(L)
-
-    # Compact metric layout
-    row1 = st.columns(3)
-    with row1[0]:
-        st.metric(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%")
-        st.caption("Tagesveränderung des gewählten Index")
-    with row1[1]:
-        st.metric("Dist.-Tage", int(L["Dist_Count_25"]), "⚠ Häufung" if int(L["Dist_Count_25"]) >= 4 else "OK")
-        st.caption("Institutioneller Abgabedruck im 25-Tage-Fenster")
-    with row1[2]:
-        st.metric("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—")
-        st.caption("Kurzfristige Überdehnung in ATR")
-
-    row2 = st.columns(2)
-    with row2[0]:
-        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠>{t50:.0f}%" if (not np.isnan(d50) and d50 > t50) else "")
-        st.caption("Mittelfristige Überdehnung")
-    with row2[1]:
-        dd = L["Dist_52w_pct"]
-        st.metric("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—")
-        st.caption("Abstand zum 52-Wochen-Hoch")
+    # KPI cards — single row, color-coded by warning state
+    dd = L["Dist_52w_pct"]
+    dc = int(L["Dist_Count_25"])
+    kpi_cols = st.columns(5)
+    with kpi_cols[0]:
+        idx_tone = "bad" if pct < -1.0 else "good" if pct > 0.5 else "neutral"
+        _render_kpi_card(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%", idx_tone, "Tagesveränderung")
+    with kpi_cols[1]:
+        dc_tone = "bad" if dc >= 4 else "warn" if dc >= 2 else "neutral"
+        _render_kpi_card("Dist.-Tage", str(dc), "⚠ Häufung" if dc >= 4 else "OK", dc_tone, "Abgabedruck 25T")
+    with kpi_cols[2]:
+        ema_tone = "warn" if not np.isnan(d21) and (d21 > 3.0 or d21 < 0) else "neutral"
+        _render_kpi_card("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", "", ema_tone, "Kurzfrist-Überdehnung")
+    with kpi_cols[3]:
+        sma_tone = "warn" if not np.isnan(d50) and (d50 > t50 or d50 < 0) else "neutral"
+        _render_kpi_card("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠ >{t50:.0f}%" if not np.isnan(d50) and d50 > t50 else "", sma_tone, "Mittelfrist-Überdehnung")
+    with kpi_cols[4]:
+        dd_tone = "bad" if not np.isnan(dd) and dd < -15 else "warn" if not np.isnan(dd) and dd < -5 else "neutral"
+        _render_kpi_card("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—", "", dd_tone, "Abstand 52W-Hoch")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
@@ -7559,8 +7757,7 @@ def _tab_mein_bereich():
         return
     _init_workspace_state()
 
-    st.markdown("### 🔐 Mein Bereich")
-    st.caption(f"Persönlicher Arbeitsbereich mit persistentem Speicher über {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
+    _render_section_header("🔐", "Mein Bereich", f"Speicher: {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
 
     top_left, top_right = st.columns([1.4, 0.8])
     with top_left:
