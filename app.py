@@ -3018,6 +3018,49 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_yahoo_profile_snapshot(symbol: str):
+    """Lightweight Yahoo profile snapshot for sector/industry/beta/name fallbacks."""
+    try:
+        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+        params = {"modules": "assetProfile,financialData,price"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
+        if not result:
+            return {}
+        node = result[0] or {}
+        asset = node.get("assetProfile", {}) or {}
+        fin = node.get("financialData", {}) or {}
+        price = node.get("price", {}) or {}
+
+        def _extract_num(val):
+            if isinstance(val, dict):
+                raw = val.get("raw")
+                return raw if raw is not None else val.get("fmt")
+            return val
+
+        out = {}
+        if asset.get("sector"):
+            out["sector"] = asset.get("sector")
+        if asset.get("industry"):
+            out["industry"] = asset.get("industry")
+        if price.get("shortName"):
+            out["shortName"] = price.get("shortName")
+        roe_val = _extract_num(fin.get("returnOnEquity"))
+        if roe_val is not None:
+            out["returnOnEquity"] = roe_val
+        beta_val = _extract_num(fin.get("beta"))
+        if beta_val is not None:
+            out["beta"] = beta_val
+        return out
+    except Exception as exc:
+        logger.debug("Yahoo profile snapshot failed for %s: %s", symbol, exc)
+        return {}
+
+
 def _load_stock_full_core(ticker, lookback_days=500):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
@@ -3050,43 +3093,6 @@ def _load_stock_full_core(ticker, lookback_days=500):
                         out[k] = v
             return out
 
-        def _fetch_yahoo_quote_summary_fallback(symbol: str) -> dict:
-            try:
-                url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-                params = {"modules": "assetProfile,financialData"}
-                headers = {"User-Agent": "Mozilla/5.0"}
-                resp = requests.get(url, params=params, headers=headers, timeout=12)
-                resp.raise_for_status()
-                data = resp.json() or {}
-                result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
-                if not result:
-                    return {}
-                node = result[0] or {}
-                asset = node.get("assetProfile", {}) or {}
-                fin = node.get("financialData", {}) or {}
-
-                def _extract_num(val):
-                    if isinstance(val, dict):
-                        raw = val.get("raw")
-                        return raw if raw is not None else val.get("fmt")
-                    return val
-
-                out = {}
-                if asset.get("sector"):
-                    out["sector"] = asset.get("sector")
-                if asset.get("industry"):
-                    out["industry"] = asset.get("industry")
-                roe_val = _extract_num(fin.get("returnOnEquity"))
-                if roe_val is not None:
-                    out["returnOnEquity"] = roe_val
-                beta_val = _extract_num(fin.get("beta"))
-                if beta_val is not None:
-                    out["beta"] = beta_val
-                return out
-            except Exception as exc:
-                logger.debug("quoteSummary fallback failed for %s: %s", symbol, exc)
-                return {}
-
         info = _safe_attr("info") or {}
         if not isinstance(info, dict):
             info = {}
@@ -3103,7 +3109,7 @@ def _load_stock_full_core(ticker, lookback_days=500):
 
         needs_profile = any(info.get(k) in (None, "", "N/A") for k in ["sector", "industry", "returnOnEquity", "beta"])
         if needs_profile:
-            fallback_info = _fetch_yahoo_quote_summary_fallback(ticker)
+            fallback_info = _fetch_yahoo_profile_snapshot(ticker)
             info = _merge_info(info, fallback_info)
 
         qi = _safe_attr("quarterly_income_stmt")
@@ -3201,6 +3207,9 @@ def _load_stock_price_only_core(ticker, lookback_days=500):
                 pass
     except Exception:
         pass
+    profile_snapshot = _fetch_yahoo_profile_snapshot(ticker)
+    if isinstance(profile_snapshot, dict) and profile_snapshot:
+        info.update({k: v for k, v in profile_snapshot.items() if v not in (None, "", "N/A")})
     return df, info
 
 
