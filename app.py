@@ -4,6 +4,7 @@ Merged back into one app.py while keeping the refactor improvements.
 """
 
 import hashlib
+import html
 import hmac
 import io
 import json
@@ -1294,6 +1295,7 @@ def _beta_from_close_series(close: pd.Series, benchmark_close: pd.Series, window
     except Exception:
         return np.nan
 
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _fetch_close_history(symbol: str, start_date, end_date):
     symbol = _normalize_single_ticker(symbol)
@@ -1330,6 +1332,28 @@ def _fetch_close_history(symbol: str, start_date, end_date):
         close = close[(close.index >= start_ts) & (close.index <= end_ts)]
         return close
     return pd.Series(dtype=float)
+
+
+def _beta_from_profile_prices(close_series: pd.Series | None, end_date=None, lookback_days: int = 260) -> float:
+    try:
+        if close_series is None:
+            return np.nan
+        close = pd.to_numeric(close_series, errors="coerce").dropna()
+        if len(close) < 20:
+            return np.nan
+        close.index = pd.to_datetime(close.index).normalize()
+        close = close[~close.index.duplicated(keep="last")].sort_index()
+        if close.empty:
+            return np.nan
+        end_ts = pd.Timestamp(end_date or close.index[-1]).normalize()
+        start_ts = max(close.index[0], end_ts - timedelta(days=lookback_days))
+        close = close[(close.index >= start_ts) & (close.index <= end_ts)]
+        if len(close) < 20:
+            return np.nan
+        benchmark = _fetch_close_history("^GSPC", start_ts, end_ts)
+        return _beta_from_close_series(close, benchmark)
+    except Exception:
+        return np.nan
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _portfolio_symbol_metrics(ticker: str) -> dict:
@@ -2843,6 +2867,33 @@ def _read_secret_value(name: str) -> str:
     return value or ""
 
 
+def _info_value_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    text = str(value).strip()
+    return text == "" or text.upper() == "N/A" or text.lower() == "nan"
+
+
+def _clean_info_text(value: str, default: str = "—") -> str:
+    if _info_value_missing(value):
+        return default
+    return str(value).strip()
+
+
+def _merge_missing_info(base: dict | None, extra: dict | None) -> dict:
+    out = dict(base or {})
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key not in out or _info_value_missing(out.get(key)):
+                out[key] = value
+    return out
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_sec_ticker_cik_map():
     """Load SEC ticker→CIK mapping."""
@@ -3021,44 +3072,148 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_yahoo_profile_snapshot(symbol: str):
     """Lightweight Yahoo profile snapshot for sector/industry/beta/name fallbacks."""
+    def _extract_num(val):
+        if isinstance(val, dict):
+            raw = val.get("raw")
+            return raw if raw is not None else val.get("fmt")
+        return val
+
+    def _first_text(*values):
+        for value in values:
+            if not _info_value_missing(value):
+                return str(value).strip()
+        return None
+
+    def _build_snapshot(node: dict) -> dict:
+        asset = node.get("assetProfile", {}) or {}
+        summary_profile = node.get("summaryProfile", {}) or {}
+        fin = node.get("financialData", {}) or {}
+        price = node.get("price", {}) or {}
+        summary = node.get("summaryDetail", {}) or {}
+        stats = node.get("defaultKeyStatistics", {}) or {}
+
+        out = {}
+        sector = _first_text(
+            asset.get("sectorDisp"),
+            asset.get("sectorDisplayName"),
+            asset.get("sector"),
+            summary_profile.get("sector"),
+        )
+        industry = _first_text(
+            asset.get("industryDisp"),
+            asset.get("industryDisplayName"),
+            asset.get("industry"),
+            summary_profile.get("industry"),
+        )
+        short_name = _first_text(price.get("shortName"), price.get("longName"))
+        if sector:
+            out["sector"] = sector
+        if industry:
+            out["industry"] = industry
+        if short_name:
+            out["shortName"] = short_name
+        roe_val = _extract_num(fin.get("returnOnEquity"))
+        if roe_val is not None:
+            out["returnOnEquity"] = roe_val
+        beta_val = _extract_num(summary.get("beta"))
+        if beta_val is None:
+            beta_val = _extract_num(stats.get("beta"))
+        if beta_val is None:
+            beta_val = _extract_num(fin.get("beta"))
+        if beta_val is not None:
+            out["beta"] = _safe_float(beta_val, beta_val)
+        return out
+
     try:
         url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-        params = {"modules": "assetProfile,financialData,price"}
+        params = {"modules": "assetProfile,financialData,price,summaryDetail,defaultKeyStatistics"}
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, params=params, headers=headers, timeout=8)
         resp.raise_for_status()
         data = resp.json() or {}
         result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
+        if result:
+            snapshot = _build_snapshot(result[0] or {})
+            if snapshot:
+                return snapshot
+    except Exception as exc:
+        logger.debug("Yahoo profile API snapshot failed for %s: %s", symbol, exc)
+
+    try:
+        page_url = f"https://finance.yahoo.com/quote/{symbol}?p={symbol}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(page_url, headers=headers, timeout=8)
+        resp.raise_for_status()
+        pattern = rf'<script type="application/json"[^>]*data-url="https://query1\.finance\.yahoo\.com/v10/finance/quoteSummary/{re.escape(symbol)}\?[^"]*"[^>]*>(.*?)</script>'
+        match = re.search(pattern, resp.text)
+        if not match:
+            return {}
+        payload = json.loads(html.unescape(match.group(1)))
+        body = payload.get("body", "{}")
+        data = json.loads(body) if isinstance(body, str) else (body or {})
+        result = (((data.get("quoteSummary", {}) or {}).get("result", [])) or [])
         if not result:
             return {}
-        node = result[0] or {}
-        asset = node.get("assetProfile", {}) or {}
-        fin = node.get("financialData", {}) or {}
-        price = node.get("price", {}) or {}
+        return _build_snapshot(result[0] or {})
+    except Exception as exc:
+        logger.debug("Yahoo profile page snapshot failed for %s: %s", symbol, exc)
+        return {}
 
-        def _extract_num(val):
-            if isinstance(val, dict):
-                raw = val.get("raw")
-                return raw if raw is not None else val.get("fmt")
-            return val
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_fmp_profile_snapshot(symbol: str):
+    """FMP fallback for sector/industry/beta when Yahoo/yfinance are incomplete."""
+    api_key = _read_secret_value("FMP_API_KEY")
+    if not api_key:
+        return {}
+    try:
+        url = "https://financialmodelingprep.com/stable/profile"
+        params = {"symbol": symbol, "apikey": api_key}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json() or []
+        if not isinstance(data, list) or not data:
+            return {}
+        item = data[0] or {}
         out = {}
-        if asset.get("sector"):
-            out["sector"] = asset.get("sector")
-        if asset.get("industry"):
-            out["industry"] = asset.get("industry")
-        if price.get("shortName"):
-            out["shortName"] = price.get("shortName")
-        roe_val = _extract_num(fin.get("returnOnEquity"))
-        if roe_val is not None:
-            out["returnOnEquity"] = roe_val
-        beta_val = _extract_num(fin.get("beta"))
-        if beta_val is not None:
-            out["beta"] = beta_val
+        sector = _clean_info_text(item.get("sector"), default="")
+        industry = _clean_info_text(item.get("industry"), default="")
+        short_name = _clean_info_text(item.get("companyName"), default="")
+        beta = _safe_float(item.get("beta"), np.nan)
+        if sector:
+            out["sector"] = sector
+        if industry:
+            out["industry"] = industry
+        if short_name:
+            out["shortName"] = short_name
+        if not np.isnan(beta):
+            out["beta"] = beta
         return out
     except Exception as exc:
-        logger.debug("Yahoo profile snapshot failed for %s: %s", symbol, exc)
+        logger.debug("FMP profile snapshot failed for %s: %s", symbol, exc)
         return {}
+
+
+def _enrich_profile_info(ticker: str, info: dict | None, close_series: pd.Series | None = None) -> dict:
+    """Fill missing profile fields from Yahoo, FMP and price-derived beta."""
+    enriched = dict(info or {})
+
+    if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "returnOnEquity", "beta", "shortName"]):
+        yahoo_snapshot = _fetch_yahoo_profile_snapshot(ticker)
+        enriched = _merge_missing_info(enriched, yahoo_snapshot)
+
+    if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "beta", "shortName"]):
+        fmp_snapshot = _fetch_fmp_profile_snapshot(ticker)
+        enriched = _merge_missing_info(enriched, fmp_snapshot)
+
+    beta_val = _safe_float(enriched.get("beta"), np.nan)
+    if np.isnan(beta_val):
+        beta_val = _beta_from_profile_prices(close_series)
+        if not np.isnan(beta_val):
+            enriched["beta"] = beta_val
+
+    return enriched
 
 
 def _load_stock_full_core(ticker, lookback_days=500):
@@ -3085,14 +3240,6 @@ def _load_stock_full_core(ticker, lookback_days=500):
                 logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
                 return None
 
-        def _merge_info(base: dict, extra: dict | None) -> dict:
-            out = dict(base or {})
-            if isinstance(extra, dict):
-                for k, v in extra.items():
-                    if k not in out or out.get(k) in (None, "", "N/A"):
-                        out[k] = v
-            return out
-
         info = _safe_attr("info") or {}
         if not isinstance(info, dict) or not info:
             try:
@@ -3109,16 +3256,10 @@ def _load_stock_full_core(ticker, lookback_days=500):
                 fast_beta = fast_info.get("beta")
             except Exception:
                 fast_beta = None
-        if info.get("beta") in (None, "") and fast_beta is not None:
+        if _info_value_missing(info.get("beta")) and fast_beta is not None:
             info["beta"] = fast_beta
 
-        needs_profile = any(info.get(k) in (None, "", "N/A") for k in ["sector", "industry", "returnOnEquity", "beta"])
-        if needs_profile:
-            fallback_info = _fetch_yahoo_profile_snapshot(ticker)
-            info = _merge_info(info, fallback_info)
-        if info.get("shortName") in (None, "", "N/A"):
-            fallback_info = _fetch_yahoo_profile_snapshot(ticker)
-            info = _merge_info(info, fallback_info)
+        info = _enrich_profile_info(ticker, info, close_series=df["Close"])
 
         qi = _safe_attr("quarterly_income_stmt")
         ai = _safe_attr("income_stmt")
@@ -3215,9 +3356,7 @@ def _load_stock_price_only_core(ticker, lookback_days=500):
                 pass
     except Exception:
         pass
-    profile_snapshot = _fetch_yahoo_profile_snapshot(ticker)
-    if isinstance(profile_snapshot, dict) and profile_snapshot:
-        info.update({k: v for k, v in profile_snapshot.items() if v not in (None, "", "N/A")})
+    info = _enrich_profile_info(ticker, info, close_series=df["Close"])
     return df, info
 
 
@@ -7382,6 +7521,14 @@ def _tab_aktienbewertung():
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
+    lookback_days = st.radio(
+        "Lookback",
+        options=[300, 500],
+        index=1,
+        horizontal=True,
+        key="stock_lookback_days",
+        help="Bestimmt, wie viele Kalendertage Historie für die Analyse geladen werden.",
+    )
 
     with st.spinner(f"Lade {ticker} …"):
         df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
@@ -7496,15 +7643,17 @@ def _tab_aktienbewertung():
     rng_hl = L["High"] - L["Low"]
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
-    beta = info.get("beta") if info else None
+    sector_text = _clean_info_text((info or {}).get("sector"), default="—")[:22]
+    industry_text = _clean_info_text((info or {}).get("industry"), default="—")[:28]
+    beta = _safe_float((info or {}).get("beta"), np.nan)
     cat_lbl, _ = _atr_category(atr_pct)
 
     top_metrics = st.columns(3)
     with top_metrics[0]:
-        st.metric("Sektor", (info.get("sector", "—") if info else "—")[:22])
+        st.metric("Sektor", sector_text)
         st.caption("Geschäftsfeld der Aktie")
     with top_metrics[1]:
-        st.metric("Branche", (info.get("industry", "—") if info else "—")[:28])
+        st.metric("Branche", industry_text)
         st.caption("Feinere Untergruppe innerhalb des Sektors")
     with top_metrics[2]:
         st.metric("Closing Range", f"{cr_today:.0f}%")
@@ -7519,7 +7668,17 @@ def _tab_aktienbewertung():
         rs_metric_delta = "Elite" if rs_rating_val is not None and rs_rating_val >= 90 else "Stark" if rs_rating_val is not None and rs_rating_val >= 80 else ""
         st.metric("RS-Rating", f"{rs_rating_val}" if rs_rating_val is not None else "—", rs_metric_delta)
     with low_metrics[3]:
-        st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
+        st.metric("Beta", f"{beta:.2f}" if not np.isnan(beta) else "—", ">1.3 dynamisch" if not np.isnan(beta) and beta > 1.3 else "")
+
+    missing_profile_fields = []
+    if _info_value_missing((info or {}).get("sector")):
+        missing_profile_fields.append("Sektor")
+    if _info_value_missing((info or {}).get("industry")):
+        missing_profile_fields.append("Branche")
+    if np.isnan(beta):
+        missing_profile_fields.append("Beta")
+    if missing_profile_fields:
+        st.caption(f"Hinweis: {', '.join(missing_profile_fields)} konnten aktuell weder von Yahoo Finance noch vom FMP-Fallback geladen werden.")
 
     if isinstance(rs_ctx, dict) and rs_ctx.get("distance_to_high_pct") is not None:
         st.caption(f"RS-Linie aktuell {rs_ctx.get('distance_to_high_pct'):+.1f}% von ihrem 52-Wochen-Hoch entfernt.")
