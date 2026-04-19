@@ -3108,13 +3108,32 @@ def _load_stock_full_core(ticker, lookback_days=500):
 
         qi = _safe_attr("quarterly_income_stmt")
         ai = _safe_attr("income_stmt")
-        ih = _safe_attr("institutional_holders")
+        # institutional_holders can be very slow for many tickers and is only a soft signal.
+        # Keep the first render fast and fall back to heldPercentInstitutions from info.
+        ih = None
         qe = _safe_attr("quarterly_earnings")
         try:
             ed = t.get_earnings_dates(limit=12)
         except Exception as exc:
             logger.debug("earnings dates failed for %s: %s", ticker, exc)
             ed = None
+
+        def _has_quarterly_yahoo_baseline(frame, min_quarters: int = 4) -> bool:
+            if frame is None or frame.empty:
+                return False
+            eps_row = _find_row(frame, ["Diluted EPS", "Basic EPS"])
+            rev_row = _find_row(frame, ["Total Revenue", "Revenue", "Operating Revenue"])
+            eps_n = int(eps_row.dropna().shape[0]) if eps_row is not None else 0
+            rev_n = int(rev_row.dropna().shape[0]) if rev_row is not None else 0
+            return eps_n >= min_quarters and rev_n >= min_quarters
+
+        def _qraw_quarter_count(payload, key: str) -> int:
+            if not isinstance(payload, dict):
+                return 0
+            series = payload.get(key)
+            if isinstance(series, pd.Series):
+                return int(series.dropna().shape[0])
+            return 0
 
         fmp_key = _read_secret_value("FMP_API_KEY")
         qraw = None
@@ -3129,15 +3148,23 @@ def _load_stock_full_core(ticker, lookback_days=500):
             if qraw is not None:
                 qraw_sources.append("FMP")
 
-        # SEC fallback/augment (especially useful when Yahoo/FMP provides only few quarters)
-        sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
-        if sec_raw is not None:
-            qraw = _merge_quarterly_raw(qraw, sec_raw)
-            qraw_sources.append("SEC")
-            if fmp_err and qraw is not None:
-                fmp_err = f"{fmp_err} | SEC ergänzt"
-        elif qraw is None and sec_err:
-            fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
+        # SEC fallback is useful but often slow; only use when other quarterly sources are insufficient.
+        need_sec_fallback = not _has_quarterly_yahoo_baseline(qi, min_quarters=4)
+        if qraw is not None:
+            eps_q = _qraw_quarter_count(qraw, "DilutedEPS")
+            rev_q = _qraw_quarter_count(qraw, "TotalRevenue")
+            if eps_q >= 6 and rev_q >= 6:
+                need_sec_fallback = False
+
+        if need_sec_fallback:
+            sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
+            if sec_raw is not None:
+                qraw = _merge_quarterly_raw(qraw, sec_raw)
+                qraw_sources.append("SEC")
+                if fmp_err and qraw is not None:
+                    fmp_err = f"{fmp_err} | SEC ergänzt"
+            elif qraw is None and sec_err:
+                fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
 
         if qraw is not None:
             src = "+".join(dict.fromkeys(qraw_sources)) if qraw_sources else "Direktdaten"
