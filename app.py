@@ -3018,6 +3018,49 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_yahoo_profile_snapshot(symbol: str):
+    """Lightweight Yahoo profile snapshot for sector/industry/beta/name fallbacks."""
+    try:
+        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+        params = {"modules": "assetProfile,financialData,price"}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
+        if not result:
+            return {}
+        node = result[0] or {}
+        asset = node.get("assetProfile", {}) or {}
+        fin = node.get("financialData", {}) or {}
+        price = node.get("price", {}) or {}
+
+        def _extract_num(val):
+            if isinstance(val, dict):
+                raw = val.get("raw")
+                return raw if raw is not None else val.get("fmt")
+            return val
+
+        out = {}
+        if asset.get("sector"):
+            out["sector"] = asset.get("sector")
+        if asset.get("industry"):
+            out["industry"] = asset.get("industry")
+        if price.get("shortName"):
+            out["shortName"] = price.get("shortName")
+        roe_val = _extract_num(fin.get("returnOnEquity"))
+        if roe_val is not None:
+            out["returnOnEquity"] = roe_val
+        beta_val = _extract_num(fin.get("beta"))
+        if beta_val is not None:
+            out["beta"] = beta_val
+        return out
+    except Exception as exc:
+        logger.debug("Yahoo profile snapshot failed for %s: %s", symbol, exc)
+        return {}
+
+
 def _load_stock_full_core(ticker, lookback_days=500):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
@@ -3050,44 +3093,12 @@ def _load_stock_full_core(ticker, lookback_days=500):
                         out[k] = v
             return out
 
-        def _fetch_yahoo_quote_summary_fallback(symbol: str) -> dict:
-            try:
-                url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-                params = {"modules": "assetProfile,financialData"}
-                headers = {"User-Agent": "Mozilla/5.0"}
-                resp = requests.get(url, params=params, headers=headers, timeout=12)
-                resp.raise_for_status()
-                data = resp.json() or {}
-                result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
-                if not result:
-                    return {}
-                node = result[0] or {}
-                asset = node.get("assetProfile", {}) or {}
-                fin = node.get("financialData", {}) or {}
-
-                def _extract_num(val):
-                    if isinstance(val, dict):
-                        raw = val.get("raw")
-                        return raw if raw is not None else val.get("fmt")
-                    return val
-
-                out = {}
-                if asset.get("sector"):
-                    out["sector"] = asset.get("sector")
-                if asset.get("industry"):
-                    out["industry"] = asset.get("industry")
-                roe_val = _extract_num(fin.get("returnOnEquity"))
-                if roe_val is not None:
-                    out["returnOnEquity"] = roe_val
-                beta_val = _extract_num(fin.get("beta"))
-                if beta_val is not None:
-                    out["beta"] = beta_val
-                return out
-            except Exception as exc:
-                logger.debug("quoteSummary fallback failed for %s: %s", symbol, exc)
-                return {}
-
         info = _safe_attr("info") or {}
+        if not isinstance(info, dict) or not info:
+            try:
+                info = t.get_info() or {}
+            except Exception as exc:
+                logger.debug("Ticker get_info failed for %s: %s", ticker, exc)
         if not isinstance(info, dict):
             info = {}
 
@@ -3103,18 +3114,40 @@ def _load_stock_full_core(ticker, lookback_days=500):
 
         needs_profile = any(info.get(k) in (None, "", "N/A") for k in ["sector", "industry", "returnOnEquity", "beta"])
         if needs_profile:
-            fallback_info = _fetch_yahoo_quote_summary_fallback(ticker)
+            fallback_info = _fetch_yahoo_profile_snapshot(ticker)
+            info = _merge_info(info, fallback_info)
+        if info.get("shortName") in (None, "", "N/A"):
+            fallback_info = _fetch_yahoo_profile_snapshot(ticker)
             info = _merge_info(info, fallback_info)
 
         qi = _safe_attr("quarterly_income_stmt")
         ai = _safe_attr("income_stmt")
-        ih = _safe_attr("institutional_holders")
+        # institutional_holders can be very slow for many tickers and is only a soft signal.
+        # Keep the first render fast and fall back to heldPercentInstitutions from info.
+        ih = None
         qe = _safe_attr("quarterly_earnings")
         try:
             ed = t.get_earnings_dates(limit=12)
         except Exception as exc:
             logger.debug("earnings dates failed for %s: %s", ticker, exc)
             ed = None
+
+        def _has_quarterly_yahoo_baseline(frame, min_quarters: int = 4) -> bool:
+            if frame is None or frame.empty:
+                return False
+            eps_row = _find_row(frame, ["Diluted EPS", "Basic EPS"])
+            rev_row = _find_row(frame, ["Total Revenue", "Revenue", "Operating Revenue"])
+            eps_n = int(eps_row.dropna().shape[0]) if eps_row is not None else 0
+            rev_n = int(rev_row.dropna().shape[0]) if rev_row is not None else 0
+            return eps_n >= min_quarters and rev_n >= min_quarters
+
+        def _qraw_quarter_count(payload, key: str) -> int:
+            if not isinstance(payload, dict):
+                return 0
+            series = payload.get(key)
+            if isinstance(series, pd.Series):
+                return int(series.dropna().shape[0])
+            return 0
 
         fmp_key = _read_secret_value("FMP_API_KEY")
         qraw = None
@@ -3129,15 +3162,23 @@ def _load_stock_full_core(ticker, lookback_days=500):
             if qraw is not None:
                 qraw_sources.append("FMP")
 
-        # SEC fallback/augment (especially useful when Yahoo/FMP provides only few quarters)
-        sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
-        if sec_raw is not None:
-            qraw = _merge_quarterly_raw(qraw, sec_raw)
-            qraw_sources.append("SEC")
-            if fmp_err and qraw is not None:
-                fmp_err = f"{fmp_err} | SEC ergänzt"
-        elif qraw is None and sec_err:
-            fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
+        # SEC fallback is useful but often slow; only use when other quarterly sources are insufficient.
+        need_sec_fallback = not _has_quarterly_yahoo_baseline(qi, min_quarters=4)
+        if qraw is not None:
+            eps_q = _qraw_quarter_count(qraw, "DilutedEPS")
+            rev_q = _qraw_quarter_count(qraw, "TotalRevenue")
+            if eps_q >= 6 and rev_q >= 6:
+                need_sec_fallback = False
+
+        if need_sec_fallback:
+            sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
+            if sec_raw is not None:
+                qraw = _merge_quarterly_raw(qraw, sec_raw)
+                qraw_sources.append("SEC")
+                if fmp_err and qraw is not None:
+                    fmp_err = f"{fmp_err} | SEC ergänzt"
+            elif qraw is None and sec_err:
+                fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
 
         if qraw is not None:
             src = "+".join(dict.fromkeys(qraw_sources)) if qraw_sources else "Direktdaten"
@@ -3307,6 +3348,36 @@ def _init_price_cache_db(store):
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS breadth_daily_metrics (
+                    date DATE PRIMARY KEY,
+                    advancers INTEGER,
+                    decliners INTEGER,
+                    net_advances INTEGER,
+                    ad_ratio DOUBLE PRECISION,
+                    ad_line DOUBLE PRECISION,
+                    rana DOUBLE PRECISION,
+                    mcc_19 DOUBLE PRECISION,
+                    mcc_39 DOUBLE PRECISION,
+                    mcclellan DOUBLE PRECISION,
+                    new_highs INTEGER,
+                    new_lows INTEGER,
+                    net_new_highs INTEGER,
+                    nh_nl_ratio DOUBLE PRECISION,
+                    high_low_pct DOUBLE PRECISION,
+                    pct_above_50sma DOUBLE PRECISION,
+                    pct_above_200sma DOUBLE PRECISION,
+                    deemer_ratio DOUBLE PRECISION,
+                    breadth_thrust BOOLEAN,
+                    ad_line_sma21 DOUBLE PRECISION,
+                    mcclellan_sma10 DOUBLE PRECISION,
+                    attrs_json TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_breadth_daily_metrics_date ON breadth_daily_metrics(date)")
         else:
             cur.execute(
                 """
@@ -3353,6 +3424,36 @@ def _init_price_cache_db(store):
                 )
                 """
             )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS breadth_daily_metrics (
+                    date TEXT PRIMARY KEY,
+                    advancers INTEGER,
+                    decliners INTEGER,
+                    net_advances INTEGER,
+                    ad_ratio REAL,
+                    ad_line REAL,
+                    rana REAL,
+                    mcc_19 REAL,
+                    mcc_39 REAL,
+                    mcclellan REAL,
+                    new_highs INTEGER,
+                    new_lows INTEGER,
+                    net_new_highs INTEGER,
+                    nh_nl_ratio REAL,
+                    high_low_pct REAL,
+                    pct_above_50sma REAL,
+                    pct_above_200sma REAL,
+                    deemer_ratio REAL,
+                    breadth_thrust INTEGER,
+                    ad_line_sma21 REAL,
+                    mcclellan_sma10 REAL,
+                    attrs_json TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_breadth_daily_metrics_date ON breadth_daily_metrics(date)")
 
         if store["backend"] == "neon":
             cur.execute(
@@ -4547,6 +4648,194 @@ def _read_cached_closes(store, tickers, start_date, end_date):
         return None
     return bundle.get("close")
 
+
+def _upsert_cached_breadth_metrics(store, breadth_df):
+    if breadth_df is None or breadth_df.empty:
+        return 0
+    cols = [
+        "Advancers", "Decliners", "Net_Advances", "AD_Ratio", "AD_Line", "RANA",
+        "McC_19", "McC_39", "McClellan", "New_Highs", "New_Lows", "Net_New_Highs",
+        "NH_NL_Ratio", "High_Low_Pct", "Pct_Above_50SMA", "Pct_Above_200SMA",
+        "Deemer_Ratio", "Breadth_Thrust", "AD_Line_SMA21", "McClellan_SMA10",
+    ]
+    data = breadth_df.copy()
+    for col in cols:
+        if col not in data.columns:
+            data[col] = np.nan
+    attrs_payload = json.dumps(dict(getattr(breadth_df, "attrs", {}) or {}), ensure_ascii=False)
+    records = []
+    for idx, row in data[cols].iterrows():
+        date_str = pd.Timestamp(idx).strftime("%Y-%m-%d")
+        records.append((
+            date_str,
+            int(row["Advancers"]) if pd.notna(row["Advancers"]) else None,
+            int(row["Decliners"]) if pd.notna(row["Decliners"]) else None,
+            int(row["Net_Advances"]) if pd.notna(row["Net_Advances"]) else None,
+            float(row["AD_Ratio"]) if pd.notna(row["AD_Ratio"]) else None,
+            float(row["AD_Line"]) if pd.notna(row["AD_Line"]) else None,
+            float(row["RANA"]) if pd.notna(row["RANA"]) else None,
+            float(row["McC_19"]) if pd.notna(row["McC_19"]) else None,
+            float(row["McC_39"]) if pd.notna(row["McC_39"]) else None,
+            float(row["McClellan"]) if pd.notna(row["McClellan"]) else None,
+            int(row["New_Highs"]) if pd.notna(row["New_Highs"]) else None,
+            int(row["New_Lows"]) if pd.notna(row["New_Lows"]) else None,
+            int(row["Net_New_Highs"]) if pd.notna(row["Net_New_Highs"]) else None,
+            float(row["NH_NL_Ratio"]) if pd.notna(row["NH_NL_Ratio"]) else None,
+            float(row["High_Low_Pct"]) if pd.notna(row["High_Low_Pct"]) else None,
+            float(row["Pct_Above_50SMA"]) if pd.notna(row["Pct_Above_50SMA"]) else None,
+            float(row["Pct_Above_200SMA"]) if pd.notna(row["Pct_Above_200SMA"]) else None,
+            float(row["Deemer_Ratio"]) if pd.notna(row["Deemer_Ratio"]) else None,
+            bool(row["Breadth_Thrust"]) if pd.notna(row["Breadth_Thrust"]) else None,
+            float(row["AD_Line_SMA21"]) if pd.notna(row["AD_Line_SMA21"]) else None,
+            float(row["McClellan_SMA10"]) if pd.notna(row["McClellan_SMA10"]) else None,
+            attrs_payload,
+        ))
+    if not records:
+        return 0
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO breadth_daily_metrics(
+                        date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
+                        new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
+                        deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json
+                    )
+                    VALUES %s
+                    ON CONFLICT (date) DO UPDATE SET
+                        advancers=EXCLUDED.advancers,
+                        decliners=EXCLUDED.decliners,
+                        net_advances=EXCLUDED.net_advances,
+                        ad_ratio=EXCLUDED.ad_ratio,
+                        ad_line=EXCLUDED.ad_line,
+                        rana=EXCLUDED.rana,
+                        mcc_19=EXCLUDED.mcc_19,
+                        mcc_39=EXCLUDED.mcc_39,
+                        mcclellan=EXCLUDED.mcclellan,
+                        new_highs=EXCLUDED.new_highs,
+                        new_lows=EXCLUDED.new_lows,
+                        net_new_highs=EXCLUDED.net_new_highs,
+                        nh_nl_ratio=EXCLUDED.nh_nl_ratio,
+                        high_low_pct=EXCLUDED.high_low_pct,
+                        pct_above_50sma=EXCLUDED.pct_above_50sma,
+                        pct_above_200sma=EXCLUDED.pct_above_200sma,
+                        deemer_ratio=EXCLUDED.deemer_ratio,
+                        breadth_thrust=EXCLUDED.breadth_thrust,
+                        ad_line_sma21=EXCLUDED.ad_line_sma21,
+                        mcclellan_sma10=EXCLUDED.mcclellan_sma10,
+                        attrs_json=EXCLUDED.attrs_json,
+                        updated_at=NOW()
+                    """,
+                    records,
+                    page_size=2000,
+                )
+        else:
+            conn.executemany(
+                """
+                INSERT INTO breadth_daily_metrics(
+                    date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
+                    new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
+                    deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    advancers=excluded.advancers,
+                    decliners=excluded.decliners,
+                    net_advances=excluded.net_advances,
+                    ad_ratio=excluded.ad_ratio,
+                    ad_line=excluded.ad_line,
+                    rana=excluded.rana,
+                    mcc_19=excluded.mcc_19,
+                    mcc_39=excluded.mcc_39,
+                    mcclellan=excluded.mcclellan,
+                    new_highs=excluded.new_highs,
+                    new_lows=excluded.new_lows,
+                    net_new_highs=excluded.net_new_highs,
+                    nh_nl_ratio=excluded.nh_nl_ratio,
+                    high_low_pct=excluded.high_low_pct,
+                    pct_above_50sma=excluded.pct_above_50sma,
+                    pct_above_200sma=excluded.pct_above_200sma,
+                    deemer_ratio=excluded.deemer_ratio,
+                    breadth_thrust=excluded.breadth_thrust,
+                    ad_line_sma21=excluded.ad_line_sma21,
+                    mcclellan_sma10=excluded.mcclellan_sma10,
+                    attrs_json=excluded.attrs_json,
+                    updated_at=excluded.updated_at
+                """,
+                [tuple(rec) + (now_utc,) for rec in records],
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(records)
+
+
+def _load_cached_breadth_metrics(store, start_date, end_date):
+    conn = _get_cache_conn(store)
+    try:
+        if store["backend"] == "neon":
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
+                           new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
+                           deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json
+                    FROM breadth_daily_metrics
+                    WHERE date >= %s AND date <= %s
+                    ORDER BY date
+                    """,
+                    (start_date, end_date),
+                )
+                rows = cur.fetchall()
+                cols = [d.name for d in cur.description]
+                frame = pd.DataFrame(rows, columns=cols)
+        else:
+            frame = pd.read_sql_query(
+                """
+                SELECT date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
+                       new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
+                       deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json
+                FROM breadth_daily_metrics
+                WHERE date >= ? AND date <= ?
+                ORDER BY date
+                """,
+                conn,
+                params=[start_date, end_date],
+            )
+    except Exception:
+        frame = pd.DataFrame()
+    finally:
+        conn.close()
+    if frame.empty:
+        return None
+    frame["date"] = pd.to_datetime(frame["date"])
+    frame = frame.set_index("date").sort_index()
+    rename_map = {
+        "advancers": "Advancers", "decliners": "Decliners", "net_advances": "Net_Advances",
+        "ad_ratio": "AD_Ratio", "ad_line": "AD_Line", "rana": "RANA", "mcc_19": "McC_19",
+        "mcc_39": "McC_39", "mcclellan": "McClellan", "new_highs": "New_Highs", "new_lows": "New_Lows",
+        "net_new_highs": "Net_New_Highs", "nh_nl_ratio": "NH_NL_Ratio", "high_low_pct": "High_Low_Pct",
+        "pct_above_50sma": "Pct_Above_50SMA", "pct_above_200sma": "Pct_Above_200SMA", "deemer_ratio": "Deemer_Ratio",
+        "breadth_thrust": "Breadth_Thrust", "ad_line_sma21": "AD_Line_SMA21", "mcclellan_sma10": "McClellan_SMA10",
+    }
+    frame = frame.rename(columns=rename_map)
+    attrs = {}
+    attrs_json = frame["attrs_json"].dropna().iloc[-1] if "attrs_json" in frame.columns and frame["attrs_json"].notna().any() else ""
+    if attrs_json:
+        try:
+            attrs = json.loads(attrs_json)
+        except Exception:
+            attrs = {}
+    if "attrs_json" in frame.columns:
+        frame = frame.drop(columns=["attrs_json"])
+    frame["Breadth_Thrust"] = frame["Breadth_Thrust"].fillna(False).astype(bool)
+    frame.attrs.update(attrs)
+    return frame
+
 def _get_cached_last_dates(store, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
@@ -4715,6 +5004,28 @@ def _prepare_component_bundle(bundle):
     prepared["low"] = low_frame[shared] if low_frame is not None and not low_frame.empty else None
     return prepared
 
+
+def _refresh_cached_breadth_metrics(store, tickers, start_date, end_date):
+    try:
+        bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+        if not bundle:
+            return {"rows": 0, "ok": False}
+        breadth = compute_breadth_from_components(bundle)
+        if breadth is None or breadth.empty:
+            return {"rows": 0, "ok": False}
+        rows = _upsert_cached_breadth_metrics(store, breadth)
+        _set_cache_metadata_many(
+            store,
+            {
+                "breadth_cache_last_refresh_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "breadth_cache_rows": rows,
+            },
+        )
+        return {"rows": rows, "ok": rows > 0}
+    except Exception as exc:
+        logger.warning("Could not refresh breadth_daily_metrics cache: %s", exc)
+        return {"rows": 0, "ok": False, "error": str(exc)}
+
 def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_batch_size=220, recent_refresh_days=15):
     """Initial fill or incremental refresh for the persistent price store.
 
@@ -4787,6 +5098,7 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata_many(store, {"last_refresh_at": now_str, "last_refresh_rows_written": rows_written, "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
+    breadth_cache = _refresh_cached_breadth_metrics(store, tickers, start_date, end_date)
 
     return {
         "ok": loaded > 0,
@@ -4798,6 +5110,7 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
         "recent_batches": recent_batches,
         "recent_refresh_days": recent_refresh_days,
         "last_refresh_at": now_str,
+        "breadth_cache_rows": int(breadth_cache.get("rows", 0) or 0),
         "store": _get_store_label(store),
         "backend": store["backend"],
     }
@@ -4889,6 +5202,7 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata_many(store, {"last_rescue_at": now_str, "last_rescue_rows_written": rows_written, "last_rescue_missing_before": len(missing_before), "last_rescue_missing_after": len(missing_after), "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
+    breadth_cache = _refresh_cached_breadth_metrics(store, tickers, start_date, end_date)
 
     return {
         "ok": loaded > 0,
@@ -4903,6 +5217,7 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
         "single_attempts": single_attempts,
         "single_successes": single_successes,
         "last_rescue_at": now_str,
+        "breadth_cache_rows": int(breadth_cache.get("rows", 0) or 0),
         "store": _get_store_label(store),
         "backend": store["backend"],
     }
@@ -4921,6 +5236,32 @@ def load_nyse_breadth_data(lookback_days=550):
     if not tickers:
         return None
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
+
+    cached_breadth = _load_cached_breadth_metrics(store, start_date, end_date)
+    if cached_breadth is not None and len(cached_breadth) >= 20:
+        requested = len(tickers)
+        loaded = int(cached_breadth.attrs.get("loaded_universe", _get_cache_metadata(store, "last_refresh_loaded_universe", 0) or 0) or 0)
+        if loaded <= 0:
+            loaded = requested
+        coverage = loaded / max(requested, 1)
+        attrs = {
+            "requested_universe": requested,
+            "loaded_universe": loaded,
+            "coverage_ratio": coverage,
+            "partial_universe": coverage < 0.75,
+            "cache_used": True,
+            "cache_only_run": True,
+            "store_backend": store["backend"],
+            "store_label": _get_store_label(store),
+            "cache_member_count": int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested),
+            "cache_members_updated_at": _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", ""),
+            "cache_prices_last_write_at": _get_cache_metadata(store, "prices_last_write_at", ""),
+            "last_refresh_at": _get_cache_metadata(store, "last_refresh_at", ""),
+            "breadth_preaggregated": True,
+        }
+        for k, v in attrs.items():
+            cached_breadth.attrs[k] = v
+        return {"breadth_metrics": cached_breadth, "attrs": attrs}
 
     bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
     close_frame = bundle.get("close") if bundle else None
@@ -5491,12 +5832,16 @@ def render_breadth(mode,dist_pct):
 
 
 def _render_deep_analysis_content(component_bundle, sd, data):
-    close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
-    if close_frame is None or len(close_frame) <= 50:
-        st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse des NYSE/Nasdaq-Aktienuniversums.")
-        return None
-
-    br = compute_breadth_from_components(component_bundle)
+    preaggregated = isinstance(component_bundle, dict) and component_bundle.get("breadth_metrics") is not None
+    if preaggregated:
+        br = component_bundle.get("breadth_metrics")
+        close_frame = component_bundle.get("close")
+    else:
+        close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
+        if close_frame is None or len(close_frame) <= 50:
+            st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse des NYSE/Nasdaq-Aktienuniversums.")
+            return None
+        br = compute_breadth_from_components(component_bundle)
     if br is None or len(br) <= 20:
         st.warning("Keine gültigen Handelstage gefunden.")
         return None
@@ -5504,10 +5849,12 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     last_trading_date = br.index[-1].strftime("%d.%m.%Y")
     breadth_attrs = br.attrs
     requested = breadth_attrs.get("requested_universe")
-    loaded = breadth_attrs.get("loaded_universe", len(close_frame.columns))
+    loaded_fallback = len(close_frame.columns) if isinstance(close_frame, pd.DataFrame) else 0
+    loaded = breadth_attrs.get("loaded_universe", loaded_fallback)
     coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
     ratio_txt = f" / {requested}" if requested else ""
-    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
+    cached_txt = " (voraggregiert)" if preaggregated else ""
+    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}{cached_txt}")
     if requested and loaded < requested * 0.8:
         st.warning(f"Hinweis: Es wurden nicht alle Titel des NYSE/Nasdaq-Aktienuniversums geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
     st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
@@ -5520,7 +5867,8 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     bL = br_valid.iloc[-1]
     bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
     intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
-    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({br.attrs.get("breadth_universe_loaded", len(close_frame.columns))} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
+    loaded_for_label = br.attrs.get("breadth_universe_loaded", loaded_fallback)
+    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({loaded_for_label} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
 
     kb1, kb2, kb3, kb4, kb5 = st.columns(5)
     mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
@@ -6993,12 +7341,20 @@ def _tab_aktienbewertung():
     _init_workspace_state()
     _render_section_header("📋", "Aktienbewertung", "Fundamentals · Technik · Chartverhalten")
 
+    lookback_days = st.radio(
+        "Lookback",
+        options=[300, 500],
+        index=1,
+        horizontal=True,
+        key="stock_lookback_days",
+        help="Bestimmt, wie viele Kalendertage Historie für die Analyse geladen werden.",
+    )
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
 
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker)
+        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
         spx_df = load_sp500_for_rs()
         rs_universe = load_cached_universe_closes_for_rs()
 
@@ -7008,7 +7364,7 @@ def _tab_aktienbewertung():
         except Exception:
             pass
         with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
-            df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker)
+            df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker, lookback_days=lookback_days)
 
     if spx_df is None or len(spx_df) < 120:
         try:
