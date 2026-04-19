@@ -7377,7 +7377,6 @@ def _tab_aktienbewertung():
         options=[300, 500],
         index=1,
         horizontal=True,
-        key="stock_lookback_days",
         help="Bestimmt, wie viele Kalendertage Historie für die Analyse geladen werden.",
     )
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
