@@ -7382,14 +7382,6 @@ def _tab_aktienbewertung():
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
-    lookback_days = st.radio(
-        "Lookback",
-        options=[300, 500],
-        index=1,
-        horizontal=True,
-        key="stock_lookback_days",
-        help="Bestimmt, wie viele Kalendertage Historie für die Analyse geladen werden.",
-    )
 
     with st.spinner(f"Lade {ticker} …"):
         df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
