@@ -4,7 +4,6 @@ Merged back into one app.py while keeping the refactor improvements.
 """
 
 import hashlib
-import html
 import hmac
 import io
 import json
@@ -43,383 +42,64 @@ PAGE_CONFIG = {
 }
 
 APP_CSS = """<style>
-@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Playfair+Display:wght@600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
 :root{
-  --bg:#f0f4f9;
-  --panel:#ffffff;
-  --panel-2:#f8fafc;
-  --panel-3:#f1f5f9;
-  --border:#e2e8f0;
-  --border-2:#cbd5e1;
-  --muted:#64748b;
-  --text:#0f172a;
-  --text-2:#334155;
-  --accent:#2563eb;
-  --accent-l:#eff6ff;
-  --accent-m:#bfdbfe;
-  --good:#16a34a;
-  --good-l:#f0fdf4;
-  --good-m:#bbf7d0;
-  --warn:#d97706;
-  --warn-l:#fffbeb;
-  --warn-m:#fde68a;
-  --bad:#dc2626;
-  --bad-l:#fef2f2;
-  --bad-m:#fecaca;
-  --shadow-sm:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.05);
-  --shadow:0 4px 12px rgba(0,0,0,.08),0 2px 4px rgba(0,0,0,.05);
-  --shadow-md:0 8px 24px rgba(0,0,0,.1),0 4px 8px rgba(0,0,0,.06);
-  --radius:14px;
-  --radius-sm:10px;
+  --bg:#0b1220;
+  --panel:#111827;
+  --panel-2:#0f172a;
+  --border:#1e293b;
+  --muted:#94a3b8;
+  --text:#e5eefb;
+  --accent:#06b6d4;
+  --good:#22c55e;
+  --warn:#f59e0b;
+  --bad:#ef4444;
 }
-html, body, [class*="css"] {font-family:'Lora',Georgia,serif;}
-.stApp{background-color:var(--bg);color:var(--text);font-family:'Lora',Georgia,serif}
-.main .block-container{padding-top:1.2rem;max-width:1240px}
-h1,h2,h3{font-family:'Playfair Display',Georgia,serif!important;letter-spacing:-0.01em}
-h1{font-size:1.75rem!important;font-weight:700!important;color:var(--text)!important;letter-spacing:-.02em}
-h2{font-size:1.2rem!important}
-h3{font-size:1.0rem!important}
-p, li, label, .stMarkdown, .stCaption {font-family:'Lora',Georgia,serif!important}
+html, body, [class*="css"] {font-family:'Inter',system-ui,sans-serif;}
+.stApp{background-color:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif}
+.main .block-container{padding-top:1.1rem;max-width:1220px}
+h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em}
+h1{font-size:1.85rem!important;font-weight:800!important;background:linear-gradient(135deg,#22d3ee,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+h2{font-size:1.25rem!important}
+h3{font-size:1.05rem!important}
+p, li, label, .stMarkdown, .stCaption {font-family:'Inter',system-ui,sans-serif!important}
 code, pre, .card-label, [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace!important}
-
-/* ── Metric cards ── */
-[data-testid="stMetric"]{
-  background:var(--panel);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:14px 16px;
-  box-shadow:var(--shadow-sm);
-  transition:box-shadow .2s,border-color .2s;
-}
-[data-testid="stMetric"]:hover{
-  box-shadow:var(--shadow);
-  border-color:var(--border-2);
-}
-[data-testid="stMetricLabel"]{color:var(--muted)!important;font-size:.72rem!important;text-transform:uppercase;letter-spacing:.08em}
+[data-testid="stMetric"]{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:0 0 0 1px rgba(255,255,255,.01) inset}
+[data-testid="stMetricLabel"]{color:#7c8aa0!important;font-size:.72rem!important;text-transform:uppercase;letter-spacing:.08em}
 [data-testid="stMetricValue"]{color:var(--text)!important;font-size:1.32rem!important;font-weight:700!important}
-
-/* ── Navigation tabs ── */
 .stTabs [data-baseweb="tab-list"]{gap:6px;background:transparent;flex-wrap:wrap}
-.stTabs [data-baseweb="tab"]{
-  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-sm);
-  color:var(--muted);padding:8px 14px;font-size:.86rem;font-family:'Lora',Georgia,serif;
-  transition:background .15s,color .15s,border-color .15s,box-shadow .15s;
-  box-shadow:var(--shadow-sm);
-}
-.stTabs [aria-selected="true"]{
-  background:var(--accent-l)!important;border-color:var(--accent-m)!important;color:var(--accent)!important;
-  font-weight:600!important;
-}
-
-/* ── Cards ── */
-.summary-hero,.change-card,.info-card,.workspace-card{
-  background:var(--panel);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:16px 18px;
-  box-shadow:var(--shadow);
-}
-.summary-hero{
-  padding:20px 22px;
-  background:linear-gradient(135deg,var(--accent-l),#f0f9ff);
-  border:1px solid var(--accent-m);
-  border-left:4px solid var(--accent);
-  box-shadow:var(--shadow);
-}
-.ampel-box{border-radius:var(--radius);padding:16px 20px;display:flex;align-items:center;gap:16px}
+.stTabs [data-baseweb="tab"]{background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--muted);padding:8px 14px;font-size:.86rem}
+.stTabs [aria-selected="true"]{background:#06b6d415;border-color:#0891b2;color:#67e8f9}
+.summary-hero,.change-card,.info-card,.workspace-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
+.summary-hero{padding:18px 20px;background:linear-gradient(135deg,rgba(6,182,212,.08),rgba(59,130,246,.06))}
+.ampel-box{border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px}
 .ampel-dot{width:48px;height:48px;border-radius:50%;flex-shrink:0}
-
-/* ── Check items ── */
-.check-item{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.check-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
 .check-item:last-child{border-bottom:none}
 .check-icon{width:22px;height:22px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.check-ok  {background:var(--good-l);border:1.5px solid var(--good-m);color:var(--good)}
-.check-fail{background:var(--bad-l); border:1.5px solid var(--bad-m); color:var(--bad)}
-.check-warn{background:var(--warn-l);border:1.5px solid var(--warn-m);color:var(--warn)}
-
-/* ── Cards inner layout ── */
+.check-ok{background:#22c55e20;border:1.5px solid #22c55e50;color:var(--good)}
+.check-fail{background:#ef444420;border:1.5px solid #ef444450;color:var(--bad)}
+.check-warn{background:#f59e0b20;border:1.5px solid #f59e0b50;color:var(--warn)}
 .info-card,.workspace-card{margin-bottom:12px}
-.card-label{font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
-.mini-help{font-size:.76rem;color:var(--muted);line-height:1.45;margin-top:6px}
-.hero-title{font-size:1.3rem;font-weight:700;font-family:'Playfair Display',Georgia,serif;color:var(--text);margin-bottom:4px;letter-spacing:-.01em}
-.hero-subtitle{font-size:.85rem;color:var(--muted);margin-bottom:14px}
-.hero-action{font-size:.93rem;font-weight:700;padding:10px 14px;border-radius:var(--radius-sm);margin-top:12px;letter-spacing:.01em}
-.hero-good{background:var(--good-l);color:var(--good);border:1px solid var(--good-m)}
-.hero-warn{background:var(--warn-l);color:var(--warn);border:1px solid var(--warn-m)}
-.hero-bad {background:var(--bad-l); color:var(--bad); border:1px solid var(--bad-m)}
-
-/* ── Change cards ── */
-.change-card{
-  padding:14px 16px;
-  border-left:3px solid var(--accent);
-  transition:transform .15s,box-shadow .15s;
-}
-.change-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md)}
-.change-title{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.card-label{font-size:.7rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.mini-help{font-size:.76rem;color:#7c8aa0;line-height:1.45;margin-top:6px}
+.hero-title{font-size:1.25rem;font-weight:800;color:var(--text);margin-bottom:4px}
+.hero-subtitle{font-size:.9rem;color:var(--muted);margin-bottom:14px}
+.hero-action{font-size:.95rem;font-weight:700;padding:10px 12px;border-radius:10px;margin-top:10px}
+.hero-good{background:#22c55e18;color:#86efac;border:1px solid #22c55e40}
+.hero-warn{background:#f59e0b18;color:#fcd34d;border:1px solid #f59e0b40}
+.hero-bad{background:#ef444418;color:#fca5a5;border:1px solid #ef444440}
+.change-card{padding:14px 16px}
+.change-title{font-size:.72rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
 .change-value{font-size:1rem;font-weight:700;color:var(--text)}
 .change-detail{font-size:.8rem;color:var(--muted);margin-top:4px;line-height:1.35}
-
-/* ── Custom KPI cards (colored metrics) ── */
-.kpi-card{
-  background:var(--panel);
-  border:1px solid var(--border);
-  border-radius:var(--radius);
-  padding:14px 16px;
-  box-shadow:var(--shadow-sm);
-  transition:box-shadow .2s,border-color .2s,transform .15s;
-  height:100%;
-}
-.kpi-card:hover{transform:translateY(-1px);box-shadow:var(--shadow);border-color:var(--border-2)}
-.kpi-card.kpi-warn{background:var(--warn-l);border-color:var(--warn-m)}
-.kpi-card.kpi-bad {background:var(--bad-l); border-color:var(--bad-m)}
-.kpi-card.kpi-good{background:var(--good-l);border-color:var(--good-m)}
-.kpi-label  {font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.09em;font-family:'JetBrains Mono',monospace;margin-bottom:6px}
-.kpi-value  {font-size:1.28rem;font-weight:700;color:var(--text);font-family:'JetBrains Mono',monospace;letter-spacing:-.01em;line-height:1.2}
-.kpi-delta  {font-size:.78rem;margin-top:5px;font-weight:600}
-.kpi-caption{font-size:.71rem;color:var(--muted);margin-top:6px;line-height:1.35}
-
-/* ── Section headers ── */
-.section-header{
-  display:flex;align-items:center;gap:10px;
-  padding:4px 0 10px;
-  border-bottom:1px solid var(--border);
-  margin-bottom:18px;margin-top:2px;
-}
-.section-header-icon {font-size:1.05rem}
-.section-header-title{font-size:.95rem;font-weight:700;font-family:'Playfair Display',Georgia,serif;color:var(--text);letter-spacing:-.01em}
-.section-header-sub  {font-size:.76rem;color:var(--muted);margin-left:auto}
-
-/* ── KPI explainer ── */
-.kpi-explainer{background:var(--panel-3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:.8rem;color:var(--muted)}
-
-/* ── Pills ── */
-.pill-wrap{display:flex;flex-wrap:wrap;gap:6px}
-.pill{
-  display:inline-flex;align-items:center;
-  padding:4px 10px;border-radius:999px;
-  background:var(--panel-3);border:1px solid var(--border);
-  color:var(--text-2);font-size:.8rem;
-  transition:background .15s,border-color .15s;
-}
-.pill:hover{background:var(--accent-l);border-color:var(--accent-m);color:var(--accent)}
+.kpi-explainer{background:rgba(15,23,42,.85);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:.8rem;color:var(--muted)}
+.pill-wrap{display:flex;flex-wrap:wrap;gap:8px}
+.pill{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#0f172a;border:1px solid var(--border);color:var(--text);font-size:.82rem}
 .workspace-note{font-size:.82rem;color:var(--muted);line-height:1.45}
-
-/* ── Breadth track ── */
 .breadth-track{height:10px;border-radius:5px;background:var(--border);position:relative;overflow:hidden;margin:8px 0}
-.breadth-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#16a34a,#d97706,#dc2626);transition:width .5s}
-
-/* ── Sidebar ── */
-.sidebar-status-badge{
-  display:flex;align-items:center;gap:8px;
-  padding:8px 12px;border-radius:var(--radius-sm);
-  background:var(--panel-3);border:1px solid var(--border);
-  margin-bottom:8px;
-}
-.sidebar-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
-
-/* ── DataFrames ── */
-.stDataFrame{border-radius:var(--radius)!important;overflow:hidden}
-.stDataFrame thead tr th{
-  background:var(--panel-3)!important;font-size:.73rem!important;
-  text-transform:uppercase;letter-spacing:.05em;color:var(--muted)!important;
-}
-.stDataFrame tbody tr:hover td{background:var(--accent-l)!important}
-
-/* ── Divider ── */
+.breadth-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444);transition:width .5s}
 hr{border:none;border-top:1px solid var(--border);margin:1rem 0}
-
-/* ── Input fields ── */
-[data-baseweb="input"],[data-baseweb="textarea"]{
-  background:var(--panel)!important;
-  border:1.5px solid var(--border)!important;
-  border-radius:var(--radius-sm)!important;
-}
-[data-baseweb="input"]:focus-within,[data-baseweb="textarea"]:focus-within{
-  border-color:var(--accent)!important;
-  box-shadow:0 0 0 3px var(--accent-l)!important;
-}
-[data-baseweb="input"] input,
-[data-baseweb="textarea"] textarea,
-[data-testid="stTextInput"] input,
-[data-testid="stNumberInput"] input,
-[data-testid="stTextArea"] textarea,
-[data-testid="stDateInput"] input{
-  background:var(--panel)!important;
-  color:var(--text)!important;
-  font-family:'Lora',Georgia,serif!important;
-}
-[data-testid="stNumberInput"] button{
-  background:var(--panel-3)!important;
-  color:var(--text)!important;
-  border-color:var(--border)!important;
-}
-
-/* ── Select / Multiselect ── */
-[data-baseweb="select"]>div{
-  background:var(--panel)!important;
-  border:1.5px solid var(--border)!important;
-  border-radius:var(--radius-sm)!important;
-  color:var(--text)!important;
-}
-[data-baseweb="select"] span,[data-baseweb="select"] div{color:var(--text)!important}
-[data-baseweb="select"]>div:focus-within{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-l)!important}
-[data-baseweb="menu"],[data-baseweb="popover"]{background:var(--panel)!important;border:1px solid var(--border)!important;box-shadow:var(--shadow-md)!important}
-[data-baseweb="option"]{background:var(--panel)!important;color:var(--text)!important}
-[data-baseweb="option"]:hover{background:var(--accent-l)!important;color:var(--accent)!important}
-[data-testid="stMultiSelect"] [data-baseweb="tag"]{background:var(--accent-l)!important;color:var(--accent)!important;border:1px solid var(--accent-m)!important}
-
-/* ── Buttons ── */
-.stButton>button,.stDownloadButton>button,.stFormSubmitButton>button{
-  background:var(--panel)!important;
-  color:var(--text)!important;
-  border:1.5px solid var(--border)!important;
-  border-radius:var(--radius-sm)!important;
-  font-family:'Lora',Georgia,serif!important;
-  box-shadow:var(--shadow-sm)!important;
-  transition:all .15s!important;
-}
-.stButton>button:hover,.stDownloadButton>button:hover{
-  background:var(--panel-3)!important;
-  border-color:var(--accent-m)!important;
-  color:var(--accent)!important;
-}
-.stButton>button[kind="primary"],.stFormSubmitButton>button{
-  background:var(--accent)!important;
-  color:#ffffff!important;
-  border-color:var(--accent)!important;
-}
-.stButton>button[kind="primary"]:hover{background:#1d4ed8!important}
-
-/* ── Segmented control (Navigation) ── */
-[data-testid="stSegmentedControl"]{
-  background:var(--panel)!important;
-  border:1.5px solid var(--border)!important;
-  border-radius:var(--radius-sm)!important;
-  padding:3px!important;
-  box-shadow:var(--shadow-sm)!important;
-}
-[data-testid="stSegmentedControl"] button{
-  color:var(--text-2)!important;
-  background:transparent!important;
-  font-family:'Lora',Georgia,serif!important;
-  border-radius:8px!important;
-}
-[data-testid="stSegmentedControl"] button[aria-checked="true"],
-[data-testid="stSegmentedControl"] button[aria-pressed="true"],
-[data-testid="stSegmentedControl"] button[data-selected="true"]{
-  background:var(--accent)!important;
-  color:#ffffff!important;
-  font-weight:600!important;
-}
-[data-testid="stSegmentedControl"] p,[data-testid="stSegmentedControl"] span{color:inherit!important}
-
-/* ── Radio buttons (horizontal pills like S&P 500) ── */
-[data-testid="stRadio"]>div{
-  background:var(--panel)!important;
-  border:1.5px solid var(--border)!important;
-  border-radius:var(--radius-sm)!important;
-  padding:3px!important;
-  box-shadow:var(--shadow-sm)!important;
-  gap:2px!important;
-}
-[data-testid="stRadio"] label{
-  color:var(--text-2)!important;
-  background:transparent!important;
-  font-family:'Lora',Georgia,serif!important;
-  border-radius:8px!important;
-  padding:5px 12px!important;
-  cursor:pointer!important;
-  transition:all .15s!important;
-}
-[data-testid="stRadio"] label:has(input:checked){
-  background:var(--accent)!important;
-  color:#ffffff!important;
-  font-weight:600!important;
-}
-[data-testid="stRadio"] label:hover{background:var(--accent-l)!important;color:var(--accent)!important}
-[data-testid="stRadio"] input[type="radio"]{display:none!important}
-[data-testid="stRadio"] p{color:inherit!important;font-size:.88rem!important}
-[data-testid="stRadio"] div[role="radiogroup"]{gap:0!important}
-
-/* ── Expanders ── */
-[data-testid="stExpander"]{
-  border:1px solid var(--border)!important;
-  border-radius:var(--radius)!important;
-  background:var(--panel)!important;
-  box-shadow:var(--shadow-sm)!important;
-  overflow:hidden!important;
-}
-[data-testid="stExpander"]>details{background:var(--panel)!important}
-[data-testid="stExpander"]>details>summary{
-  color:var(--text)!important;
-  background:var(--panel)!important;
-  font-family:'Lora',Georgia,serif!important;
-  padding:12px 16px!important;
-}
-[data-testid="stExpander"]>details>summary *{color:var(--text)!important}
-[data-testid="stExpander"]>details>summary:hover{background:var(--panel-3)!important}
-[data-testid="stExpander"]>details[open]>summary{border-bottom:1px solid var(--border)!important}
-[data-testid="stExpanderDetails"]{background:var(--panel)!important;padding:12px 16px!important}
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"]{background:var(--panel)!important;border-right:1px solid var(--border)!important}
-[data-testid="stSidebar"] *{color:var(--text)!important}
-[data-testid="stSidebar"] [data-baseweb="input"]>div{background:var(--panel-3)!important}
-[data-testid="stSidebar"] input,[data-testid="stSidebar"] textarea{background:var(--panel-3)!important;color:var(--text)!important}
-
-/* ── Slider ── */
-[data-testid="stSlider"] [data-baseweb="slider"] div{background:var(--border)!important}
-[data-testid="stSlider"] [data-baseweb="slider"] [role="slider"]{background:var(--accent)!important;border-color:var(--accent)!important}
-
-/* ── Checkbox / Radio (standard) ── */
-[data-baseweb="checkbox"] label,[data-baseweb="radio"] label{color:var(--text)!important}
-[data-testid="stCheckbox"] span{color:var(--text)!important}
-[data-testid="stCheckbox"] p{color:var(--text)!important}
-
-/* ── Info / Warning / Error / Success boxes ── */
-[data-testid="stAlert"]{border-radius:var(--radius-sm)!important}
-[data-testid="stAlert"] *{color:inherit!important}
-
-/* ── General text override (catch-all for very light text) ── */
-.stMarkdown p,.stMarkdown li,.stMarkdown span{color:var(--text)!important}
-[data-testid="stText"]{color:var(--text)!important}
-[data-testid="stWidgetLabel"] p,[data-testid="stWidgetLabel"] label{color:var(--text)!important}
-
-/* ── Override Streamlit's injected theme CSS variables ── */
-:root,[data-theme="light"],[data-theme="dark"]{
-  --background-color:#f0f4f9!important;
-  --secondary-background-color:#ffffff!important;
-  --text-color:#0f172a!important;
-}
-
-/* ── Form container ── */
-[data-testid="stForm"]{
-  background:var(--panel)!important;
-  border:1px solid var(--border)!important;
-  border-radius:var(--radius)!important;
-  padding:16px!important;
-}
-
-/* ── All buttons (nuclear override) ── */
-button:not([data-testid="stSegmentedControl"] button):not([data-testid="stRadio"] button){
-  background-color:#ffffff!important;
-  color:#0f172a!important;
-  border:1.5px solid #e2e8f0!important;
-}
-.stButton>button{background:#ffffff!important;color:#0f172a!important;border:1.5px solid #e2e8f0!important;font-family:'Lora',Georgia,serif!important}
-.stButton>button:hover{background:#eff6ff!important;color:#2563eb!important;border-color:#bfdbfe!important}
-[data-testid="stFormSubmitButton"]>button{background:#2563eb!important;color:#ffffff!important;border-color:#2563eb!important;font-weight:600!important}
-[data-testid="stFormSubmitButton"]>button:hover{background:#1d4ed8!important}
-
-/* ── All input backgrounds ── */
-input:not([type="radio"]):not([type="checkbox"]),textarea,select{
-  background-color:#ffffff!important;
-  color:#0f172a!important;
-  border-color:#e2e8f0!important;
-}
-
-/* ── Caption text ── */
-[data-testid="stCaptionContainer"] p{color:#64748b!important;font-size:.78rem!important}
 </style>"""
 
 def configure_page() -> None:
@@ -429,6 +109,14 @@ def configure_page() -> None:
 WORKSPACE_FILE = "user_workspace.json"
 WORKSPACE_SCOPE_DEFAULT = "default"
 DEFAULT_FAVORITES = ["NVDA", "MSFT", "AAPL", "META", "AMZN", "PLTR", "LLY", "TSLA"]
+RS_SOURCE_CSV_LATEST = "csv_latest"
+RS_SOURCE_COMPUTED = "computed"
+RS_SOURCE_LABELS = {
+    RS_SOURCE_CSV_LATEST: "CSV aus GitHub (Standard)",
+    RS_SOURCE_COMPUTED: "DB / Live-Berechnung",
+}
+RS_OUTPUT_DIR_NAME = "output"
+RS_OUTPUT_FILE_NAME = "rs_stocks.csv"
 METRIC_GLOSSARY = {
     "Dist.-Tage": "Verkaufstage mit höherem Volumen als am Vortag. Viele Distribution Days sprechen für institutionellen Abgabedruck.",
     "21-EMA": "Abstand zur 21-EMA in ATR. Je weiter der Index darüber liegt, desto eher ist er kurzfristig überdehnt.",
@@ -497,7 +185,7 @@ def _default_portfolio_settings():
         "max_depot_loss_low": 8.0,
         "max_depot_loss_high": 12.0,
         "curve_start_date": "",
-        "rs_rating_source": "computed",
+        "rs_rating_source": RS_SOURCE_CSV_LATEST,
     }
 
 def _workspace_payload():
@@ -836,16 +524,15 @@ def _ampel_phase_label(phase: str) -> str:
 def _ampel_reason_line(L) -> str:
     phase = str(L.get('Ampel_Phase', '')).lower()
     anchor = L.get('Anchor_Date')
-    ss_date = L.get('Startschuss_Date')
     ss_low = L.get('Startschuss_Low', np.nan)
     floor = L.get('Floor_Mark', np.nan)
     if phase == 'gelb':
         if anchor and pd.notna(ss_low):
-            return f'Trendwende-Ampel: GELB — Startschuss seit {ss_date or anchor} · Startschuss-Tief {float(ss_low):,.2f}'
+            return f'Trendwende-Ampel: GELB — Startschuss aktiv seit {anchor} · Startschuss-Tief {float(ss_low):,.2f}'
         return 'Trendwende-Ampel: GELB — Startschuss aktiv'
     if phase == 'gruen':
         if pd.notna(ss_low):
-            return f'Trendwende-Ampel: GRÜN — Startschuss vom {ss_date or "—"} bestätigt · Absicherung über {float(ss_low):,.2f}'
+            return f'Trendwende-Ampel: GRÜN — Startschuss bestätigt · Absicherung über {float(ss_low):,.2f}'
         return 'Trendwende-Ampel: GRÜN — Startschuss bestätigt'
     if phase == 'aufwaertstrend':
         return 'Trendwende-Ampel: AUFWÄRTSTREND — MA-Ordnung bestätigt'
@@ -860,10 +547,8 @@ def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, v
     phase = str(phase or "").lower()
     breadth_mode = str(breadth_mode or "").lower()
     vol_regime = str(vol_regime or "").lower()
-    if phase == "rot":
+    if phase == "rot" or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
         return "Defensiv", "bad", "Ampel rot. Risiko reduzieren, keine aggressiven Neueinstiege und bestehende Positionen kritisch prüfen."
-    if phase not in {"gruen", "aufwaertstrend"} and (warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress"):
-        return "Defensiv", "bad", "Umfeld defensiv. Risiko reduzieren, nur selektiv agieren und bestehende Positionen enger managen."
     if phase == "gelb":
         if warning_count <= 2 and breadth_mode != "schutz" and vol_regime not in {"stress", "risk"}:
             return "Startschuss", "warn", "Startschuss aktiv. Erste Pilotpositionen sind erlaubt, aber nur selektiv und mit enger Risikokontrolle über das Startschuss-Tief."
@@ -877,13 +562,6 @@ def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, v
     if warning_count >= 2 or breadth_mode == "neutral" or vol_regime in {"risk", "vorsicht"}:
         return "Neutral", "warn", "Selektiv bleiben. Nur A-Setups und eher kleine Einstiege."
     return "Konstruktiv", "good", "Markt konstruktiv. Führende Aktien beobachten und Risiko schrittweise erhöhen."
-
-
-def _is_ma_order_ok(ema21, sma50, sma200, tol: float = 1e-8) -> bool:
-    vals = [ema21, sma50, sma200]
-    if any(pd.isna(v) for v in vals):
-        return False
-    return (float(ema21) >= float(sma50) - tol) and (float(sma50) >= float(sma200) - tol)
 
 def _build_market_reasons(L, warning_count: int, breadth_mode: str, vol_latest: pd.Series):
     reasons = []
@@ -970,34 +648,6 @@ def _render_market_glossary(keys):
     if items:
         st.markdown('<div class="kpi-explainer">' + "<br>".join(items) + "</div>", unsafe_allow_html=True)
 
-
-def _render_kpi_card(label: str, value: str, delta: str = "", tone: str = "neutral", caption: str = "") -> None:
-    tone_cls = {"good": " kpi-good", "warn": " kpi-warn", "bad": " kpi-bad"}.get(tone, "")
-    delta_color = {"good": "var(--good)", "warn": "var(--warn)", "bad": "var(--bad)"}.get(tone, "var(--muted)")
-    delta_html = f'<div class="kpi-delta" style="color:{delta_color};">{delta}</div>' if delta else ""
-    caption_html = f'<div class="kpi-caption">{caption}</div>' if caption else ""
-    st.markdown(
-        f'<div class="kpi-card{tone_cls}">'
-        f'<div class="kpi-label">{label}</div>'
-        f'<div class="kpi-value">{value}</div>'
-        f'{delta_html}'
-        f'{caption_html}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _render_section_header(icon: str, title: str, subtitle: str = "") -> None:
-    sub_html = f'<span class="section-header-sub">{subtitle}</span>' if subtitle else ""
-    st.markdown(
-        f'<div class="section-header">'
-        f'<span class="section-header-icon">{icon}</span>'
-        f'<span class="section-header-title">{title}</span>'
-        f'{sub_html}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
 def _simple_position_health(position: dict):
     ticker = position.get("ticker", "")
     if not ticker:
@@ -1051,15 +701,15 @@ def _get_portfolio_settings() -> dict:
         except Exception:
             settings[key] = fallback
     settings["curve_start_date"] = str(settings.get("curve_start_date", "") or "").strip()
-    rs_source = str(settings.get("rs_rating_source", "computed") or "computed").strip().lower()
-    settings["rs_rating_source"] = "csv_latest" if rs_source == "csv_latest" else "computed"
+    rs_source = str(settings.get("rs_rating_source", RS_SOURCE_CSV_LATEST) or RS_SOURCE_CSV_LATEST).strip().lower()
+    settings["rs_rating_source"] = RS_SOURCE_CSV_LATEST if rs_source == RS_SOURCE_CSV_LATEST else RS_SOURCE_COMPUTED
     return settings
 
 
 def _get_rs_rating_source_setting() -> str:
     settings = _get_portfolio_settings()
-    source = str(settings.get("rs_rating_source", "computed") or "computed").strip().lower()
-    return "csv_latest" if source == "csv_latest" else "computed"
+    source = str(settings.get("rs_rating_source", RS_SOURCE_CSV_LATEST) or RS_SOURCE_CSV_LATEST).strip().lower()
+    return RS_SOURCE_CSV_LATEST if source == RS_SOURCE_CSV_LATEST else RS_SOURCE_COMPUTED
 
 def _save_portfolio_settings(settings: dict) -> None:
     merged = dict(_default_portfolio_settings())
@@ -1295,7 +945,6 @@ def _beta_from_close_series(close: pd.Series, benchmark_close: pd.Series, window
     except Exception:
         return np.nan
 
-
 @st.cache_data(ttl=900, show_spinner=False)
 def _fetch_close_history(symbol: str, start_date, end_date):
     symbol = _normalize_single_ticker(symbol)
@@ -1332,28 +981,6 @@ def _fetch_close_history(symbol: str, start_date, end_date):
         close = close[(close.index >= start_ts) & (close.index <= end_ts)]
         return close
     return pd.Series(dtype=float)
-
-
-def _beta_from_profile_prices(close_series: pd.Series | None, end_date=None, lookback_days: int = 260) -> float:
-    try:
-        if close_series is None:
-            return np.nan
-        close = pd.to_numeric(close_series, errors="coerce").dropna()
-        if len(close) < 20:
-            return np.nan
-        close.index = pd.to_datetime(close.index).normalize()
-        close = close[~close.index.duplicated(keep="last")].sort_index()
-        if close.empty:
-            return np.nan
-        end_ts = pd.Timestamp(end_date or close.index[-1]).normalize()
-        start_ts = max(close.index[0], end_ts - timedelta(days=lookback_days))
-        close = close[(close.index >= start_ts) & (close.index <= end_ts)]
-        if len(close) < 20:
-            return np.nan
-        benchmark = _fetch_close_history("^GSPC", start_ts, end_ts)
-        return _beta_from_close_series(close, benchmark)
-    except Exception:
-        return np.nan
 
 @st.cache_data(ttl=900, show_spinner=False)
 def _portfolio_symbol_metrics(ticker: str) -> dict:
@@ -2050,14 +1677,14 @@ def _render_portfolio_72_area():
         if "sp500_index" in auto_curve and auto_curve["sp500_index"].notna().any():
             fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["sp500_index"], mode="lines", name="S&P 500 Index"))
         fig_auto.update_layout(
-            template="plotly_white",
-            paper_bgcolor="#ffffff",
-            plot_bgcolor="#f8fafc",
+            template="plotly_dark",
+            paper_bgcolor="#0f172a",
+            plot_bgcolor="#0f172a",
             height=380,
             margin=dict(l=10, r=10, t=20, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            yaxis=dict(title="Index (Start = 100)", gridcolor="#e2e8f0"),
-            xaxis=dict(title="", gridcolor="#e2e8f0"),
+            yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
+            xaxis=dict(title="", gridcolor="#1e293b"),
         )
         st.plotly_chart(fig_auto, use_container_width=True, key="pf_curve_chart_auto")
         auto_display = auto_curve[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]].copy()
@@ -2102,81 +1729,26 @@ def _render_portfolio_72_area():
 
 def _render_workspace_sidebar():
     with st.sidebar:
-        st.markdown(
-            '<div style="font-size:1rem;font-weight:800;color:#0f172a;letter-spacing:-.03em;margin-bottom:10px;">'
-            '🚦 Arbeitsbereich</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Market status badge (populated after first market tab load)
-        ampel_phase = st.session_state.get("_sidebar_ampel_phase", "")
-        ampel_colors = {
-            "rot": "#ef4444", "gelb": "#f59e0b", "gruen": "#22c55e",
-            "aufwaertstrend": "#3b82f6", "neutral": "#64748b",
-        }
-        ampel_labels = {
-            "rot": "ROT — Abwarten", "gelb": "GELB — Startschuss",
-            "gruen": "GRÜN — Bestätigung", "aufwaertstrend": "Aufwärtstrend ↑",
-            "neutral": "Neutral",
-        }
-        if ampel_phase and ampel_phase in ampel_colors:
-            color = ampel_colors[ampel_phase]
-            label = ampel_labels[ampel_phase]
-            st.markdown(
-                f'<div class="sidebar-status-badge">'
-                f'<div class="sidebar-dot" style="background:{color};box-shadow:0 0 8px {color}80;"></div>'
-                f'<span style="font-size:.8rem;font-weight:700;color:{color};">{label}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-        st.markdown(
-            f'<div style="font-size:.7rem;color:#4a5568;margin-bottom:10px;">'
-            f'Speicher: {_workspace_backend_label()}</div>',
-            unsafe_allow_html=True,
-        )
-
+        st.markdown("### Arbeitsbereich")
+        st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
         if _private_area_enabled():
-            unlocked = _is_private_unlocked()
-            dot_color = "#22c55e" if unlocked else "#4a5568"
-            state_label = "entsperrt" if unlocked else "gesperrt"
-            st.markdown(
-                f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">'
-                f'<div style="width:7px;height:7px;border-radius:50%;background:{dot_color};"></div>'
-                f'<span style="font-size:.75rem;color:#64748b;">Privater Bereich {state_label}</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            if unlocked:
+            state_label = "entsperrt" if _is_private_unlocked() else "gesperrt"
+            st.caption(f"Privater Bereich: {state_label}")
+            if _is_private_unlocked():
                 if st.button("🔒 Sperren", use_container_width=True, key="sidebar_lock_private"):
                     _lock_private_area()
                     st.rerun()
         if not _is_private_unlocked():
-            st.markdown(
-                '<div style="font-size:.8rem;color:#4a5568;padding:8px 0;line-height:1.45;">'
-                'Watchlist und Depot sind gesperrt.</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind aktuell ausgeblendet.</div>', unsafe_allow_html=True)
             return
-
         _init_workspace_state()
-        st.markdown('<div class="card-label" style="margin-top:4px;">Watchlist</div>', unsafe_allow_html=True)
         watchlist = st.session_state.get("watchlist", [])
         if watchlist:
-            st.markdown(
-                '<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="workspace-note">Noch keine Watchlist.</div>', unsafe_allow_html=True)
-
+            st.markdown('<div class="workspace-note">Noch keine Watchlist gespeichert.</div>', unsafe_allow_html=True)
         positions = st.session_state.get("positions", [])
-        recents = st.session_state.get("recent_tickers", [])
-        st.markdown(
-            f'<div style="font-size:.73rem;color:#4a5568;margin-top:10px;">'
-            f'{len(positions)} Positionen · {len(recents)} zuletzt genutzt</div>',
-            unsafe_allow_html=True,
-        )
+        st.caption(f"{len(positions)} Positionen · {len(st.session_state.get('recent_tickers', []))} zuletzt genutzt")
 
 # ===== From market_data.py =====
 logger = logging.getLogger(__name__)
@@ -2422,97 +1994,6 @@ def _parse_nasdaq_listed_text(text):
     return _normalize_ticker_list(symbols)
 
 
-def _parse_nasdaq_traded_text(text):
-    """Parse Nasdaq Trader nasdaqtraded.txt and keep only common stocks."""
-    try:
-        df = pd.read_csv(io.StringIO(text), sep="|", dtype=str, engine="python")
-    except Exception:
-        return []
-    if df is None or df.empty:
-        return []
-
-    df.columns = [str(c).strip() for c in df.columns]
-    first_col = df.columns[0]
-    df = df[~df[first_col].fillna("").str.startswith("File Creation Time", na=False)].copy()
-    df = df.dropna(how="all")
-    lower_cols = {str(c).strip().lower(): c for c in df.columns}
-
-    symbol_col = lower_cols.get("symbol")
-    if symbol_col is None:
-        return []
-
-    etf_col = lower_cols.get("etf")
-    test_col = lower_cols.get("test issue")
-    nextshares_col = lower_cols.get("nextshares")
-    name_col = lower_cols.get("security name")
-
-    if etf_col is not None:
-        df[etf_col] = df[etf_col].fillna("").astype(str).str.strip().str.upper()
-        df = df[df[etf_col] != "Y"]
-    if test_col is not None:
-        df[test_col] = df[test_col].fillna("").astype(str).str.strip().str.upper()
-        df = df[df[test_col] != "Y"]
-    if nextshares_col is not None:
-        df[nextshares_col] = df[nextshares_col].fillna("").astype(str).str.strip().str.upper()
-        df = df[df[nextshares_col] != "Y"]
-
-    def _looks_like_equity_name(name):
-        low = f" {str(name or '').lower()} "
-        reject_patterns = (
-            r"\bpreferred\b",
-            r"\bdepositary\b",
-            r"\bwarrants?\b",
-            r"\brights?\b",
-            r"\bunits?\b",
-            r"\bnotes?\b",
-            r"\bbonds?\b",
-            r"\bdebentures?\b",
-            r"\betn\b",
-            r"\betf\b",
-            r"\bclosed\s+end\b",
-            r"\bmutual\s+fund\b",
-            r"\btrust\s+units?\b",
-            r"\bbeneficial\s+interest\b",
-            r"\badr\b",
-            r"\badrs\b",
-        )
-        return low.strip() and not any(re.search(p, low) for p in reject_patterns)
-
-    symbols = []
-    for _, row in df.iterrows():
-        name = row.get(name_col, "") if name_col is not None else ""
-        if name_col is not None and not _looks_like_equity_name(name):
-            continue
-        symbol = str(row.get(symbol_col, "") or "").strip().upper()
-        if symbol and symbol != "NAN":
-            symbols.append(symbol)
-    return _normalize_ticker_list(symbols)
-
-
-def _get_common_stocks_from_nasdaq_traded_http():
-    """Primary universe source: nasdaqtraded.txt (exclude ETFs + test issues)."""
-    urls = [
-        "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt",
-        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt",
-        "https://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqtraded.txt",
-        "http://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqtraded.txt",
-    ]
-    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/plain,*/*"}
-    best = []
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=30, headers=headers)
-            resp.raise_for_status()
-            tickers = _parse_nasdaq_traded_text(resp.text)
-            if len(tickers) > len(best):
-                best = tickers
-            if len(tickers) >= 2500:
-                return tickers
-        except Exception:
-            continue
-    return best if len(best) >= 1000 else []
-
-
 def _get_nasdaq_stocks_from_nasdaq_trader_ftp():
     buf = io.BytesIO()
     ftp = None
@@ -2680,11 +2161,6 @@ def get_nasdaq_stock_tickers():
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_app_stock_universe_tickers():
     """Combined internal stock universe for cache coverage, diagnostics and portfolio support."""
-    traded = _normalize_ticker_list(_get_common_stocks_from_nasdaq_traded_http())
-    if len(traded) >= 2500:
-        return traded
-
-    # Fallback to previous approach when nasdaqtraded.txt is unavailable.
     nyse = _normalize_ticker_list(get_nyse_stock_tickers())
     nasdaq = _normalize_ticker_list(get_nasdaq_stock_tickers())
 
@@ -2867,33 +2343,6 @@ def _read_secret_value(name: str) -> str:
     return value or ""
 
 
-def _info_value_missing(value) -> bool:
-    if value is None:
-        return True
-    try:
-        if pd.isna(value):
-            return True
-    except Exception:
-        pass
-    text = str(value).strip()
-    return text == "" or text.upper() == "N/A" or text.lower() == "nan"
-
-
-def _clean_info_text(value: str, default: str = "—") -> str:
-    if _info_value_missing(value):
-        return default
-    return str(value).strip()
-
-
-def _merge_missing_info(base: dict | None, extra: dict | None) -> dict:
-    out = dict(base or {})
-    if isinstance(extra, dict):
-        for key, value in extra.items():
-            if key not in out or _info_value_missing(out.get(key)):
-                out[key] = value
-    return out
-
-
 @st.cache_data(ttl=86400, show_spinner=False)
 def _fetch_sec_ticker_cik_map():
     """Load SEC ticker→CIK mapping."""
@@ -3035,32 +2484,77 @@ def _fetch_quarterly_sec_companyfacts(ticker):
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_quarterly_fmp(ticker, fmp_key):
     """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters)."""
-    if not fmp_key: return None, "Kein API-Key"
+    if not fmp_key:
+        return None, "Kein API-Key"
     try:
         import json
-        url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}"
-        params = {"period": "quarter", "limit": 12, "apikey": fmp_key}
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code == 429: return None, f"Rate Limited (429)"
-        if r.status_code == 403: return None, f"Zugriff verweigert (403) — Domain evtl. geblockt"
-        if r.status_code == 401: return None, f"API-Key ungültig (401)"
-        if r.status_code != 200: return None, f"HTTP {r.status_code}"
-        data = json.loads(r.text)
-        if isinstance(data, dict) and "Error Message" in data:
-            return None, f"FMP Fehler: {data['Error Message'][:80]}"
-        if not data or not isinstance(data, list): return None, f"Leere Antwort (Typ: {type(data).__name__})"
-        out = {}; eps_vals = {}; rev_vals = {}
-        for item in data:
-            date_str = item.get("date", "")
-            if not date_str: continue
-            dt = pd.Timestamp(date_str)
-            eps = item.get("epsdiluted", item.get("epsDiluted"))
-            rev = item.get("revenue")
-            if eps is not None: eps_vals[dt] = float(eps)
-            if rev is not None: rev_vals[dt] = float(rev)
-        if eps_vals: out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
-        if rev_vals: out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
-        return (out if out else None), None
+        attempts = [
+            (
+                "stable",
+                "https://financialmodelingprep.com/stable/income-statement",
+                {"symbol": str(ticker or "").upper().strip(), "period": "quarter", "limit": 12, "apikey": fmp_key},
+            ),
+            (
+                "legacy",
+                f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}",
+                {"period": "quarter", "limit": 12, "apikey": fmp_key},
+            ),
+        ]
+        errors = []
+
+        for label, url, params in attempts:
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 429:
+                errors.append(f"{label}: Rate Limited (429)")
+                continue
+            if r.status_code == 403:
+                errors.append(f"{label}: Zugriff verweigert (403)")
+                continue
+            if r.status_code == 401:
+                errors.append(f"{label}: API-Key ungültig (401)")
+                continue
+            if r.status_code != 200:
+                errors.append(f"{label}: HTTP {r.status_code}")
+                continue
+
+            data = json.loads(r.text)
+            if isinstance(data, dict) and "Error Message" in data:
+                errors.append(f"{label}: {data['Error Message'][:120]}")
+                continue
+            if isinstance(data, str):
+                if data.strip():
+                    errors.append(f"{label}: {data[:120]}")
+                else:
+                    errors.append(f"{label}: Leere Antwort")
+                continue
+            if not data or not isinstance(data, list):
+                errors.append(f"{label}: Leere Antwort (Typ: {type(data).__name__})")
+                continue
+
+            out = {}
+            eps_vals = {}
+            rev_vals = {}
+            for item in data:
+                date_str = item.get("date", "")
+                if not date_str:
+                    continue
+                dt = pd.Timestamp(date_str)
+                eps = item.get("epsDiluted", item.get("epsdiluted", item.get("eps")))
+                rev = item.get("revenue")
+                if eps is not None:
+                    eps_vals[dt] = float(eps)
+                if rev is not None:
+                    rev_vals[dt] = float(rev)
+            if eps_vals:
+                out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
+            if rev_vals:
+                out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
+            if out:
+                endpoint_label = "FMP stable" if label == "stable" else "FMP legacy"
+                return out, endpoint_label
+            errors.append(f"{label}: Keine verwertbaren Quartalsdaten")
+
+        return None, " | ".join(errors) if errors else "Keine FMP-Quartalsdaten"
     except requests.exceptions.ConnectionError as e:
         return None, f"Verbindungsfehler: {str(e)[:60]}"
     except requests.exceptions.Timeout:
@@ -3069,192 +2563,8 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_yahoo_profile_snapshot(symbol: str):
-    """Lightweight Yahoo profile snapshot for sector/industry/beta/name fallbacks."""
-    def _extract_num(val):
-        if isinstance(val, dict):
-            raw = val.get("raw")
-            return raw if raw is not None else val.get("fmt")
-        return val
-
-    def _first_text(*values):
-        for value in values:
-            if not _info_value_missing(value):
-                return str(value).strip()
-        return None
-
-    def _build_snapshot(node: dict) -> dict:
-        asset = node.get("assetProfile", {}) or {}
-        summary_profile = node.get("summaryProfile", {}) or {}
-        fin = node.get("financialData", {}) or {}
-        price = node.get("price", {}) or {}
-        summary = node.get("summaryDetail", {}) or {}
-        stats = node.get("defaultKeyStatistics", {}) or {}
-
-        out = {}
-        sector = _first_text(
-            asset.get("sectorDisp"),
-            asset.get("sectorDisplayName"),
-            asset.get("sector"),
-            summary_profile.get("sector"),
-        )
-        industry = _first_text(
-            asset.get("industryDisp"),
-            asset.get("industryDisplayName"),
-            asset.get("industry"),
-            summary_profile.get("industry"),
-        )
-        short_name = _first_text(price.get("shortName"), price.get("longName"))
-        if sector:
-            out["sector"] = sector
-        if industry:
-            out["industry"] = industry
-        if short_name:
-            out["shortName"] = short_name
-        roe_val = _extract_num(fin.get("returnOnEquity"))
-        if roe_val is not None:
-            out["returnOnEquity"] = roe_val
-        profit_margin_val = _extract_num(fin.get("profitMargins"))
-        if profit_margin_val is None:
-            profit_margin_val = _extract_num(stats.get("profitMargins"))
-        if profit_margin_val is not None:
-            out["profitMargins"] = _safe_float(profit_margin_val, profit_margin_val)
-        beta_val = _extract_num(summary.get("beta"))
-        if beta_val is None:
-            beta_val = _extract_num(stats.get("beta"))
-        if beta_val is None:
-            beta_val = _extract_num(fin.get("beta"))
-        if beta_val is not None:
-            out["beta"] = _safe_float(beta_val, beta_val)
-        return out
-
-    try:
-        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-        params = {"modules": "assetProfile,financialData,price,summaryDetail,defaultKeyStatistics"}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, params=params, headers=headers, timeout=8)
-        resp.raise_for_status()
-        data = resp.json() or {}
-        result = ((data.get("quoteSummary", {}) or {}).get("result", []) or [])
-        if result:
-            snapshot = _build_snapshot(result[0] or {})
-            if snapshot:
-                return snapshot
-    except Exception as exc:
-        logger.debug("Yahoo profile API snapshot failed for %s: %s", symbol, exc)
-
-    try:
-        page_url = f"https://finance.yahoo.com/quote/{symbol}?p={symbol}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(page_url, headers=headers, timeout=8)
-        resp.raise_for_status()
-        pattern = rf'<script type="application/json"[^>]*data-url="https://query1\.finance\.yahoo\.com/v10/finance/quoteSummary/{re.escape(symbol)}\?[^"]*"[^>]*>(.*?)</script>'
-        match = re.search(pattern, resp.text)
-        if not match:
-            return {}
-        payload = json.loads(html.unescape(match.group(1)))
-        body = payload.get("body", "{}")
-        data = json.loads(body) if isinstance(body, str) else (body or {})
-        result = (((data.get("quoteSummary", {}) or {}).get("result", [])) or [])
-        if not result:
-            return {}
-        return _build_snapshot(result[0] or {})
-    except Exception as exc:
-        logger.debug("Yahoo profile page snapshot failed for %s: %s", symbol, exc)
-        return {}
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_fmp_profile_snapshot(symbol: str):
-    """FMP fallback for sector/industry/beta when Yahoo/yfinance are incomplete."""
-    api_key = _read_secret_value("FMP_API_KEY")
-    if not api_key:
-        return {}
-    try:
-        url = "https://financialmodelingprep.com/stable/profile"
-        params = {"symbol": symbol, "apikey": api_key}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, params=params, headers=headers, timeout=8)
-        resp.raise_for_status()
-        data = resp.json() or []
-        if not isinstance(data, list) or not data:
-            return {}
-        item = data[0] or {}
-        out = {}
-        sector = _clean_info_text(item.get("sector"), default="")
-        industry = _clean_info_text(item.get("industry"), default="")
-        short_name = _clean_info_text(item.get("companyName"), default="")
-        beta = _safe_float(item.get("beta"), np.nan)
-        if sector:
-            out["sector"] = sector
-        if industry:
-            out["industry"] = industry
-        if short_name:
-            out["shortName"] = short_name
-        if not np.isnan(beta):
-            out["beta"] = beta
-        return out
-    except Exception as exc:
-        logger.debug("FMP profile snapshot failed for %s: %s", symbol, exc)
-        return {}
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _fetch_fmp_fundamentals_snapshot(symbol: str):
-    """FMP fallback for ROE / profit margin when Yahoo is incomplete."""
-    api_key = _read_secret_value("FMP_API_KEY")
-    if not api_key:
-        return {}
-    try:
-        url = "https://financialmodelingprep.com/stable/ratios-ttm"
-        params = {"symbol": symbol, "apikey": api_key}
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, params=params, headers=headers, timeout=8)
-        resp.raise_for_status()
-        data = resp.json() or []
-        if not isinstance(data, list) or not data:
-            return {}
-        item = data[0] or {}
-        out = {}
-        roe = _safe_float(item.get("returnOnEquityTTM"), np.nan)
-        profit_margin = _safe_float(item.get("netProfitMarginTTM"), np.nan)
-        if not np.isnan(roe):
-            out["returnOnEquity"] = roe
-        if not np.isnan(profit_margin):
-            out["profitMargins"] = profit_margin
-        return out
-    except Exception as exc:
-        logger.debug("FMP fundamentals snapshot failed for %s: %s", symbol, exc)
-        return {}
-
-
-def _enrich_profile_info(ticker: str, info: dict | None, close_series: pd.Series | None = None) -> dict:
-    """Fill missing profile fields from Yahoo, FMP and price-derived beta."""
-    enriched = dict(info or {})
-
-    if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "returnOnEquity", "profitMargins", "beta", "shortName"]):
-        yahoo_snapshot = _fetch_yahoo_profile_snapshot(ticker)
-        enriched = _merge_missing_info(enriched, yahoo_snapshot)
-
-    if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "beta", "shortName"]):
-        fmp_snapshot = _fetch_fmp_profile_snapshot(ticker)
-        enriched = _merge_missing_info(enriched, fmp_snapshot)
-
-    if any(_info_value_missing(enriched.get(k)) for k in ["returnOnEquity", "profitMargins"]):
-        fmp_fundamentals = _fetch_fmp_fundamentals_snapshot(ticker)
-        enriched = _merge_missing_info(enriched, fmp_fundamentals)
-
-    beta_val = _safe_float(enriched.get("beta"), np.nan)
-    if np.isnan(beta_val):
-        beta_val = _beta_from_profile_prices(close_series)
-        if not np.isnan(beta_val):
-            enriched["beta"] = beta_val
-
-    return enriched
-
-
-def _load_stock_full_core(ticker, lookback_days=500):
+@st.cache_data(ttl=900, show_spinner=False)
+def load_stock_full(ticker, lookback_days=500):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -3279,31 +2589,9 @@ def _load_stock_full_core(ticker, lookback_days=500):
                 return None
 
         info = _safe_attr("info") or {}
-        if not isinstance(info, dict) or not info:
-            try:
-                info = t.get_info() or {}
-            except Exception as exc:
-                logger.debug("Ticker get_info failed for %s: %s", ticker, exc)
-        if not isinstance(info, dict):
-            info = {}
-
-        fast_info = _safe_attr("fast_info")
-        fast_beta = None
-        if fast_info is not None:
-            try:
-                fast_beta = fast_info.get("beta")
-            except Exception:
-                fast_beta = None
-        if _info_value_missing(info.get("beta")) and fast_beta is not None:
-            info["beta"] = fast_beta
-
-        info = _enrich_profile_info(ticker, info, close_series=df["Close"])
-
         qi = _safe_attr("quarterly_income_stmt")
         ai = _safe_attr("income_stmt")
-        # institutional_holders can be very slow for many tickers and is only a soft signal.
-        # Keep the first render fast and fall back to heldPercentInstitutions from info.
-        ih = None
+        ih = _safe_attr("institutional_holders")
         qe = _safe_attr("quarterly_earnings")
         try:
             ed = t.get_earnings_dates(limit=12)
@@ -3311,57 +2599,27 @@ def _load_stock_full_core(ticker, lookback_days=500):
             logger.debug("earnings dates failed for %s: %s", ticker, exc)
             ed = None
 
-        def _has_quarterly_yahoo_baseline(frame, min_quarters: int = 4) -> bool:
-            if frame is None or frame.empty:
-                return False
-            eps_row = _find_row(frame, ["Diluted EPS", "Basic EPS"])
-            rev_row = _find_row(frame, ["Total Revenue", "Revenue", "Operating Revenue"])
-            eps_n = int(eps_row.dropna().shape[0]) if eps_row is not None else 0
-            rev_n = int(rev_row.dropna().shape[0]) if rev_row is not None else 0
-            return eps_n >= min_quarters and rev_n >= min_quarters
-
-        def _qraw_quarter_count(payload, key: str) -> int:
-            if not isinstance(payload, dict):
-                return 0
-            series = payload.get(key)
-            if isinstance(series, pd.Series):
-                return int(series.dropna().shape[0])
-            return 0
-
         fmp_key = _read_secret_value("FMP_API_KEY")
         qraw = None
         fmp_err = None
-        qraw_sources = []
         if fmp_key:
             result = _fetch_quarterly_fmp(ticker, fmp_key)
             if isinstance(result, tuple):
                 qraw, fmp_err = result
             else:
                 qraw = result
+
+        # SEC fallback/augment (especially useful when Yahoo/FMP provides only few quarters)
+        sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
+        if sec_raw is not None:
+            qraw = _merge_quarterly_raw(qraw, sec_raw)
             if qraw is not None:
-                qraw_sources.append("FMP")
-
-        # SEC fallback is useful but often slow; only use when other quarterly sources are insufficient.
-        need_sec_fallback = not _has_quarterly_yahoo_baseline(qi, min_quarters=4)
-        if qraw is not None:
-            eps_q = _qraw_quarter_count(qraw, "DilutedEPS")
-            rev_q = _qraw_quarter_count(qraw, "TotalRevenue")
-            if eps_q >= 6 and rev_q >= 6:
-                need_sec_fallback = False
-
-        if need_sec_fallback:
-            sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
-            if sec_raw is not None:
-                qraw = _merge_quarterly_raw(qraw, sec_raw)
-                qraw_sources.append("SEC")
-                if fmp_err and qraw is not None:
+                if fmp_err:
                     fmp_err = f"{fmp_err} | SEC ergänzt"
-            elif qraw is None and sec_err:
-                fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
-
-        if qraw is not None:
-            src = "+".join(dict.fromkeys(qraw_sources)) if qraw_sources else "Direktdaten"
-            qraw["_source"] = src
+                else:
+                    fmp_err = "SEC ergänzt"
+        elif qraw is None and sec_err:
+            fmp_err = sec_err if not fmp_err else f"{fmp_err} | {sec_err}"
 
         return df, info, qi, ai, ih, qe, ed, qraw, fmp_err
     except Exception as exc:
@@ -3369,53 +2627,11 @@ def _load_stock_full_core(ticker, lookback_days=500):
         return empty_result
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def load_stock_full(ticker, lookback_days=500):
-    return _load_stock_full_core(ticker, lookback_days=lookback_days)
-
-
-def _load_stock_price_only_core(ticker, lookback_days=500):
-    """Fast stage-1 loader: price history (+light info) without heavy fundamentals endpoints."""
-    end = datetime.now()
-    start = end - timedelta(days=lookback_days)
-    df = _dl(ticker, start, end)
-    if df is None or len(df) < 20:
-        return None, {}
-    info = {}
-    try:
-        t = yf.Ticker(ticker)
-        fast_info = getattr(t, "fast_info", None)
-        if fast_info is not None:
-            try:
-                beta_val = fast_info.get("beta")
-                if beta_val is not None:
-                    info["beta"] = beta_val
-            except Exception:
-                pass
-    except Exception:
-        pass
-    info = _enrich_profile_info(ticker, info, close_series=df["Close"])
-    return df, info
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_stock_price_only(ticker, lookback_days=500):
-    return _load_stock_price_only_core(ticker, lookback_days=lookback_days)
-
-
-def _load_sp500_for_rs_core(lookback_days=400):
-    end = datetime.now()
-    start = end - timedelta(days=lookback_days)
-    for sym in ("^GSPC", "^SPX", "SPY"):
-        df = _dl(sym, start, end)
-        if df is not None and len(df) >= 120:
-            return df
-    return None
-
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_sp500_for_rs(lookback_days=400):
-    return _load_sp500_for_rs_core(lookback_days=lookback_days)
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    return _dl("^GSPC", start, end)
 
 # ===== From cache_store.py =====
 try:
@@ -3431,6 +2647,12 @@ logger = logging.getLogger(__name__)
 CACHE_DB_NAME = "market_data_cache.sqlite"
 
 CACHE_UNIVERSE_NAME = "us_common_stocks_v3"
+BREADTH_SNAPSHOT_KEY = f"{CACHE_UNIVERSE_NAME}_breadth_snapshot_v1"
+BREADTH_SNAPSHOT_AT_KEY = f"{CACHE_UNIVERSE_NAME}_breadth_snapshot_generated_at"
+BREADTH_SNAPSHOT_SOURCE_KEY = f"{CACHE_UNIVERSE_NAME}_breadth_snapshot_source"
+RS_SNAPSHOT_KEY = f"{CACHE_UNIVERSE_NAME}_rs_scores_sp500_v1"
+RS_SNAPSHOT_AT_KEY = f"{CACHE_UNIVERSE_NAME}_rs_scores_sp500_generated_at"
+RS_SNAPSHOT_SOURCE_KEY = f"{CACHE_UNIVERSE_NAME}_rs_scores_sp500_source"
 
 def _safe_get_secret(*path, default=None):
     try:
@@ -3556,36 +2778,6 @@ def _init_price_cache_db(store):
                 )
                 """
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS breadth_daily_metrics (
-                    date DATE PRIMARY KEY,
-                    advancers INTEGER,
-                    decliners INTEGER,
-                    net_advances INTEGER,
-                    ad_ratio DOUBLE PRECISION,
-                    ad_line DOUBLE PRECISION,
-                    rana DOUBLE PRECISION,
-                    mcc_19 DOUBLE PRECISION,
-                    mcc_39 DOUBLE PRECISION,
-                    mcclellan DOUBLE PRECISION,
-                    new_highs INTEGER,
-                    new_lows INTEGER,
-                    net_new_highs INTEGER,
-                    nh_nl_ratio DOUBLE PRECISION,
-                    high_low_pct DOUBLE PRECISION,
-                    pct_above_50sma DOUBLE PRECISION,
-                    pct_above_200sma DOUBLE PRECISION,
-                    deemer_ratio DOUBLE PRECISION,
-                    breadth_thrust BOOLEAN,
-                    ad_line_sma21 DOUBLE PRECISION,
-                    mcclellan_sma10 DOUBLE PRECISION,
-                    attrs_json TEXT,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_breadth_daily_metrics_date ON breadth_daily_metrics(date)")
         else:
             cur.execute(
                 """
@@ -3632,36 +2824,6 @@ def _init_price_cache_db(store):
                 )
                 """
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS breadth_daily_metrics (
-                    date TEXT PRIMARY KEY,
-                    advancers INTEGER,
-                    decliners INTEGER,
-                    net_advances INTEGER,
-                    ad_ratio REAL,
-                    ad_line REAL,
-                    rana REAL,
-                    mcc_19 REAL,
-                    mcc_39 REAL,
-                    mcclellan REAL,
-                    new_highs INTEGER,
-                    new_lows INTEGER,
-                    net_new_highs INTEGER,
-                    nh_nl_ratio REAL,
-                    high_low_pct REAL,
-                    pct_above_50sma REAL,
-                    pct_above_200sma REAL,
-                    deemer_ratio REAL,
-                    breadth_thrust INTEGER,
-                    ad_line_sma21 REAL,
-                    mcclellan_sma10 REAL,
-                    attrs_json TEXT,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_breadth_daily_metrics_date ON breadth_daily_metrics(date)")
 
         if store["backend"] == "neon":
             cur.execute(
@@ -3819,6 +2981,437 @@ def _get_cache_metadata_many(store, keys):
 
 def _utc_now_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _json_safe_metadata(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return pd.Timestamp(value).strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe_metadata(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_metadata(v) for v in value]
+    if pd.isna(value):
+        return None
+    return str(value)
+
+
+def _serialize_breadth_snapshot(frame):
+    if frame is None or frame.empty:
+        return ""
+    payload = {
+        "frame": json.loads(frame.to_json(orient="split", date_format="iso")),
+        "attrs": _json_safe_metadata(getattr(frame, "attrs", {}) or {}),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _deserialize_breadth_snapshot(blob):
+    if not blob:
+        return None
+    try:
+        payload = json.loads(blob)
+        frame_payload = payload.get("frame")
+        if not frame_payload:
+            return None
+        frame = pd.read_json(io.StringIO(json.dumps(frame_payload)), orient="split")
+        frame.index = pd.to_datetime(frame.index)
+        frame = frame.sort_index()
+        frame.attrs = payload.get("attrs", {}) or {}
+        return frame if not frame.empty else None
+    except Exception as exc:
+        logger.warning("Konnte Breadth-Snapshot nicht laden (%s).", exc)
+        return None
+
+
+def _store_breadth_snapshot(store, breadth_frame, source="refresh"):
+    now_str = _utc_now_str()
+    payload = _serialize_breadth_snapshot(breadth_frame)
+    values = {
+        BREADTH_SNAPSHOT_KEY: payload,
+        BREADTH_SNAPSHOT_AT_KEY: now_str,
+        BREADTH_SNAPSHOT_SOURCE_KEY: source,
+    }
+    _set_cache_metadata_many(store, values)
+    return now_str
+
+
+def _serialize_series_snapshot(series):
+    if series is None or len(series) == 0:
+        return ""
+    payload = {
+        "series": json.loads(series.to_json(date_format="iso")),
+        "name": getattr(series, "name", None),
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _deserialize_series_snapshot(blob):
+    if not blob:
+        return None
+    try:
+        payload = json.loads(blob)
+        series_payload = payload.get("series")
+        if not isinstance(series_payload, dict) or not series_payload:
+            return None
+        ser = pd.Series(series_payload, dtype=float)
+        ser.index = ser.index.astype(str)
+        ser.name = payload.get("name")
+        ser = pd.to_numeric(ser, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        return ser.sort_values(ascending=False) if not ser.empty else None
+    except Exception as exc:
+        logger.warning("Konnte RS-Snapshot nicht laden (%s).", exc)
+        return None
+
+
+def _store_relative_strength_snapshot(store, scores, source="refresh"):
+    now_str = _utc_now_str()
+    values = {
+        RS_SNAPSHOT_KEY: _serialize_series_snapshot(scores),
+        RS_SNAPSHOT_AT_KEY: now_str,
+        RS_SNAPSHOT_SOURCE_KEY: source,
+    }
+    _set_cache_metadata_many(store, values)
+    return now_str
+
+
+def _get_rs_output_path() -> Path:
+    base_dir = Path(__file__).resolve().parent if "__file__" in globals() else Path(os.getcwd())
+    return base_dir / RS_OUTPUT_DIR_NAME / RS_OUTPUT_FILE_NAME
+
+
+def _scores_to_rs_ratings(scores: pd.Series | None) -> pd.Series:
+    if scores is None:
+        return pd.Series(dtype=int)
+    ser = pd.to_numeric(scores, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if ser.empty:
+        return pd.Series(dtype=int)
+    ratings = ser.rank(pct=True, method="average").mul(99).round().clip(lower=1, upper=99).astype(int)
+    return ratings.sort_values(ascending=False)
+
+
+def _parse_rs_ratings_frame(df: pd.DataFrame, *, source_name: str, file_name: str = "", path_name: str = "") -> dict:
+    payload = {
+        "ok": False,
+        "source": source_name,
+        "file": str(file_name or ""),
+        "path": str(path_name or ""),
+        "value_column": "",
+        "score_column": "",
+        "count": 0,
+        "ratings": {},
+        "scores": {},
+        "as_of_date": "",
+        "generated_at_utc": "",
+        "error": "",
+    }
+    if df is None or df.empty:
+        payload["error"] = "CSV ist leer."
+        return payload
+
+    normalized_cols = {str(c).strip().lower().replace(" ", "_"): c for c in df.columns}
+    ticker_col = next((normalized_cols[k] for k in ["ticker", "symbol", "stock", "aktie"] if k in normalized_cols), None)
+    rating_col = next(
+        (
+            normalized_cols[k]
+            for k in [
+                "percentile",
+                "rs_rating",
+                "relative_strength_rating",
+                "rs_rank",
+                "rsrank",
+                "rating",
+                "relative_strength",
+                "relative_strength_value",
+                "rs",
+            ]
+            if k in normalized_cols
+        ),
+        None,
+    )
+    score_col = next((normalized_cols[k] for k in ["score", "rs_score", "weighted_score"] if k in normalized_cols), None)
+    as_of_col = next((normalized_cols[k] for k in ["as_of_date", "as_of", "date", "stand"] if k in normalized_cols), None)
+    generated_at_col = next((normalized_cols[k] for k in ["generated_at_utc", "generated_at", "updated_at"] if k in normalized_cols), None)
+
+    if ticker_col is None or rating_col is None:
+        payload["error"] = "Ticker- oder RS-Spalte in CSV nicht gefunden."
+        return payload
+
+    rows = df[[ticker_col, rating_col] + ([score_col] if score_col else [])].copy()
+    rows[ticker_col] = rows[ticker_col].astype(str).str.upper().str.strip()
+    rows[rating_col] = pd.to_numeric(rows[rating_col], errors="coerce")
+    if score_col:
+        rows[score_col] = pd.to_numeric(rows[score_col], errors="coerce")
+    rows = rows.dropna(subset=[ticker_col, rating_col])
+    rows = rows[rows[ticker_col] != ""]
+    rows[rating_col] = rows[rating_col].clip(lower=1, upper=99).round().astype(int)
+    rows = rows.drop_duplicates(subset=[ticker_col], keep="last")
+
+    ratings = {str(r[ticker_col]).strip().upper(): int(r[rating_col]) for _, r in rows.iterrows()}
+    scores = {}
+    if score_col:
+        score_rows = rows.dropna(subset=[score_col])
+        scores = {str(r[ticker_col]).strip().upper(): float(r[score_col]) for _, r in score_rows.iterrows()}
+
+    if as_of_col and as_of_col in df.columns:
+        as_of_values = df[as_of_col].dropna().astype(str).str.strip()
+        if not as_of_values.empty:
+            payload["as_of_date"] = str(as_of_values.iloc[-1])
+    if generated_at_col and generated_at_col in df.columns:
+        generated_values = df[generated_at_col].dropna().astype(str).str.strip()
+        if not generated_values.empty:
+            payload["generated_at_utc"] = str(generated_values.iloc[-1])
+
+    payload.update(
+        {
+            "ok": bool(ratings),
+            "value_column": str(rating_col),
+            "score_column": str(score_col or ""),
+            "count": int(len(ratings)),
+            "ratings": ratings,
+            "scores": scores,
+            "error": "" if ratings else "CSV enthielt keine auswertbaren RS-Werte.",
+        }
+    )
+    return payload
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_external_rs_ratings_map():
+    output_path = _get_rs_output_path()
+    payload = {
+        "ok": False,
+        "source": "repo_csv",
+        "file": output_path.name,
+        "path": str(output_path),
+        "value_column": "",
+        "score_column": "",
+        "count": 0,
+        "ratings": {},
+        "scores": {},
+        "as_of_date": "",
+        "generated_at_utc": "",
+        "error": "",
+    }
+    if not output_path.exists():
+        payload["error"] = f"RS-CSV nicht gefunden: {output_path.name}"
+        return payload
+    try:
+        df = pd.read_csv(output_path)
+        return _parse_rs_ratings_frame(df, source_name="repo_csv", file_name=output_path.name, path_name=str(output_path))
+    except Exception as exc:
+        logger.debug("load_external_rs_ratings_map failed: %s", exc)
+        payload["error"] = f"RS-CSV konnte nicht geladen werden ({exc})."
+        return payload
+
+
+def _apply_rs_source_override(ticker: str, rs_ctx: dict | None):
+    source = _get_rs_rating_source_setting()
+    if source != RS_SOURCE_CSV_LATEST:
+        return rs_ctx, None
+
+    external = load_external_rs_ratings_map()
+    note = {
+        "source": RS_SOURCE_CSV_LATEST,
+        "ok": bool(external.get("ok")),
+        "file": str(external.get("file", "")),
+        "path": str(external.get("path", "")),
+        "value_column": str(external.get("value_column", "")),
+        "score_column": str(external.get("score_column", "")),
+        "count": int(external.get("count", 0) or 0),
+        "as_of_date": str(external.get("as_of_date", "")),
+        "generated_at_utc": str(external.get("generated_at_utc", "")),
+        "error": str(external.get("error", "") or "").strip(),
+        "matched": False,
+    }
+
+    base_ctx = dict(rs_ctx or {})
+    ratings = external.get("ratings", {}) if isinstance(external, dict) else {}
+    scores = external.get("scores", {}) if isinstance(external, dict) else {}
+    value = ratings.get(str(ticker or "").strip().upper()) if isinstance(ratings, dict) else None
+    score_value = scores.get(str(ticker or "").strip().upper()) if isinstance(scores, dict) else None
+    if value is not None:
+        base_ctx["rating"] = int(np.clip(value, 1, 99))
+        if score_value is not None:
+            base_ctx["score"] = float(score_value)
+        base_ctx["method"] = "external_csv"
+        note["matched"] = True
+    return base_ctx, note
+
+
+def _refresh_relative_strength_snapshot_from_closes(store, close_frame, *, source="refresh", lookback_days=400):
+    if close_frame is None or close_frame.empty:
+        return None
+    spx_df = load_sp500_for_rs(lookback_days=lookback_days)
+    if spx_df is None or "Close" not in spx_df or spx_df["Close"].dropna().empty:
+        return None
+    benchmark_close = _coerce_daily_series(spx_df["Close"])
+    closes = close_frame.copy()
+    closes.index = pd.to_datetime(closes.index, errors="coerce")
+    closes = closes[~closes.index.isna()]
+    closes = closes.sort_index().loc[:, ~closes.columns.duplicated()]
+    closes = closes.apply(pd.to_numeric, errors="coerce")
+    common = closes.index.intersection(benchmark_close.index)
+    if len(common) < 120:
+        return None
+    closes = closes.reindex(common)
+    benchmark_close = benchmark_close.reindex(common)
+    ratio_frame = closes.div(benchmark_close, axis=0).replace([np.inf, -np.inf], np.nan)
+    min_obs = min(220, max(120, len(ratio_frame) // 2))
+    ratio_frame = ratio_frame.loc[:, ratio_frame.notna().sum() >= min_obs]
+    scores = _weighted_rs_scores_for_frame(ratio_frame)
+    if scores is None or scores.empty:
+        return None
+    _store_relative_strength_snapshot(store, scores, source=source)
+    return scores
+
+
+def export_relative_strength_csv_for_github(lookback_days=400, batch_size=220, retry_batch_size=48):
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
+    tickers = [
+        _normalize_symbol(t)
+        for t in get_app_stock_universe_tickers()
+        if str(t or "").strip()
+    ]
+    tickers = list(dict.fromkeys(tickers))
+    if not tickers:
+        return {"ok": False, "error": "Kein Aktienuniversum für den RS-Export verfügbar."}
+
+    close_frames = []
+    loaded_symbols = set()
+    batch_count = 0
+
+    for batch in _chunked(tickers, batch_size):
+        bundle = _download_ohlc_batch_fast(batch, start, end, threads=True, timeout=40)
+        close_frame = bundle.get("close") if bundle else None
+        batch_count += 1
+        if close_frame is None or close_frame.empty:
+            continue
+        close_frame = close_frame.sort_index().apply(pd.to_numeric, errors="coerce")
+        close_frame = close_frame.loc[:, ~close_frame.columns.duplicated()]
+        close_frames.append(close_frame)
+        loaded_symbols.update(str(col).strip().upper() for col in close_frame.columns)
+
+    missing_after_first = [ticker for ticker in tickers if ticker not in loaded_symbols]
+    retry_batches = 0
+    if missing_after_first:
+        for batch in _chunked(missing_after_first, retry_batch_size):
+            bundle = _download_ohlc_batch_fast(batch, start, end, threads=False, timeout=35)
+            close_frame = bundle.get("close") if bundle else None
+            retry_batches += 1
+            if close_frame is None or close_frame.empty:
+                continue
+            close_frame = close_frame.sort_index().apply(pd.to_numeric, errors="coerce")
+            close_frame = close_frame.loc[:, ~close_frame.columns.duplicated()]
+            close_frames.append(close_frame)
+            loaded_symbols.update(str(col).strip().upper() for col in close_frame.columns)
+
+    if not close_frames:
+        return {"ok": False, "error": "Yahoo lieferte keine Kursdaten für den RS-Export.", "requested": len(tickers)}
+
+    closes = pd.concat(close_frames, axis=1)
+    closes.index = pd.to_datetime(closes.index, errors="coerce")
+    closes = closes[~closes.index.isna()]
+    closes = closes.sort_index()
+    closes = closes.loc[:, ~closes.columns.duplicated(keep="last")]
+    closes = closes.apply(pd.to_numeric, errors="coerce")
+
+    benchmark = load_sp500_for_rs(lookback_days=lookback_days)
+    if benchmark is None or "Close" not in benchmark or benchmark["Close"].dropna().empty:
+        return {"ok": False, "error": "Benchmark ^GSPC konnte für den RS-Export nicht geladen werden."}
+
+    benchmark_close = _coerce_daily_series(benchmark["Close"])
+    common = closes.index.intersection(benchmark_close.index)
+    if len(common) < 120:
+        return {"ok": False, "error": "Zu wenige gemeinsame Handelstage für den RS-Export.", "common_days": int(len(common))}
+
+    closes = closes.reindex(common)
+    benchmark_close = benchmark_close.reindex(common)
+    ratio_frame = closes.div(benchmark_close, axis=0).replace([np.inf, -np.inf], np.nan)
+    min_obs = min(220, max(120, len(ratio_frame) // 2))
+    ratio_frame = ratio_frame.loc[:, ratio_frame.notna().sum() >= min_obs]
+    scores = _weighted_rs_scores_for_frame(ratio_frame)
+    ratings = _scores_to_rs_ratings(scores)
+    if ratings.empty:
+        return {"ok": False, "error": "Es konnten keine RS-Ratings aus den Kursdaten berechnet werden."}
+
+    as_of_date = pd.Timestamp(common[-1]).strftime("%Y-%m-%d")
+    generated_at = _utc_now_str()
+    export_df = pd.DataFrame(
+        {
+            "ticker": ratings.index.astype(str),
+            "rating": ratings.astype(int).values,
+            "score": pd.to_numeric(scores.reindex(ratings.index), errors="coerce").round(6).values,
+            "as_of_date": as_of_date,
+            "generated_at_utc": generated_at,
+            "universe": CACHE_UNIVERSE_NAME,
+            "source": "github_actions_yahoo",
+        }
+    ).sort_values(["rating", "score", "ticker"], ascending=[False, False, True], kind="mergesort")
+
+    output_path = _get_rs_output_path()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    export_df.to_csv(output_path, index=False)
+
+    return {
+        "ok": True,
+        "requested": len(tickers),
+        "loaded": int(len(loaded_symbols)),
+        "coverage": float(len(loaded_symbols) / max(len(tickers), 1)),
+        "score_count": int(len(ratings)),
+        "batch_count": int(batch_count),
+        "retry_batches": int(retry_batches),
+        "output_file": str(output_path),
+        "as_of_date": as_of_date,
+        "generated_at_utc": generated_at,
+        "message": f"RS-CSV erzeugt: {len(ratings)} Ratings, Stand {as_of_date}.",
+    }
+
+
+def _refresh_breadth_snapshot(store, tickers, start_date, end_date, *, source="refresh"):
+    bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
+    close_frame = bundle.get("close") if bundle else None
+    if close_frame is None or close_frame.empty:
+        return None
+
+    requested = len(tickers)
+    loaded = int(close_frame.shape[1])
+    coverage = loaded / max(requested, 1)
+    bundle["attrs"] = {
+        "requested_universe": requested,
+        "loaded_universe": loaded,
+        "coverage_ratio": coverage,
+        "partial_universe": coverage < 0.75,
+        "cache_used": True,
+        "cache_only_run": True,
+        "store_backend": store["backend"],
+        "store_label": _get_store_label(store),
+        "cache_member_count": _safe_int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested), requested),
+        "cache_members_updated_at": _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", ""),
+        "cache_prices_last_write_at": _get_cache_metadata(store, "prices_last_write_at", ""),
+        "last_refresh_at": _get_cache_metadata(store, "last_refresh_at", ""),
+    }
+    breadth = compute_breadth_from_components(bundle)
+    if breadth is None or breadth.empty:
+        return None
+    generated_at = _store_breadth_snapshot(store, breadth, source=source)
+    _refresh_relative_strength_snapshot_from_closes(store, close_frame, source=source)
+    breadth.attrs["snapshot_generated_at"] = generated_at
+    breadth.attrs["snapshot_source"] = source
+    return breadth
 
 
 def _github_actions_config():
@@ -4008,6 +3601,7 @@ def _job_type_label(job_type):
         "refresh_universe": "Aktienuniversum aktualisieren",
         "rescue_missing": "Fehlende nachladen",
         "auto_remap": "Automatisch remappen",
+        "export_rs_csv": "RS-CSV in GitHub erzeugen",
     }.get(str(job_type or ""), str(job_type or "Unbekannt"))
 
 
@@ -4084,6 +3678,13 @@ def _job_status_badge(status):
 def _store_universe_members(store, universe, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
+        return
+    try:
+        existing = _load_cached_universe_members(store, universe)
+    except Exception:
+        existing = []
+    if existing and set(existing) == set(tickers):
+        _set_cache_metadata(store, f"{universe}_member_count", len(tickers))
         return
     conn = _get_cache_conn(store)
     try:
@@ -4498,10 +4099,8 @@ def auto_remap_missing_nyse_yahoo(lookback_days=550, max_workers=8, max_candidat
 
     missing_before, _ = _get_missing_universe_tickers(store, tickers)
     if not missing_before:
-        price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-        close_frame = price_bundle.get("close") if price_bundle else None
-        loaded = int(close_frame.shape[1]) if close_frame is not None else len(tickers)
         requested = len(tickers)
+        loaded = requested
         return {
             "ok": True,
             "requested": requested,
@@ -4599,9 +4198,7 @@ def auto_remap_missing_nyse_yahoo(lookback_days=550, max_workers=8, max_candidat
             results.append(item)
 
     missing_after, _ = _get_missing_universe_tickers(store, tickers)
-    price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-    close_frame = price_bundle.get("close") if price_bundle else None
-    loaded = int(close_frame.shape[1]) if close_frame is not None else max(0, len(tickers) - len(missing_after))
+    loaded = max(0, len(tickers) - len(missing_after))
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
     new_symbols_loaded = len(missing_before) - len(missing_after)
@@ -4619,6 +4216,8 @@ def auto_remap_missing_nyse_yahoo(lookback_days=550, max_workers=8, max_candidat
     _set_cache_metadata(store, "last_auto_remap_mapped", mapped_successes)
     _set_cache_metadata(store, "last_refresh_loaded_universe", loaded)
     _set_cache_metadata(store, "last_refresh_requested_universe", requested)
+    if rows_written > 0 and loaded > 0:
+        _refresh_breadth_snapshot(store, tickers, start_date, end_date, source="auto-remap")
 
     return {
         "ok": loaded > 0,
@@ -4856,194 +4455,6 @@ def _read_cached_closes(store, tickers, start_date, end_date):
         return None
     return bundle.get("close")
 
-
-def _upsert_cached_breadth_metrics(store, breadth_df):
-    if breadth_df is None or breadth_df.empty:
-        return 0
-    cols = [
-        "Advancers", "Decliners", "Net_Advances", "AD_Ratio", "AD_Line", "RANA",
-        "McC_19", "McC_39", "McClellan", "New_Highs", "New_Lows", "Net_New_Highs",
-        "NH_NL_Ratio", "High_Low_Pct", "Pct_Above_50SMA", "Pct_Above_200SMA",
-        "Deemer_Ratio", "Breadth_Thrust", "AD_Line_SMA21", "McClellan_SMA10",
-    ]
-    data = breadth_df.copy()
-    for col in cols:
-        if col not in data.columns:
-            data[col] = np.nan
-    attrs_payload = json.dumps(dict(getattr(breadth_df, "attrs", {}) or {}), ensure_ascii=False)
-    records = []
-    for idx, row in data[cols].iterrows():
-        date_str = pd.Timestamp(idx).strftime("%Y-%m-%d")
-        records.append((
-            date_str,
-            int(row["Advancers"]) if pd.notna(row["Advancers"]) else None,
-            int(row["Decliners"]) if pd.notna(row["Decliners"]) else None,
-            int(row["Net_Advances"]) if pd.notna(row["Net_Advances"]) else None,
-            float(row["AD_Ratio"]) if pd.notna(row["AD_Ratio"]) else None,
-            float(row["AD_Line"]) if pd.notna(row["AD_Line"]) else None,
-            float(row["RANA"]) if pd.notna(row["RANA"]) else None,
-            float(row["McC_19"]) if pd.notna(row["McC_19"]) else None,
-            float(row["McC_39"]) if pd.notna(row["McC_39"]) else None,
-            float(row["McClellan"]) if pd.notna(row["McClellan"]) else None,
-            int(row["New_Highs"]) if pd.notna(row["New_Highs"]) else None,
-            int(row["New_Lows"]) if pd.notna(row["New_Lows"]) else None,
-            int(row["Net_New_Highs"]) if pd.notna(row["Net_New_Highs"]) else None,
-            float(row["NH_NL_Ratio"]) if pd.notna(row["NH_NL_Ratio"]) else None,
-            float(row["High_Low_Pct"]) if pd.notna(row["High_Low_Pct"]) else None,
-            float(row["Pct_Above_50SMA"]) if pd.notna(row["Pct_Above_50SMA"]) else None,
-            float(row["Pct_Above_200SMA"]) if pd.notna(row["Pct_Above_200SMA"]) else None,
-            float(row["Deemer_Ratio"]) if pd.notna(row["Deemer_Ratio"]) else None,
-            bool(row["Breadth_Thrust"]) if pd.notna(row["Breadth_Thrust"]) else None,
-            float(row["AD_Line_SMA21"]) if pd.notna(row["AD_Line_SMA21"]) else None,
-            float(row["McClellan_SMA10"]) if pd.notna(row["McClellan_SMA10"]) else None,
-            attrs_payload,
-        ))
-    if not records:
-        return 0
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    conn = _get_cache_conn(store)
-    try:
-        if store["backend"] == "neon":
-            with conn.cursor() as cur:
-                execute_values(
-                    cur,
-                    """
-                    INSERT INTO breadth_daily_metrics(
-                        date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
-                        new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
-                        deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json
-                    )
-                    VALUES %s
-                    ON CONFLICT (date) DO UPDATE SET
-                        advancers=EXCLUDED.advancers,
-                        decliners=EXCLUDED.decliners,
-                        net_advances=EXCLUDED.net_advances,
-                        ad_ratio=EXCLUDED.ad_ratio,
-                        ad_line=EXCLUDED.ad_line,
-                        rana=EXCLUDED.rana,
-                        mcc_19=EXCLUDED.mcc_19,
-                        mcc_39=EXCLUDED.mcc_39,
-                        mcclellan=EXCLUDED.mcclellan,
-                        new_highs=EXCLUDED.new_highs,
-                        new_lows=EXCLUDED.new_lows,
-                        net_new_highs=EXCLUDED.net_new_highs,
-                        nh_nl_ratio=EXCLUDED.nh_nl_ratio,
-                        high_low_pct=EXCLUDED.high_low_pct,
-                        pct_above_50sma=EXCLUDED.pct_above_50sma,
-                        pct_above_200sma=EXCLUDED.pct_above_200sma,
-                        deemer_ratio=EXCLUDED.deemer_ratio,
-                        breadth_thrust=EXCLUDED.breadth_thrust,
-                        ad_line_sma21=EXCLUDED.ad_line_sma21,
-                        mcclellan_sma10=EXCLUDED.mcclellan_sma10,
-                        attrs_json=EXCLUDED.attrs_json,
-                        updated_at=NOW()
-                    """,
-                    records,
-                    page_size=2000,
-                )
-        else:
-            conn.executemany(
-                """
-                INSERT INTO breadth_daily_metrics(
-                    date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
-                    new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
-                    deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date) DO UPDATE SET
-                    advancers=excluded.advancers,
-                    decliners=excluded.decliners,
-                    net_advances=excluded.net_advances,
-                    ad_ratio=excluded.ad_ratio,
-                    ad_line=excluded.ad_line,
-                    rana=excluded.rana,
-                    mcc_19=excluded.mcc_19,
-                    mcc_39=excluded.mcc_39,
-                    mcclellan=excluded.mcclellan,
-                    new_highs=excluded.new_highs,
-                    new_lows=excluded.new_lows,
-                    net_new_highs=excluded.net_new_highs,
-                    nh_nl_ratio=excluded.nh_nl_ratio,
-                    high_low_pct=excluded.high_low_pct,
-                    pct_above_50sma=excluded.pct_above_50sma,
-                    pct_above_200sma=excluded.pct_above_200sma,
-                    deemer_ratio=excluded.deemer_ratio,
-                    breadth_thrust=excluded.breadth_thrust,
-                    ad_line_sma21=excluded.ad_line_sma21,
-                    mcclellan_sma10=excluded.mcclellan_sma10,
-                    attrs_json=excluded.attrs_json,
-                    updated_at=excluded.updated_at
-                """,
-                [tuple(rec) + (now_utc,) for rec in records],
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return len(records)
-
-
-def _load_cached_breadth_metrics(store, start_date, end_date):
-    conn = _get_cache_conn(store)
-    try:
-        if store["backend"] == "neon":
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
-                           new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
-                           deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json
-                    FROM breadth_daily_metrics
-                    WHERE date >= %s AND date <= %s
-                    ORDER BY date
-                    """,
-                    (start_date, end_date),
-                )
-                rows = cur.fetchall()
-                cols = [d.name for d in cur.description]
-                frame = pd.DataFrame(rows, columns=cols)
-        else:
-            frame = pd.read_sql_query(
-                """
-                SELECT date, advancers, decliners, net_advances, ad_ratio, ad_line, rana, mcc_19, mcc_39, mcclellan,
-                       new_highs, new_lows, net_new_highs, nh_nl_ratio, high_low_pct, pct_above_50sma, pct_above_200sma,
-                       deemer_ratio, breadth_thrust, ad_line_sma21, mcclellan_sma10, attrs_json
-                FROM breadth_daily_metrics
-                WHERE date >= ? AND date <= ?
-                ORDER BY date
-                """,
-                conn,
-                params=[start_date, end_date],
-            )
-    except Exception:
-        frame = pd.DataFrame()
-    finally:
-        conn.close()
-    if frame.empty:
-        return None
-    frame["date"] = pd.to_datetime(frame["date"])
-    frame = frame.set_index("date").sort_index()
-    rename_map = {
-        "advancers": "Advancers", "decliners": "Decliners", "net_advances": "Net_Advances",
-        "ad_ratio": "AD_Ratio", "ad_line": "AD_Line", "rana": "RANA", "mcc_19": "McC_19",
-        "mcc_39": "McC_39", "mcclellan": "McClellan", "new_highs": "New_Highs", "new_lows": "New_Lows",
-        "net_new_highs": "Net_New_Highs", "nh_nl_ratio": "NH_NL_Ratio", "high_low_pct": "High_Low_Pct",
-        "pct_above_50sma": "Pct_Above_50SMA", "pct_above_200sma": "Pct_Above_200SMA", "deemer_ratio": "Deemer_Ratio",
-        "breadth_thrust": "Breadth_Thrust", "ad_line_sma21": "AD_Line_SMA21", "mcclellan_sma10": "McClellan_SMA10",
-    }
-    frame = frame.rename(columns=rename_map)
-    attrs = {}
-    attrs_json = frame["attrs_json"].dropna().iloc[-1] if "attrs_json" in frame.columns and frame["attrs_json"].notna().any() else ""
-    if attrs_json:
-        try:
-            attrs = json.loads(attrs_json)
-        except Exception:
-            attrs = {}
-    if "attrs_json" in frame.columns:
-        frame = frame.drop(columns=["attrs_json"])
-    frame["Breadth_Thrust"] = frame["Breadth_Thrust"].fillna(False).astype(bool)
-    frame.attrs.update(attrs)
-    return frame
-
 def _get_cached_last_dates(store, tickers):
     tickers = list(dict.fromkeys([str(t).strip().upper() for t in tickers if t]))
     if not tickers:
@@ -5153,9 +4564,17 @@ def get_live_universe_store_status(store_backend: str, store_label: str, last_re
     if not tickers:
         return {"requested": 0, "loaded": 0, "coverage": 0.0, "mapped": 0, "not_found": 0, "no_history": 0}
     tickers = list(dict.fromkeys([_normalize_symbol(t) for t in tickers if t]))
-    last_dates = _get_cached_last_dates(store, tickers)
     requested = len(tickers)
-    loaded = len(last_dates)
+    meta = _get_cache_metadata_many(store, ["last_refresh_loaded_universe", "last_refresh_requested_universe"])
+    loaded = _safe_int(meta.get("last_refresh_loaded_universe"), 0)
+    requested_meta = _safe_int(meta.get("last_refresh_requested_universe"), requested)
+    if loaded <= 0 or requested_meta != requested:
+        last_dates = _get_cached_last_dates(store, tickers)
+        loaded = len(last_dates)
+        _set_cache_metadata_many(store, {
+            "last_refresh_loaded_universe": loaded,
+            "last_refresh_requested_universe": requested,
+        })
     counts = {"mapped": 0, "not_found": 0, "no_history": 0}
     try:
         conn = _open_store_connection(store)
@@ -5212,28 +4631,6 @@ def _prepare_component_bundle(bundle):
     prepared["low"] = low_frame[shared] if low_frame is not None and not low_frame.empty else None
     return prepared
 
-
-def _refresh_cached_breadth_metrics(store, tickers, start_date, end_date):
-    try:
-        bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-        if not bundle:
-            return {"rows": 0, "ok": False}
-        breadth = compute_breadth_from_components(bundle)
-        if breadth is None or breadth.empty:
-            return {"rows": 0, "ok": False}
-        rows = _upsert_cached_breadth_metrics(store, breadth)
-        _set_cache_metadata_many(
-            store,
-            {
-                "breadth_cache_last_refresh_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                "breadth_cache_rows": rows,
-            },
-        )
-        return {"rows": rows, "ok": rows > 0}
-    except Exception as exc:
-        logger.warning("Could not refresh breadth_daily_metrics cache: %s", exc)
-        return {"rows": 0, "ok": False, "error": str(exc)}
-
 def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_batch_size=220, recent_refresh_days=15):
     """Initial fill or incremental refresh for the persistent price store.
 
@@ -5254,10 +4651,17 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
     _store_universe_members(store, CACHE_UNIVERSE_NAME, tickers)
 
     last_dates = _get_cached_last_dates(store, tickers)
-    field_counts = _get_cached_price_field_counts(store, tickers, start_date, end_date)
     min_history_rows = 180
-    needs_full_ohlc = [
+    recent_start = max(start, end - timedelta(days=recent_refresh_days))
+    field_count_start = pd.Timestamp(max(start, end - timedelta(days=max(min_history_rows * 2, 240)))).strftime("%Y-%m-%d")
+    stale_cutoff = pd.Timestamp(recent_start) - pd.Timedelta(days=5)
+    field_check_targets = [
         t for t in tickers
+        if t not in last_dates or pd.Timestamp(last_dates.get(t)) < stale_cutoff
+    ]
+    field_counts = _get_cached_price_field_counts(store, field_check_targets, field_count_start, end_date) if field_check_targets else {}
+    needs_full_ohlc = [
+        t for t in field_check_targets
         if t not in last_dates
         or field_counts.get(t, {}).get("close", 0) < min_history_rows
         or field_counts.get(t, {}).get("high", 0) < min_history_rows
@@ -5288,9 +4692,10 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
                 if close_frame is not None and not close_frame.empty:
                     rows_written += _write_price_bundle_to_cache(store, bundle)
                 history_batches += 1
+            refreshed_dates = _get_cached_last_dates(store, tickers)
+            refreshed_symbol_set = set(refreshed_dates)
         recent_targets = [t for t in tickers if t in refreshed_symbol_set]
 
-    recent_start = max(start, end - timedelta(days=recent_refresh_days))
     for batch in _chunked(recent_targets, recent_batch_size):
         bundle = _download_ohlc_batch_fast(batch, recent_start, end, threads=True, timeout=35)
         close_frame = bundle.get("close") if bundle else None
@@ -5298,15 +4703,15 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
             rows_written += _write_price_bundle_to_cache(store, bundle)
         recent_batches += 1
 
-    price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-    close_frame = price_bundle.get("close") if price_bundle else None
-    loaded = int(close_frame.shape[1]) if close_frame is not None else 0
+    final_last_dates = refreshed_dates if missing_history else last_dates
+    loaded = len(final_last_dates)
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata_many(store, {"last_refresh_at": now_str, "last_refresh_rows_written": rows_written, "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
-    breadth_cache = _refresh_cached_breadth_metrics(store, tickers, start_date, end_date)
+    if loaded > 0:
+        _refresh_breadth_snapshot(store, tickers, start_date, end_date, source="refresh")
 
     return {
         "ok": loaded > 0,
@@ -5318,7 +4723,6 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
         "recent_batches": recent_batches,
         "recent_refresh_days": recent_refresh_days,
         "last_refresh_at": now_str,
-        "breadth_cache_rows": int(breadth_cache.get("rows", 0) or 0),
         "store": _get_store_label(store),
         "backend": store["backend"],
     }
@@ -5341,10 +4745,8 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
 
     missing_before, _ = _get_missing_universe_tickers(store, tickers)
     if not missing_before:
-        price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-        close_frame = price_bundle.get("close") if price_bundle else None
-        loaded = int(close_frame.shape[1]) if close_frame is not None else len(tickers)
         requested = len(tickers)
+        loaded = requested
         return {
             "ok": True,
             "requested": requested,
@@ -5401,16 +4803,15 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
                     single_successes += 1
 
     missing_after, _ = _get_missing_universe_tickers(store, tickers)
-    price_bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-    close_frame = price_bundle.get("close") if price_bundle else None
-    loaded = int(close_frame.shape[1]) if close_frame is not None else max(0, len(tickers) - len(missing_after))
+    loaded = max(0, len(tickers) - len(missing_after))
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
     new_symbols_loaded = len(missing_before) - len(missing_after)
 
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     _set_cache_metadata_many(store, {"last_rescue_at": now_str, "last_rescue_rows_written": rows_written, "last_rescue_missing_before": len(missing_before), "last_rescue_missing_after": len(missing_after), "last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
-    breadth_cache = _refresh_cached_breadth_metrics(store, tickers, start_date, end_date)
+    if rows_written > 0 and loaded > 0:
+        _refresh_breadth_snapshot(store, tickers, start_date, end_date, source="rescue")
 
     return {
         "ok": loaded > 0,
@@ -5425,14 +4826,12 @@ def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max
         "single_attempts": single_attempts,
         "single_successes": single_successes,
         "last_rescue_at": now_str,
-        "breadth_cache_rows": int(breadth_cache.get("rows", 0) or 0),
         "store": _get_store_label(store),
         "backend": store["backend"],
     }
 
-@st.cache_data(ttl=900, show_spinner=False)
 def load_nyse_breadth_data(lookback_days=550):
-    """Read breadth data bundle from the persistent store without triggering a large network refresh."""
+    """Read cached breadth snapshot from the persistent store without reloading the full universe on every page view."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     start_date = pd.Timestamp(start).strftime("%Y-%m-%d")
@@ -5445,69 +4844,34 @@ def load_nyse_breadth_data(lookback_days=550):
         return None
     tickers = list(dict.fromkeys([str(t).strip().upper().replace('.', '-').replace('/', '-') for t in tickers if t]))
 
-    cached_breadth = _load_cached_breadth_metrics(store, start_date, end_date)
-    if cached_breadth is not None and len(cached_breadth) >= 20:
-        requested = len(tickers)
-        loaded = int(cached_breadth.attrs.get("loaded_universe", _get_cache_metadata(store, "last_refresh_loaded_universe", 0) or 0) or 0)
-        if loaded <= 0:
-            loaded = requested
-        coverage = loaded / max(requested, 1)
-        attrs = {
-            "requested_universe": requested,
-            "loaded_universe": loaded,
-            "coverage_ratio": coverage,
-            "partial_universe": coverage < 0.75,
-            "cache_used": True,
-            "cache_only_run": True,
-            "store_backend": store["backend"],
-            "store_label": _get_store_label(store),
-            "cache_member_count": int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested),
-            "cache_members_updated_at": _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", ""),
-            "cache_prices_last_write_at": _get_cache_metadata(store, "prices_last_write_at", ""),
-            "last_refresh_at": _get_cache_metadata(store, "last_refresh_at", ""),
-            "breadth_preaggregated": True,
-        }
-        for k, v in attrs.items():
-            cached_breadth.attrs[k] = v
-        return {"breadth_metrics": cached_breadth, "attrs": attrs}
-
-    bundle = _prepare_component_bundle(_read_cached_price_bundle(store, tickers, start_date, end_date))
-    close_frame = bundle.get("close") if bundle else None
-    if close_frame is None or close_frame.empty:
-        return None
-
     requested = len(tickers)
-    loaded = int(close_frame.shape[1])
-    coverage = loaded / max(requested, 1)
-    try:
-        stored_loaded = int(_get_cache_metadata(store, "last_refresh_loaded_universe", 0) or 0)
-    except Exception:
-        stored_loaded = 0
-    try:
-        stored_requested = int(_get_cache_metadata(store, "last_refresh_requested_universe", 0) or 0)
-    except Exception:
-        stored_requested = 0
-    if loaded > stored_loaded or requested != stored_requested:
-        _set_cache_metadata_many(store, {"last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
+    meta = _get_cache_metadata_many(
+        store,
+        [
+            BREADTH_SNAPSHOT_KEY,
+            BREADTH_SNAPSHOT_AT_KEY,
+            "last_refresh_loaded_universe",
+            "last_refresh_requested_universe",
+        ],
+    )
+    snapshot = _deserialize_breadth_snapshot(meta.get(BREADTH_SNAPSHOT_KEY, ""))
+    if snapshot is not None and not snapshot.empty:
+        loaded = _safe_int(snapshot.attrs.get("loaded_universe", snapshot.attrs.get("breadth_universe_loaded")), snapshot.shape[1] if hasattr(snapshot, "shape") else 0)
+        requested_snapshot = _safe_int(snapshot.attrs.get("requested_universe"), requested)
+        min_required = max(350, int(requested * 0.18))
+        if requested_snapshot == requested and loaded >= min_required:
+            snapshot.attrs["snapshot_generated_at"] = meta.get(BREADTH_SNAPSHOT_AT_KEY, snapshot.attrs.get("snapshot_generated_at", ""))
+            snapshot.attrs["snapshot_source"] = _get_cache_metadata(store, BREADTH_SNAPSHOT_SOURCE_KEY, "")
+            return snapshot
 
-    attrs = {
-        "requested_universe": requested,
-        "loaded_universe": loaded,
-        "coverage_ratio": coverage,
-        "partial_universe": coverage < 0.75,
-        "cache_used": True,
-        "cache_only_run": True,
-        "store_backend": store["backend"],
-        "store_label": _get_store_label(store),
-        "cache_member_count": int(_get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_member_count", requested) or requested),
-        "cache_members_updated_at": _get_cache_metadata(store, f"{CACHE_UNIVERSE_NAME}_members_updated_at", ""),
-        "cache_prices_last_write_at": _get_cache_metadata(store, "prices_last_write_at", ""),
-        "last_refresh_at": _get_cache_metadata(store, "last_refresh_at", ""),
-    }
-    bundle["attrs"] = attrs
-
+    breadth = _refresh_breadth_snapshot(store, tickers, start_date, end_date, source="lazy-rebuild")
+    if breadth is None or breadth.empty:
+        return None
+    loaded = _safe_int(breadth.attrs.get("loaded_universe", breadth.attrs.get("breadth_universe_loaded")), 0)
     min_required = max(350, int(requested * 0.18))
-    return bundle if loaded >= min_required else None
+    if loaded > _safe_int(meta.get("last_refresh_loaded_universe"), 0):
+        _set_cache_metadata_many(store, {"last_refresh_loaded_universe": loaded, "last_refresh_requested_universe": requested})
+    return breadth if loaded >= min_required else None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -5610,7 +4974,7 @@ def detect_distribution_days(df):
 def compute_ampel(df):
     df=df.copy();n=len(df);phase="neutral"
     anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None
-    phases=["neutral"]*n;anchor_dates=[None]*n;floor_marks=[None]*n;startschuss_lows=[None]*n;startschuss_dates=[None]*n
+    phases=["neutral"]*n;anchor_dates=[None]*n;floor_marks=[None]*n;startschuss_lows=[None]*n
     c_=df["Close"].values;o_=df["Open"].values;h_=df["High"].values;l_=df["Low"].values
     v_=df["Volume"].values;pct_=df["Pct_Change"].values;cr_=df["Closing_Range"].values
     dc_=df["Dist_Count_25"].values;s50_=df["SMA50"].values;s200_=df["SMA200"].values;e21_=df["EMA21"].values
@@ -5624,7 +4988,7 @@ def compute_ampel(df):
         pi=pct_[i] if not np.isnan(pct_[i]) else 0.0;cri=cr_[i] if not np.isnan(cr_[i]) else 0.5
         if phase in ("neutral","aufwaertstrend"):
             if _corr(i): phase="rot";_clear()
-            elif phase=="aufwaertstrend" and not _is_ma_order_ok(e21_[i], s50_[i], s200_[i]): phase="rot";_clear()
+            elif phase=="aufwaertstrend" and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]<s50_[i]: phase="rot";_clear()
         elif phase=="rot":
             if anchor_idx is not None and i>anchor_idx and l_[i]<floor_mark: anchor_idx=None;floor_mark=None
             if anchor_idx is None:
@@ -5636,13 +5000,12 @@ def compute_ampel(df):
             elif startschuss_idx is not None and i>startschuss_idx+2: phase="gruen";gruen_since=i
         elif phase=="gruen":
             if startschuss_low is not None and c_[i]<startschuss_low: phase="rot";_clear()
-            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and _is_ma_order_ok(e21_[i], s50_[i], s200_[i]) and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend";_clear()
+            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]>s50_[i] and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend";_clear()
         phases[i]=phase
         if anchor_idx is not None: anchor_dates[i]=df.index[anchor_idx].strftime("%Y-%m-%d")
         if floor_mark is not None: floor_marks[i]=round(floor_mark,2)
         if startschuss_low is not None: startschuss_lows[i]=round(startschuss_low,2)
-        if startschuss_idx is not None: startschuss_dates[i]=df.index[startschuss_idx].strftime("%Y-%m-%d")
-    df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows;df["Startschuss_Date"]=startschuss_dates
+    df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows
     return df
 
 def compute_breadth_mode(df_ew):
@@ -5901,7 +5264,6 @@ def render_ampel_section(L):
     anchor = L["Anchor_Date"]
     floor = L["Floor_Mark"]
     ss_low = L["Startschuss_Low"]
-    ss_date = L.get("Startschuss_Date", None)
 
     phase_info = {
         "rot": {
@@ -5914,12 +5276,12 @@ def render_ampel_section(L):
         },
         "gelb": {
             "active": 1, "label": "GELB — Startschuss",
-            "reason": f"Startschuss erkannt! Ankertag: {anchor}. Startschuss-Tag: {ss_date or '—'}. Validierungslinie (Startschuss-Tief): {ss_low:.0f}." if anchor and ss_low else "Startschuss aktiv.",
+            "reason": f"Startschuss erkannt! Ankertag: {anchor}. Validierungslinie (Startschuss-Tief): {ss_low:.0f}." if anchor and ss_low else "Startschuss aktiv.",
             "action": "Erste Position(en) eröffnen (10–30% Kapital). Nur mit klarem Setup.",
         },
         "gruen": {
             "active": 2, "label": "GRÜN — Bestätigung",
-            "reason": f"Startschuss hält seit {ss_date or '—'}. Kurs über Startschuss-Tief ({ss_low:.0f})." if ss_low else "Startschuss bestätigt.",
+            "reason": f"Startschuss hält. Kurs über Startschuss-Tief ({ss_low:.0f})." if ss_low else "Startschuss bestätigt.",
             "action": "Frühe Bestätigungsphase. Vorsichtig Exponierung aufbauen.",
         },
         "aufwaertstrend": {
@@ -5935,7 +5297,7 @@ def render_ampel_section(L):
     }
     info = phase_info.get(phase, phase_info["neutral"])
 
-    colors_off = ["#fecaca", "#fde68a", "#bbf7d0"]
+    colors_off = ["#3b1111", "#3b2d11", "#112b11"]
     colors_on = ["#ef4444", "#f59e0b", "#22c55e"]
     labels = ["ROT", "GELB", "GRÜN"]
     glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440", "0 0 20px #f59e0b80, 0 0 40px #f59e0b40", "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
@@ -5957,8 +5319,8 @@ def render_ampel_section(L):
         else:
             bg = colors_on[i] if is_active else colors_off[i]
             glow = glow_on[i] if is_active else "none"
-        border = f"2px solid {colors_on[i]}60" if is_active else "2px solid #cbd5e1"
-        lbl_c = "#0f172a" if is_active else "#94a3b8"
+        border = f"2px solid {colors_on[i]}40" if is_active else "2px solid #1e293b"
+        lbl_c = "#e2e8f0" if is_active else "#4a5568"
         fw = "700" if is_active else "400"
         phase_for_light = key if not (phase == "aufwaertstrend" and key == "gruen") else "aufwaertstrend"
         rule_text = phase_rules.get(phase_for_light, phase_rules.get(key, ""))
@@ -5970,9 +5332,9 @@ def render_ampel_section(L):
             f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
             f'<div style="font-size:.55rem;color:#64748b;">Tippen für Regel</div>'
             f'</summary>'
-            f'<div style="margin-top:6px;padding:8px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;">'
-            f'<div style="font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">{title}</div>'
-            f'<div style="font-size:.68rem;color:#334155;line-height:1.45;margin-top:4px;">{rule_text}</div>'
+            f'<div style="margin-top:6px;padding:8px;border:1px solid #1e293b;border-radius:8px;background:#0b1220;">'
+            f'<div style="font-size:.62rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;">{title}</div>'
+            f'<div style="font-size:.68rem;color:#e2e8f0;line-height:1.45;margin-top:4px;">{rule_text}</div>'
             f'</div>'
             f'</details>'
         )
@@ -5981,7 +5343,7 @@ def render_ampel_section(L):
         startschuss_html = (
             f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
             f'<span style="font-size:1.4rem;">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#d97706;">Startschuss aktiv</div><div style="font-size:.7rem;color:#64748b;">Startschuss-Tag: {ss_date or "—"} · Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
         )
     else:
         if phase == "rot" and anchor:
@@ -5991,9 +5353,9 @@ def render_ampel_section(L):
         else:
             ss_detail = "Kein aktiver Ampel-Zyklus"
         startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;opacity:0.6;">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#1e293b40;border:1px solid #1e293b;border-radius:8px;opacity:0.5;">'
             f'<span style="font-size:1.4rem;filter:grayscale(1);">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#94a3b8;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#94a3b8;">{ss_detail}</div></div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#64748b;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#4a5568;">{ss_detail}</div></div></div>'
         )
 
     active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
@@ -6001,13 +5363,13 @@ def render_ampel_section(L):
         '<div class="info-card" style="padding:20px;">'
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
         '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f8fafc;padding:16px 20px;border-radius:12px;border:1px solid #e2e8f0;">'
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">'
         f'<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;justify-content:center;">{lights_html}</div>'
         '</div>'
         '<div style="flex:1;min-width:220px;">'
-        f'<div style="font-size:1.1rem;font-weight:700;color:{active_color};letter-spacing:.02em;margin-bottom:6px;font-family:\'Playfair Display\',Georgia,serif;">{info["label"]}</div>'
-        f'<div style="font-size:.8rem;color:#334155;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
-        f'<div style="font-size:.75rem;color:#64748b;line-height:1.4;padding:6px 10px;background:{active_color}12;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
+        f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
+        f'<div style="font-size:.8rem;color:#e2e8f0;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
+        f'<div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
         f'{startschuss_html}'
         '</div></div></div>'
     )
@@ -6015,37 +5377,34 @@ def render_ampel_section(L):
 
     _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
-    _mao = _is_ma_order_ok(_e, _s5, _s2)
+    _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
     details = {
         "Ankertag": anchor if anchor else "— (kein aktiver Zyklus)" if phase in ("neutral", "aufwaertstrend") else "Warte auf Ankertag",
-        "Startschuss-Tag": ss_date if ss_date else "—",
         "Bodenmarke": f"{floor:,.2f}" if floor else "—",
         "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low else "—",
         "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
     }
-    cols = st.columns(5)
+    cols = st.columns(4)
     for i, (k, v) in enumerate(details.items()):
         with cols[i]:
-            st.markdown(f'<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:8px 12px;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06);"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:#0f172a;font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
 
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
-    st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#0f172a;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#e2e8f0;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
 
 def render_breadth(mode,dist_pct):
     c={"rueckenwind":"#22c55e","wachsam":"#f59e0b","schutz":"#ef4444"}.get(mode,"#64748b")
     lbl,desc={"rueckenwind":("Rückenwind","≤4%. Breite Stärke."),"wachsam":("Wachsam","4–8%. Strenger auswählen."),"schutz":("Schutz",">8%. Kapitalschutz.")}.get(mode,("—",""))
     fp=min(100,abs(dist_pct)/12*100)
-    st.markdown(f'<div class="info-card" style="background:{c}10;border-color:{c}40;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#64748b;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#64748b;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div style="display:flex;justify-content:space-between;font-size:.65rem;color:#64748b;"><span style="color:#16a34a;">Rückenwind</span><span style="color:#d97706;">Wachsam</span><span style="color:#dc2626;">Schutz</span></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div style="display:flex;justify-content:space-between;font-size:.65rem;color:#64748b;"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
 
 
 def _render_deep_analysis_content(component_bundle, sd, data):
-    preaggregated = isinstance(component_bundle, dict) and component_bundle.get("breadth_metrics") is not None
-    if preaggregated:
-        br = component_bundle.get("breadth_metrics")
-        close_frame = component_bundle.get("close")
+    close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else None
+    if isinstance(component_bundle, pd.DataFrame) and {"Advancers", "Decliners", "AD_Line"}.issubset(component_bundle.columns):
+        br = component_bundle.copy()
     else:
-        close_frame = component_bundle.get("close") if isinstance(component_bundle, dict) else component_bundle
         if close_frame is None or len(close_frame) <= 50:
             st.warning("Zu wenige gespeicherte Kursdaten für die Tiefenanalyse des NYSE/Nasdaq-Aktienuniversums.")
             return None
@@ -6057,12 +5416,10 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     last_trading_date = br.index[-1].strftime("%d.%m.%Y")
     breadth_attrs = br.attrs
     requested = breadth_attrs.get("requested_universe")
-    loaded_fallback = len(close_frame.columns) if isinstance(close_frame, pd.DataFrame) else 0
-    loaded = breadth_attrs.get("loaded_universe", loaded_fallback)
+    loaded = breadth_attrs.get("loaded_universe", breadth_attrs.get("breadth_universe_loaded", len(close_frame.columns) if close_frame is not None else 0))
     coverage = float(breadth_attrs.get("coverage_ratio", 0.0) or 0.0)
     ratio_txt = f" / {requested}" if requested else ""
-    cached_txt = " (voraggregiert)" if preaggregated else ""
-    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}{cached_txt}")
+    st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
     if requested and loaded < requested * 0.8:
         st.warning(f"Hinweis: Es wurden nicht alle Titel des NYSE/Nasdaq-Aktienuniversums geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
     st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
@@ -6075,8 +5432,8 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     bL = br_valid.iloc[-1]
     bL_date = br_valid.index[-1].strftime("%d.%m.%Y")
     intraday_note = " · NH/NL auf Tageshoch/-tief" if br.attrs.get("nhnl_uses_intraday") else " · NH/NL fallback auf Schlusskurs"
-    loaded_for_label = br.attrs.get("breadth_universe_loaded", loaded_fallback)
-    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({loaded_for_label} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
+    loaded_universe = br.attrs.get("breadth_universe_loaded", loaded)
+    st.markdown(f'<div class="info-card"><div class="card-label">Marktbreite-Kennzahlen — NYSE/Nasdaq ({loaded_universe} Aktien) · {bL_date}{intraday_note}</div>', unsafe_allow_html=True)
 
     kb1, kb2, kb3, kb4, kb5 = st.columns(5)
     mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
@@ -6145,13 +5502,13 @@ def plot_price(df,sd=90):
     for col,nm,clr,sym,sz in [("Is_Distribution","Dist.","#ef4444","triangle-down",7),("Is_Stall","Stau","#f59e0b","diamond",6),("Intraday_Reversal_Down","Umkehr↓","#f97316","x",8)]:
         m=dv[dv[col]==True]
         if len(m)>0: fig.add_trace(go.Scatter(x=_x(m.index),y=_y(m["Close"] if "Stall" not in nm else m["High"]),name=nm,mode="markers",marker=dict(color=clr,size=sz,symbol=sym)))
-    fig.update_layout(template="plotly_white",paper_bgcolor="#ffffff",plot_bgcolor="#f8fafc",margin=dict(l=0,r=0,t=30,b=0),height=380,legend=dict(orientation="h",yanchor="top",y=1.12,font=dict(size=9,color="#64748b")),xaxis=dict(gridcolor="#e2e8f0",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#e2e8f0",tickfont=dict(size=9,color="#64748b")),hovermode="x unified")
+    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=380,legend=dict(orientation="h",yanchor="top",y=1.12,font=dict(size=9,color="#94a3b8")),xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),hovermode="x unified")
     return fig
 
 def plot_volume(df,sd=90):
     dv=df.tail(sd);x=_x(dv.index);colors=["#22c55e" if p>=0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig=go.Figure();fig.add_trace(go.Bar(x=x,y=_y(dv["Volume"]),marker_color=colors,opacity=0.7));fig.add_trace(go.Scatter(x=x,y=_y(dv["Vol_SMA50"]),line=dict(color="#64748b",width=1,dash="dot")))
-    fig.update_layout(template="plotly_white",paper_bgcolor="#ffffff",plot_bgcolor="#f8fafc",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#e2e8f0",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#e2e8f0",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
+    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#1e293b",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
     return fig
 
 def plot_price_with_volume(df, sd=90):
@@ -6171,7 +5528,7 @@ def plot_price_with_volume(df, sd=90):
     vol_colors = ["#22c55e" if p >= 0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig.add_trace(go.Bar(x=x, y=_y(dv["Volume"]), marker_color=vol_colors, opacity=0.7, name="Volumen", showlegend=False), row=2, col=1)
     fig.add_trace(go.Scatter(x=x, y=_y(dv["Vol_SMA50"]), name="Vol 50-SMA", line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
-    fig.update_layout(template="plotly_white", paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc", margin=dict(l=0, r=0, t=30, b=0), height=500, legend=dict(orientation="h", yanchor="top", y=1.10, font=dict(size=9, color="#64748b")), xaxis=dict(gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b")), yaxis2=dict(gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b"), tickformat=".2s"), hovermode="x unified")
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=30, b=0), height=500, legend=dict(orientation="h", yanchor="top", y=1.10, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis2=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), tickformat=".2s"), hovermode="x unified")
     fig.update_xaxes(showgrid=False, row=1, col=1)
     fig.update_xaxes(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), row=2, col=1)
     return fig
@@ -6185,7 +5542,7 @@ def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
     ma_name = "10-EMA" if ma_col == "EMA10" else "10-SMA"
     if ma_col is not None:
         fig.add_trace(go.Scatter(x=x, y=_y(d[ma_col]), name=ma_name, line=dict(color="#3b82f6", width=1, dash="dot")))
-    fig.update_layout(template="plotly_white", paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc", margin=dict(l=0, r=0, t=10, b=0), height=180, legend=dict(orientation="h", yanchor="top", y=1.15, font=dict(size=9, color="#64748b")), xaxis=dict(gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b")))
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=10, b=0), height=180, legend=dict(orientation="h", yanchor="top", y=1.15, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")))
     return fig
 
 def render_signal_card(title, status, detail, tone="#64748b"):
@@ -6224,15 +5581,15 @@ def plot_breadth_deep(br,sd=90):
     fig.add_hline(y=1.97,line_dash="dash",line_color="#22c55e",line_width=1,annotation_text="1.97 (Thrust)",annotation_font_color="#22c55e",annotation_font_size=9,row=5,col=1)
     fig.add_hline(y=1.0,line_dash="dot",line_color="#64748b",line_width=0.5,row=5,col=1)
 
-    fig.update_layout(template="plotly_white",paper_bgcolor="#ffffff",plot_bgcolor="#f8fafc",margin=dict(l=0,r=0,t=30,b=0),height=750,showlegend=False)
-    for i in range(1,6): fig.update_xaxes(gridcolor="#e2e8f0",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="#e2e8f0",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
-    for ann in fig.layout.annotations: ann.font.size=10;ann.font.color="#64748b"
+    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=750,showlegend=False)
+    for i in range(1,6): fig.update_xaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
+    for ann in fig.layout.annotations: ann.font.size=10;ann.font.color="#94a3b8"
     return fig
 
 def plot_fed_rate(fed_df,sd=200):
     d=fed_df.tail(sd);x=_x(d.index);fig=go.Figure()
     fig.add_trace(go.Scatter(x=x,y=_y(d["FedRate"]),name="Fed Funds Rate",line=dict(color="#f59e0b",width=2),fill="tozeroy",fillcolor="rgba(245,158,11,0.1)"))
-    fig.update_layout(template="plotly_white",paper_bgcolor="#ffffff",plot_bgcolor="#f8fafc",margin=dict(l=0,r=0,t=10,b=0),height=150,showlegend=False,xaxis=dict(gridcolor="#e2e8f0",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#e2e8f0",tickfont=dict(size=9,color="#64748b"),title="% p.a.",title_font=dict(size=9,color="#64748b")))
+    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=150,showlegend=False,xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),title="% p.a.",title_font=dict(size=9,color="#64748b")))
     return fig
 
 
@@ -6240,6 +5597,9 @@ def compute_breadth_from_components(components):
     """From component price frames, compute breadth indicators daily."""
     if components is None:
         return None
+
+    if isinstance(components, pd.DataFrame) and {"Advancers", "Decliners", "AD_Line"}.issubset(components.columns):
+        return components
 
     if isinstance(components, dict):
         closes = components.get("close")
@@ -6371,15 +5731,6 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             g = (cur / prev - 1) * 100
             acc.append((lbl, round(g, 1), None, cur, prev))
 
-    def _expected_anchor_quarter():
-        """Return the quarter that should normally be compared YoY right now.
-
-        We use the *last completed* calendar quarter as default anchor.
-        Example: in Q1 we still anchor on Q4 (Q1 reports are often not fully out yet).
-        """
-        now = pd.Timestamp.utcnow()
-        return ((int(now.quarter) - 2) % 4) + 1
-
     def _extract_yoy(vals):
         """
         Compare SAME fiscal quarter across years in a chain:
@@ -6422,27 +5773,8 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         if not ordered_keys:
             return []
 
-        quarter_to_years = {}
-        for y, q in bucket.keys():
-            quarter_to_years.setdefault(q, set()).add(y)
-        latest_year = max(y for y, _ in bucket.keys())
-
-        expected_q = _expected_anchor_quarter()
-        quarter_priority = [((expected_q - i - 1) % 4) + 1 for i in range(4)]
-        anchor_q = None
-        for q in quarter_priority:
-            years_for_q = quarter_to_years.get(q, set())
-            if len(years_for_q) >= 2 and latest_year in years_for_q:
-                anchor_q = q
-                break
-        if anchor_q is None:
-            anchor_q = ordered_keys[0][1]
-
-        same_q_points = sorted(
-            [(y, bucket[(y, q)]) for (y, q) in bucket.keys() if q == anchor_q],
-            key=lambda t: t[0],
-            reverse=True,
-        )
+        anchor_q = ordered_keys[0][1]
+        same_q_points = sorted([(y, bucket[(y, q)]) for (y, q) in bucket.keys() if q == anchor_q], key=lambda t: t[0], reverse=True)
         if len(same_q_points) < 2:
             return []
 
@@ -6468,7 +5800,22 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
                 if _is_same_quarter_chain(res):
                     return res
 
-    # ── 1. quarterly_income_stmt (try for revenue, usually 4-5 quarters) ──
+    # ── 1. earnings_dates: epsActual for up to 12 quarters (EPS only) ──
+    if field == "eps" and ed is not None and not ed.empty:
+        eps_col = None
+        for col_name in ["Reported EPS", "EPS Actual", "epsActual", "Earnings/Share"]:
+            if col_name in ed.columns: eps_col = col_name; break
+        if eps_col:
+            eps_data = ed[[eps_col]].copy()
+            eps_data = eps_data[eps_data[eps_col].notna()]
+            eps_data = eps_data[~eps_data.index.duplicated(keep='first')]
+            eps_data = eps_data.sort_index(ascending=False)
+            if len(eps_data) >= 5:
+                res = _extract_yoy(eps_data[eps_col])
+                if _is_same_quarter_chain(res):
+                    return res
+
+    # ── 2. quarterly_income_stmt (try for revenue, usually 4-5 quarters) ──
     candidates = {
         "eps": ["Diluted EPS", "Basic EPS"],
         "revenue": ["Total Revenue", "Revenue", "Operating Revenue"],
@@ -6481,7 +5828,7 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
             if _is_same_quarter_chain(res):
                 return res
 
-    # ── 2. quarterly_earnings (deprecated fallback) ──
+    # ── 3. quarterly_earnings (deprecated fallback) ──
     if qe is not None and not qe.empty:
         col_map = {"eps": "Earnings", "revenue": "Revenue"}
         col = col_map.get(field)
@@ -6542,18 +5889,6 @@ def _check_growth_ok(items, threshold=20):
         if flag in ("still_neg", "turned_neg"): return False
         if g is not None and g < threshold: return False
     return True
-
-def _fmt_quarter_value_pairs(items, metric_label="EPS"):
-    """Format explicit quarterly values for transparency."""
-    if not items:
-        return ""
-    pairs = []
-    for lbl, _, _, cur, prev in items:
-        try:
-            pairs.append(f"{lbl}: {metric_label} {cur:.2f} vs {prev:.2f}")
-        except Exception:
-            continue
-    return " | ".join(pairs)
 
 def _sum_last_4q_eps(qi):
     """Sum of the last 4 quarterly EPS values."""
@@ -6649,106 +5984,32 @@ def load_cached_universe_closes_for_rs(lookback_days=400):
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_external_rs_ratings_map():
-    api_url = "https://api.github.com/repos/Fred6725/rs-log/contents/output"
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "boerse-dashboard"}
-    payload = {"ok": False, "source": "external_csv", "file": "", "files": [], "value_column": "", "count": 0, "ratings": {}, "error": ""}
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_cached_universe_rs_scores(lookback_days=400):
     try:
-        resp = requests.get(api_url, headers=headers, timeout=20)
-        resp.raise_for_status()
-        rows = resp.json()
-        if not isinstance(rows, list):
-            payload["error"] = "Ungültige GitHub-API-Antwort."
-            return payload
-        csv_candidates = [r for r in rows if isinstance(r, dict) and str(r.get("name", "")).lower().endswith(".csv") and r.get("type") == "file"]
-        if not csv_candidates:
-            payload["error"] = "Keine CSV im output-Ordner gefunden."
-            return payload
+        store = _get_price_store()
+        _init_price_cache_db(store)
+        meta = _get_cache_metadata_many(store, [RS_SNAPSHOT_KEY, RS_SNAPSHOT_AT_KEY])
+        scores = _deserialize_series_snapshot(meta.get(RS_SNAPSHOT_KEY, ""))
+        if scores is not None and len(scores) >= 100:
+            return scores
 
-        preferred = next((r for r in csv_candidates if str(r.get("name", "")).lower() == "rs_stocks.csv"), None)
-        chosen = preferred if preferred is not None else sorted(csv_candidates, key=lambda r: str(r.get("name", "")), reverse=True)[0]
-        download_url = chosen.get("download_url")
-        if not download_url:
-            payload["error"] = "Kein download_url für CSV vorhanden."
-            return payload
-        csv_resp = requests.get(str(download_url), headers={"User-Agent": "boerse-dashboard"}, timeout=20)
-        csv_resp.raise_for_status()
-        df = pd.read_csv(io.StringIO(csv_resp.text))
-        if df is None or df.empty:
-            payload["error"] = "CSV ist leer."
-            return payload
-        normalized_cols = {str(c).strip().lower().replace(" ", "_"): c for c in df.columns}
-        ticker_col = next((normalized_cols[k] for k in ["ticker", "symbol", "stock", "aktie"] if k in normalized_cols), None)
-        rs_col = next(
-            (
-                normalized_cols[k]
-                for k in [
-                    "percentile",
-                    "rs_rating",
-                    "relative_strength_rating",
-                    "rs_rank",
-                    "rsrank",
-                    "rating",
-                    "relative_strength",
-                    "relative_strength_value",
-                    "rs",
-                ]
-                if k in normalized_cols
-            ),
-            None,
-        )
-        if ticker_col is None or rs_col is None:
-            payload["error"] = "Ticker- oder RS-Spalte in CSV nicht gefunden."
-            return payload
+        tickers = _load_cached_universe_members(store, CACHE_UNIVERSE_NAME)
+        if not tickers:
+            tickers = get_app_stock_universe_tickers()
+        tickers = [str(t).strip().upper() for t in tickers if t]
+        if not tickers:
+            return None
 
-        rows = df[[ticker_col, rs_col]].copy()
-        rows[ticker_col] = rows[ticker_col].astype(str).str.upper().str.strip()
-        rows[rs_col] = pd.to_numeric(rows[rs_col], errors="coerce")
-        rows = rows.dropna(subset=[ticker_col, rs_col])
-        rows = rows[rows[ticker_col] != ""]
-        rows[rs_col] = rows[rs_col].clip(lower=1, upper=99).round().astype(int)
-        rows = rows.drop_duplicates(subset=[ticker_col], keep="last")
-        ratings = {str(r[ticker_col]).strip().upper(): int(r[rs_col]) for _, r in rows.iterrows()}
-        payload.update({
-            "ok": bool(ratings),
-            "file": str(chosen.get("name", "")),
-            "files": [str(chosen.get("name", ""))],
-            "value_column": str(rs_col),
-            "count": int(len(ratings)),
-            "ratings": ratings,
-            "error": "" if ratings else "CSV enthielt keine auswertbaren RS-Werte.",
-        })
-        return payload
+        end = pd.Timestamp.utcnow().normalize()
+        start = end - pd.Timedelta(days=lookback_days)
+        bundle = _read_cached_price_bundle(store, tickers, start.date().isoformat(), end.date().isoformat())
+        closes = bundle.get("close") if bundle else None
+        scores = _refresh_relative_strength_snapshot_from_closes(store, closes, source="lazy-rs-rebuild", lookback_days=lookback_days)
+        return scores if scores is not None and len(scores) else None
     except Exception as exc:
-        logger.debug("load_external_rs_ratings_map failed: %s", exc)
-        payload["error"] = f"RS-CSV konnte nicht geladen werden ({exc})."
-        return payload
-
-
-def _apply_rs_source_override(ticker: str, rs_ctx: dict | None):
-    source = _get_rs_rating_source_setting()
-    if source != "csv_latest":
-        return rs_ctx, None
-    external = load_external_rs_ratings_map()
-    note = {
-        "source": "csv_latest",
-        "ok": bool(external.get("ok")),
-        "file": str(external.get("file", "")),
-        "files": list(external.get("files", []) or []),
-        "value_column": str(external.get("value_column", "")),
-        "count": int(external.get("count", 0) or 0),
-        "error": str(external.get("error", "") or "").strip(),
-        "matched": False,
-    }
-    base_ctx = dict(rs_ctx or {})
-    ratings = external.get("ratings", {}) if isinstance(external, dict) else {}
-    value = ratings.get(str(ticker or "").strip().upper()) if isinstance(ratings, dict) else None
-    if value is not None:
-        base_ctx["rating"] = int(np.clip(value, 1, 99))
-        base_ctx["method"] = "external_csv"
-        note["matched"] = True
-    return base_ctx, note
+        logger.debug("load_cached_universe_rs_scores failed: %s", exc)
+        return None
 
 
 def _weighted_rs_score(rs_line, windows=((63, 0.4), (126, 0.2), (189, 0.2), (252, 0.2))):
@@ -6792,7 +6053,7 @@ def _weighted_rs_scores_for_frame(ratio_frame, windows=((63, 0.4), (126, 0.2), (
     return out.replace([np.inf, -np.inf], np.nan).dropna()
 
 
-def _calc_rs_rating(stock_close, benchmark_close, universe_closes=None):
+def _calc_rs_rating(stock_close, benchmark_close, universe_closes=None, universe_scores=None):
     raw_rs = _build_relative_strength_line(stock_close, benchmark_close, normalize_to=None)
     plot_rs = _build_relative_strength_line(stock_close, benchmark_close, normalize_to=100.0)
     payload = {
@@ -6854,8 +6115,9 @@ def _calc_rs_rating(stock_close, benchmark_close, universe_closes=None):
             payload["near_high_52w"] = bool(last_rs >= high_52w * 0.97)
             payload["new_high_52w"] = bool(last_rs >= high_52w * 0.999)
 
-    universe_scores = pd.Series(dtype=float)
-    if universe_closes is not None and not universe_closes.empty:
+    cached_scores = universe_scores if isinstance(universe_scores, pd.Series) else pd.Series(dtype=float)
+    universe_scores = cached_scores.dropna() if isinstance(cached_scores, pd.Series) else pd.Series(dtype=float)
+    if universe_scores.empty and universe_closes is not None and not universe_closes.empty:
         closes = universe_closes.copy()
         try:
             closes.index = pd.to_datetime(closes.index, errors="coerce")
@@ -6910,11 +6172,32 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     # ── Debug: show data availability ──
     src_info = []
     if qraw is not None:
-        raw_source = str(qraw.get("_source", "Direktdaten")).strip()
+        source_prefix = "FMP"
+        note_hint = ""
+        if fmp_err:
+            note_text = str(fmp_err)
+            if note_text in ("FMP stable", "FMP legacy"):
+                source_prefix = "FMP"
+            elif note_text == "SEC ergänzt":
+                source_prefix = "SEC"
+            elif "SEC ergänzt" in note_text and ("FMP stable" in note_text or "FMP legacy" in note_text):
+                source_prefix = "Quartalsdaten"
+                note_hint = note_text
+            elif "SEC ergänzt" in note_text and "FMP" not in note_text:
+                source_prefix = "SEC"
+                note_hint = note_text
+            elif "SEC ergänzt" in note_text and "FMP" in note_text:
+                source_prefix = "Quartalsdaten"
+                note_hint = note_text
+            elif note_text.startswith("SEC "):
+                source_prefix = "SEC"
+            else:
+                source_prefix = "Quartalsdaten"
+                note_hint = note_text
         for key, series in qraw.items():
-            if not isinstance(series, pd.Series):
-                continue
-            src_info.append(f"{raw_source} {key}: {len(series)}Q")
+            src_info.append(f"{source_prefix} {key}: {len(series)}Q")
+        if note_hint:
+            src_info.append(f"Hinweis: {note_hint}")
     elif fmp_err:
         src_info.append(f"FMP: {fmp_err}")
     else:
@@ -6943,9 +6226,6 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     epsg = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed, qraw=qraw)
     if epsg:
         details = " → ".join(_fmt_growth_item(item) for item in epsg)
-        value_trace = _fmt_quarter_value_pairs(epsg, metric_label="EPS")
-        if value_trace:
-            details = f"{details} · Werte: {value_trace}"
         all_ok = _check_growth_ok(epsg, threshold=20)
         checks.append((f"EPS ≥20% YoY ({len(epsg)}Q)", all_ok, details))
     else:
@@ -7043,12 +6323,10 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     pm = _g("profitMargins")
     if pm is not None:
         checks.append(("Gewinnmarge positiv", pm > 0, f"{pm*100:.1f}%"))
-    else:
-        checks.append(("Gewinnmarge positiv", False, "Nicht verfügbar"))
 
     return checks
 
-def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe=None):
+def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=None):
     checks = []; L = df.iloc[-1]; price = L["Close"]
 
     checks.append(("Preis ≥ $15", price >= 15, f"${price:,.2f}"))
@@ -7067,17 +6345,18 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe=None):
         udv = uv / dv
         checks.append(("Up/Down Vol. Ratio ≥1.0", udv >= 1.0, f"{udv:.2f}" + (" (ideal ≥1.1)" if udv >= 1.1 else "")))
 
-    rs_ctx = rs_ctx or _calc_rs_rating(df["Close"], spx_df["Close"] if spx_df is not None else None, universe_closes=rs_universe)
+    rs_ctx = rs_ctx or _calc_rs_rating(
+        df["Close"],
+        spx_df["Close"] if spx_df is not None else None,
+        universe_scores=rs_universe_scores,
+    )
     rs = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
     if isinstance(rs_ctx, dict):
         method = rs_ctx.get("method", "unavailable")
         method_note = (
-            "CSV-Import"
-            if method == "external_csv"
-            else "Universums-Ranking"
-            if method == "universe_percentile"
-            else "Fallback-Proxy"
-            if method == "weighted_proxy"
+            "Universums-Ranking" if method == "universe_percentile"
+            else "CSV-Rating" if method == "external_csv"
+            else "Fallback-Proxy" if method == "weighted_proxy"
             else ""
         )
         universe_note = f" · {rs_ctx.get('universe_size', 0)} Aktien" if rs_ctx.get("universe_size") else ""
@@ -7549,40 +6828,18 @@ def evaluate_chart_signs(df, rs_ctx=None):
 
 def _tab_aktienbewertung():
     _init_workspace_state()
-    _render_section_header("📋", "Aktienbewertung", "Fundamentals · Technik · Chartverhalten")
+    st.markdown("### 📋 Aktienbewertung")
+    st.caption("Einzelaktien-Check mit komfortabler Suche, Watchlist und schneller Einordnung für Fundamentaldaten, Technik und Chartverhalten.")
 
-    lookback_days = st.radio(
-        "Lookback",
-        options=[300, 500],
-        index=1,
-        key="stock_lookback_days",
-        horizontal=True,
-        help="Bestimmt, wie viele Kalendertage Historie für die Analyse geladen werden.",
-    )
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
 
-    rs_source = _get_rs_rating_source_setting()
+    rs_source_setting = _get_rs_rating_source_setting()
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
+        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker)
         spx_df = load_sp500_for_rs()
-        rs_universe = load_cached_universe_closes_for_rs() if rs_source == "computed" else None
-
-    if df is None or len(df) < 20:
-        try:
-            load_stock_full.clear()
-        except Exception:
-            pass
-        with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
-            df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker, lookback_days=lookback_days)
-
-    if spx_df is None or len(spx_df) < 120:
-        try:
-            load_sp500_for_rs.clear()
-        except Exception:
-            pass
-        spx_df = _load_sp500_for_rs_core()
+        rs_universe_scores = load_cached_universe_rs_scores() if rs_source_setting == RS_SOURCE_COMPUTED else None
 
     if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
@@ -7614,10 +6871,7 @@ def _tab_aktienbewertung():
             })
             st.success(f"{ticker} als Position vorgemerkt.")
     with act3:
-        market_date = pd.Timestamp(df.index[-1]).date()
-        today_local = datetime.now().date()
-        freshness_note = "" if market_date >= today_local else " (letzter Handelstag)"
-        st.caption(f"Datenstand: {last_date}{freshness_note} · Quelle Yahoo Finance")
+        st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
 
@@ -7633,7 +6887,11 @@ def _tab_aktienbewertung():
     atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
     vol_ratio = float(L["Volume"] / df["Volume"].rolling(50).mean().iloc[-1]) if len(df) >= 50 and pd.notna(df["Volume"].rolling(50).mean().iloc[-1]) and df["Volume"].rolling(50).mean().iloc[-1] else np.nan
-    rs_ctx = _calc_rs_rating(df["Close"], spx_df["Close"] if spx_df is not None else None, universe_closes=rs_universe)
+    rs_ctx = _calc_rs_rating(
+        df["Close"],
+        spx_df["Close"] if spx_df is not None else None,
+        universe_scores=rs_universe_scores,
+    )
     rs_ctx, rs_source_note = _apply_rs_source_override(ticker, rs_ctx)
     rs_hint = ""
     if isinstance(rs_ctx, dict):
@@ -7644,7 +6902,7 @@ def _tab_aktienbewertung():
 
     rs_rating_val = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
     rs_rating_detail = (
-        "CSV-Import (rs-log/output)" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "external_csv"
+        "CSV-Rating aus GitHub" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "external_csv"
         else "Perzentil im Universum" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "universe_percentile"
         else "Gewichtete RS" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "weighted_proxy"
         else "Vergleich zum S&P 500"
@@ -7664,17 +6922,15 @@ def _tab_aktienbewertung():
     rng_hl = L["High"] - L["Low"]
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
-    sector_text = _clean_info_text((info or {}).get("sector"), default="—")[:22]
-    industry_text = _clean_info_text((info or {}).get("industry"), default="—")[:28]
-    beta = _safe_float((info or {}).get("beta"), np.nan)
+    beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
 
     top_metrics = st.columns(3)
     with top_metrics[0]:
-        st.metric("Sektor", sector_text)
+        st.metric("Sektor", (info.get("sector", "—") if info else "—")[:22])
         st.caption("Geschäftsfeld der Aktie")
     with top_metrics[1]:
-        st.metric("Branche", industry_text)
+        st.metric("Branche", (info.get("industry", "—") if info else "—")[:28])
         st.caption("Feinere Untergruppe innerhalb des Sektors")
     with top_metrics[2]:
         st.metric("Closing Range", f"{cr_today:.0f}%")
@@ -7689,31 +6945,24 @@ def _tab_aktienbewertung():
         rs_metric_delta = "Elite" if rs_rating_val is not None and rs_rating_val >= 90 else "Stark" if rs_rating_val is not None and rs_rating_val >= 80 else ""
         st.metric("RS-Rating", f"{rs_rating_val}" if rs_rating_val is not None else "—", rs_metric_delta)
     with low_metrics[3]:
-        st.metric("Beta", f"{beta:.2f}" if not np.isnan(beta) else "—", ">1.3 dynamisch" if not np.isnan(beta) and beta > 1.3 else "")
+        st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
 
-    missing_profile_fields = []
-    if _info_value_missing((info or {}).get("sector")):
-        missing_profile_fields.append("Sektor")
-    if _info_value_missing((info or {}).get("industry")):
-        missing_profile_fields.append("Branche")
-    if np.isnan(beta):
-        missing_profile_fields.append("Beta")
-    if missing_profile_fields:
-        st.caption(f"Hinweis: {', '.join(missing_profile_fields)} konnten aktuell weder von Yahoo Finance noch vom FMP-Fallback geladen werden.")
+    if isinstance(rs_source_note, dict) and rs_source_note.get("source") == RS_SOURCE_CSV_LATEST:
+        if rs_source_note.get("matched"):
+            note_bits = [
+                f"RS-Quelle: {rs_source_note.get('file') or RS_OUTPUT_FILE_NAME}",
+                "CSV aktiv",
+            ]
+            if rs_source_note.get("as_of_date"):
+                note_bits.append(f"Stand {rs_source_note.get('as_of_date')}")
+            st.caption(" · ".join(note_bits))
+        elif rs_source_note.get("ok"):
+            st.caption(f"RS-Quelle: {rs_source_note.get('file') or RS_OUTPUT_FILE_NAME} · Kein Eintrag für {ticker}, nutze internen Fallback.")
+        elif rs_source_note.get("error"):
+            st.caption(f"RS-CSV derzeit nicht verfügbar ({rs_source_note.get('error')}). Nutze internen Fallback.")
 
     if isinstance(rs_ctx, dict) and rs_ctx.get("distance_to_high_pct") is not None:
         st.caption(f"RS-Linie aktuell {rs_ctx.get('distance_to_high_pct'):+.1f}% von ihrem 52-Wochen-Hoch entfernt.")
-    if isinstance(rs_source_note, dict) and rs_source_note.get("source") == "csv_latest":
-        if rs_source_note.get("matched"):
-            file_name = rs_source_note.get("file") or "rs_stocks*.csv"
-            value_col = rs_source_note.get("value_column") or "Percentile"
-            st.caption(f"RS-Rating kommt aus externer CSV ({file_name}) · Spalte: {value_col}.")
-        elif rs_source_note.get("ok"):
-            file_name = rs_source_note.get("file") or "rs_stocks*.csv"
-            value_col = rs_source_note.get("value_column") or "Percentile"
-            st.caption(f"CSV-Modus aktiv ({file_name}, Spalte: {value_col}), für diesen Ticker gab es keinen Eintrag. Fallback bleibt die bisherige Berechnung.")
-        elif rs_source_note.get("error"):
-            st.caption(f"CSV-Modus aktiv, Laden fehlgeschlagen: {rs_source_note.get('error')}")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
@@ -7748,11 +6997,11 @@ def _tab_aktienbewertung():
             fig_stock.add_trace(go.Scatter(x=rs_sma50.index, y=rs_sma50, name="RS 50-SMA", line=dict(color="#fb923c", width=1.0, dash="dash")), row=3, col=1)
     six_months_ago = df.index[-1] - pd.Timedelta(days=180)
     fig_stock.update_layout(
-        template="plotly_white", paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
+        template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
         height=560, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
-        xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#e2e8f0"),
+        xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#1e293b"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
-        yaxis=dict(title="", gridcolor="#e2e8f0"), yaxis2=dict(title="", gridcolor="#e2e8f0"), yaxis3=dict(title="", gridcolor="#e2e8f0"), xaxis2=dict(gridcolor="#e2e8f0"), xaxis3=dict(gridcolor="#e2e8f0"),
+        yaxis=dict(title="", gridcolor="#1e293b"), yaxis2=dict(title="", gridcolor="#1e293b"), yaxis3=dict(title="", gridcolor="#1e293b"), xaxis2=dict(gridcolor="#1e293b"), xaxis3=dict(gridcolor="#1e293b"),
     )
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, use_container_width=True, key="stock_chart")
@@ -7770,7 +7019,7 @@ def _tab_aktienbewertung():
 
     with col_t:
         st.markdown('<div class="info-card"><div class="card-label">Technische Checkliste</div>', unsafe_allow_html=True)
-        tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe=rs_universe)
+        tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
         tok = sum(1 for _, ok, _ in tc if ok)
         for label, ok, detail in tc:
             render_check(label, ok, detail)
@@ -7786,7 +7035,7 @@ def _tab_aktienbewertung():
             st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
             if signs[key]:
                 for nm, dt in signs[key]:
-                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e2e8f0;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
             else:
                 st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
@@ -7813,7 +7062,8 @@ def _tab_aktienbewertung():
 
 def _tab_nach_kauf():
     _init_workspace_state()
-    _render_section_header("🎯", "Nach dem Kauf", "Positions-Monitoring · P&L · Verhalten seit Kauf")
+    st.markdown("### 🎯 Nach dem Kauf")
+    st.caption("Überwache bestehende Positionen ohne Vorauswahl. Du gibst den Ticker direkt ein und vorhandene Depotdaten werden erst danach übernommen.")
 
     private_ok = _is_private_unlocked()
     saved_positions = st.session_state.get("positions", []) if private_ok else []
@@ -8029,7 +7279,7 @@ def _tab_nach_kauf():
         st.markdown('<div class="info-card" style="border-color:#22c55e30;"><div class="card-label" style="color:#22c55e;">Positive Zeichen</div>', unsafe_allow_html=True)
         if pos_signs:
             for nm, dt in pos_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e2e8f0;"><div style="font-size:.84rem;color:#16a34a;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:#22c55e;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -8038,7 +7288,7 @@ def _tab_nach_kauf():
         st.markdown('<div class="info-card" style="border-color:#ef444430;"><div class="card-label" style="color:#ef4444;">Warnzeichen</div>', unsafe_allow_html=True)
         if neg_signs:
             for nm, dt in neg_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e2e8f0;"><div style="font-size:.84rem;color:#dc2626;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:#ef4444;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -8060,7 +7310,8 @@ def _tab_nach_kauf():
 
 def _tab_sektoranalyse():
     """Tab 2: Sector performance ranking table."""
-    _render_section_header("🏭", "Sektoranalyse — Performance-Ranking", "S&P 500 ETFs · Bester Sektor oben")
+    st.markdown("### 🏭 Sektoranalyse — Performance-Ranking")
+    st.caption("S&P 500 Sektor-ETFs gerankt nach Performance. Bester Sektor steht oben.")
 
     with st.spinner("Lade Sektor-Daten …"):
         sector_closes = load_sector_data()
@@ -8098,17 +7349,17 @@ def _tab_sektoranalyse():
         st.markdown('<div class="card-label">🏆 TOP 3 SEKTOREN</div>', unsafe_allow_html=True)
         for i, (name, val) in enumerate(top3.items()):
             medal = ["🥇", "🥈", "🥉"][i]
-            c = "#16a34a" if val > 0 else "#dc2626"
-            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #e2e8f0;">'
-                        f'<span style="font-size:.85rem;color:#0f172a;">{medal} {name}</span>'
+            c = "#22c55e" if val > 0 else "#ef4444"
+            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e293b;">'
+                        f'<span style="font-size:.85rem;color:#e2e8f0;">{medal} {name}</span>'
                         f'<span style="font-size:.85rem;font-weight:700;color:{c};">{val:+.2f}%</span></div>',
                         unsafe_allow_html=True)
     with tc2:
         st.markdown('<div class="card-label">📉 BOTTOM 3 SEKTOREN</div>', unsafe_allow_html=True)
         for name, val in bot3.items():
-            c = "#16a34a" if val > 0 else "#dc2626"
-            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #e2e8f0;">'
-                        f'<span style="font-size:.85rem;color:#0f172a;">{name}</span>'
+            c = "#22c55e" if val > 0 else "#ef4444"
+            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e293b;">'
+                        f'<span style="font-size:.85rem;color:#e2e8f0;">{name}</span>'
                         f'<span style="font-size:.85rem;font-weight:700;color:{c};">{val:+.2f}%</span></div>',
                         unsafe_allow_html=True)
 
@@ -8160,13 +7411,13 @@ def _tab_sektoranalyse():
             mode="lines+markers", marker=dict(size=4),
         ))
     fig.update_layout(
-        template="plotly_white", paper_bgcolor="#ffffff", plot_bgcolor="#f8fafc",
+        template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827",
         margin=dict(l=0, r=0, t=10, b=0), height=350,
-        yaxis=dict(autorange="reversed", gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b"),
+        yaxis=dict(autorange="reversed", gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"),
                    title="Rang", title_font=dict(size=9, color="#64748b"), dtick=1),
-        xaxis=dict(gridcolor="#e2e8f0", tickfont=dict(size=9, color="#64748b")),
+        xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
-                    font=dict(size=8, color="#64748b")),
+                    font=dict(size=8, color="#94a3b8")),
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -8199,8 +7450,6 @@ def _tab_marktanalyse():
     if not available:
         st.error("Keine Index-Daten.")
         return
-
-    _render_section_header("📊", "Marktanalyse", "Index · Indikatoren · Marktbreite · Volatilität")
 
     c1, c2 = st.columns([3, 1])
     with c1:
@@ -8265,34 +7514,32 @@ def _tab_marktanalyse():
     reasons = _build_market_reasons(L, wc, breadth_label, vol_latest)
     freshness = _format_data_freshness(selected, df, vol_dashboard)
     changes = _build_market_changes(df, selected, wc, vol_dashboard, breadth_label)
-
-    # Store ampel phase for sidebar badge
-    st.session_state["_sidebar_ampel_phase"] = L.get("Ampel_Phase", "neutral")
-
-    # Hero → Ampel (most important signal) → Change cards
     _render_hero_card(mode, tone, reasons, action, freshness)
-    render_ampel_section(L)
     _render_change_cards(changes)
 
-    # KPI cards — single row, color-coded by warning state
-    dd = L["Dist_52w_pct"]
-    dc = int(L["Dist_Count_25"])
-    kpi_cols = st.columns(5)
-    with kpi_cols[0]:
-        idx_tone = "bad" if pct < -1.0 else "good" if pct > 0.5 else "neutral"
-        _render_kpi_card(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%", idx_tone, "Tagesveränderung")
-    with kpi_cols[1]:
-        dc_tone = "bad" if dc >= 4 else "warn" if dc >= 2 else "neutral"
-        _render_kpi_card("Dist.-Tage", str(dc), "⚠ Häufung" if dc >= 4 else "OK", dc_tone, "Abgabedruck 25T")
-    with kpi_cols[2]:
-        ema_tone = "warn" if not np.isnan(d21) and (d21 > 3.0 or d21 < 0) else "neutral"
-        _render_kpi_card("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", "", ema_tone, "Kurzfrist-Überdehnung")
-    with kpi_cols[3]:
-        sma_tone = "warn" if not np.isnan(d50) and (d50 > t50 or d50 < 0) else "neutral"
-        _render_kpi_card("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠ >{t50:.0f}%" if not np.isnan(d50) and d50 > t50 else "", sma_tone, "Mittelfrist-Überdehnung")
-    with kpi_cols[4]:
-        dd_tone = "bad" if not np.isnan(dd) and dd < -15 else "warn" if not np.isnan(dd) and dd < -5 else "neutral"
-        _render_kpi_card("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—", "", dd_tone, "Abstand 52W-Hoch")
+    # Trendwende-Ampel wieder als zentrales Element sichtbar machen
+    render_ampel_section(L)
+
+    # Compact metric layout
+    row1 = st.columns(3)
+    with row1[0]:
+        st.metric(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%")
+        st.caption("Tagesveränderung des gewählten Index")
+    with row1[1]:
+        st.metric("Dist.-Tage", int(L["Dist_Count_25"]), "⚠ Häufung" if int(L["Dist_Count_25"]) >= 4 else "OK")
+        st.caption("Institutioneller Abgabedruck im 25-Tage-Fenster")
+    with row1[2]:
+        st.metric("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—")
+        st.caption("Kurzfristige Überdehnung in ATR")
+
+    row2 = st.columns(2)
+    with row2[0]:
+        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠>{t50:.0f}%" if (not np.isnan(d50) and d50 > t50) else "")
+        st.caption("Mittelfristige Überdehnung")
+    with row2[1]:
+        dd = L["Dist_52w_pct"]
+        st.metric("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—")
+        st.caption("Abstand zum 52-Wochen-Hoch")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
@@ -8495,13 +7742,45 @@ def _render_technical_setup_area():
             if st.button("Status neu laden", use_container_width=True, key="tech_status_reload"):
                 st.rerun()
 
-    btn_refresh, btn_rescue, btn_remap, btn_diag = st.columns(4)
+    settings = _get_portfolio_settings()
+    rs_source_choice = st.selectbox(
+        "RS-Rating Quelle",
+        options=list(RS_SOURCE_LABELS.keys()),
+        index=0 if _get_rs_rating_source_setting() == RS_SOURCE_CSV_LATEST else 1,
+        format_func=lambda key: RS_SOURCE_LABELS.get(key, key),
+        key="tech_rs_source_select",
+        help="Standardmäßig nutzt die Aktienbewertung die im GitHub-Repo abgelegte RS-CSV. Die DB-Variante greift wieder auf den internen Snapshot bzw. die Live-Berechnung zu.",
+    )
+    if st.button("RS-Quelle speichern", use_container_width=False, key="tech_rs_source_save"):
+        settings["rs_rating_source"] = RS_SOURCE_CSV_LATEST if rs_source_choice == RS_SOURCE_CSV_LATEST else RS_SOURCE_COMPUTED
+        _save_portfolio_settings(settings)
+        st.success("RS-Quelle gespeichert. Die Auswahl bleibt auch nach Neustart erhalten.")
+
+    rs_csv_info = load_external_rs_ratings_map()
+    if rs_csv_info.get("ok"):
+        csv_caption_parts = [
+            f"CSV: {rs_csv_info.get('file')}",
+            f"{int(rs_csv_info.get('count', 0) or 0)} Ratings",
+        ]
+        if rs_csv_info.get("as_of_date"):
+            csv_caption_parts.append(f"Stand {rs_csv_info.get('as_of_date')}")
+        if rs_csv_info.get("generated_at_utc"):
+            csv_caption_parts.append(f"Erzeugt {rs_csv_info.get('generated_at_utc')} UTC")
+        st.caption(" · ".join(csv_caption_parts))
+    elif _get_rs_rating_source_setting() == RS_SOURCE_CSV_LATEST:
+        st.warning(rs_csv_info.get("error") or "Die RS-CSV ist noch nicht vorhanden. Die App fällt bis dahin auf die interne Berechnung zurück.")
+    else:
+        st.caption(rs_csv_info.get("error") or "Noch keine lokale RS-CSV gefunden.")
+
+    btn_refresh, btn_rescue, btn_remap, btn_export, btn_diag = st.columns(5)
     with btn_refresh:
         refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True, disabled=bool(active_job), key="tech_refresh_universe")
     with btn_rescue:
         rescue_clicked = st.button("Fehlende nachladen", use_container_width=True, disabled=bool(active_job), key="tech_rescue_missing")
     with btn_remap:
         remap_clicked = st.button("Automatisch remappen", use_container_width=True, disabled=bool(active_job), key="tech_auto_remap")
+    with btn_export:
+        export_clicked = st.button("RS-CSV erzeugen", use_container_width=True, disabled=bool(active_job), key="tech_export_rs_csv")
     with btn_diag:
         diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True, key="tech_yahoo_diag")
 
@@ -8523,6 +7802,12 @@ def _render_technical_setup_area():
             st.success(f"✓ Auto-Remap-Job angelegt: {result['job']['job_id']}.")
         else:
             st.error(result.get("error") or "Der Auto-Remap-Job konnte nicht gestartet werden.")
+    if export_clicked:
+        result = _request_external_refresh_job("export_rs_csv", payload={"trigger": "streamlit_private_tech", "rs_source": "github_csv"})
+        if result.get("ok"):
+            st.success(f"✓ RS-CSV-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der RS-CSV-Job konnte nicht gestartet werden.")
     if diagnose_clicked:
         with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
             diag_stats = diagnose_missing_nyse_yahoo()
@@ -8541,7 +7826,8 @@ def _tab_mein_bereich():
         return
     _init_workspace_state()
 
-    _render_section_header("🔐", "Mein Bereich", f"Speicher: {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
+    st.markdown("### 🔐 Mein Bereich")
+    st.caption(f"Persönlicher Arbeitsbereich mit persistentem Speicher über {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
 
     top_left, top_right = st.columns([1.4, 0.8])
     with top_left:
@@ -8552,25 +7838,6 @@ def _tab_mein_bereich():
         if _private_area_enabled() and st.button("🔒 Bereich sperren", use_container_width=True, key="private_lock_btn"):
             _lock_private_area()
             st.rerun()
-
-    settings = _get_portfolio_settings()
-    rs_source_labels = {
-        "computed": "Berechnet (bisher)",
-        "csv_latest": "Aus aktueller CSV (rs-log/output)",
-    }
-    inverse_rs_labels = {v: k for k, v in rs_source_labels.items()}
-    current_rs_source = settings.get("rs_rating_source", "computed")
-    selected_rs_label = st.selectbox(
-        "RS-Rating Quelle",
-        options=list(inverse_rs_labels.keys()),
-        index=0 if current_rs_source == "computed" else 1,
-        key="mein_bereich_rs_source",
-        help="Steuert, ob das RS-Rating intern berechnet wird oder aus der neuesten CSV-Datei aus rs-log/output kommt.",
-    )
-    if st.button("Einstellungen speichern", use_container_width=False, key="mein_bereich_save_settings"):
-        settings["rs_rating_source"] = inverse_rs_labels.get(selected_rs_label, "computed")
-        _save_portfolio_settings(settings)
-        st.success("Einstellungen gespeichert.")
 
     area_view = st.segmented_control(
         "Bereich",
