@@ -7563,23 +7563,18 @@ def _tab_aktienbewertung():
     if not ticker:
         return
 
+    rs_source = _get_rs_rating_source_setting()
     with st.spinner(f"Lade {ticker} …"):
-        df, info = load_stock_price_only(ticker, lookback_days=lookback_days)
+        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
         spx_df = load_sp500_for_rs()
-        rs_universe = load_cached_universe_closes_for_rs()
+        rs_universe = load_cached_universe_closes_for_rs() if rs_source == "computed" else None
 
     if df is None or len(df) < 20:
         try:
-            load_stock_price_only.clear()
+            load_stock_full.clear()
         except Exception:
             pass
         with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
-            df, info = _load_stock_price_only_core(ticker, lookback_days=lookback_days)
-
-    qi = ai = ih = qe = ed = qraw = fmp_err = None
-
-    if df is None or len(df) < 20:
-        with st.spinner(f"Lade {ticker} erneut (Fundamentals-Fallback) …"):
             df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker, lookback_days=lookback_days)
 
     if spx_df is None or len(spx_df) < 120:
@@ -7592,18 +7587,6 @@ def _tab_aktienbewertung():
     if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
         return
-
-    fund_cache = st.session_state.setdefault("stock_fundamentals_cache", {})
-    fund_payload = fund_cache.get(ticker)
-    if isinstance(fund_payload, dict):
-        info = {**(info or {}), **(fund_payload.get("info") or {})}
-        qi = fund_payload.get("qi")
-        ai = fund_payload.get("ai")
-        ih = fund_payload.get("ih")
-        qe = fund_payload.get("qe")
-        ed = fund_payload.get("ed")
-        qraw = fund_payload.get("qraw")
-        fmp_err = fund_payload.get("fmp_err")
 
     _add_recent_ticker(ticker)
     L = df.iloc[-1]
@@ -7777,34 +7760,12 @@ def _tab_aktienbewertung():
     col_f, col_t = st.columns(2)
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
-        if fund_payload is None:
-            st.caption("2-Stufen-Load aktiv: Technik/Chart sind bereits da. Fundamentals werden bei Bedarf separat geladen.")
-            if st.button("Fundamentaldaten laden", key=f"load_fundamentals_{ticker}", use_container_width=True):
-                with st.spinner(f"Lade {ticker} (Stufe 2: Fundamentals) …"):
-                    full_df, full_info, full_qi, full_ai, full_ih, full_qe, full_ed, full_qraw, full_fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
-                if full_df is not None and len(full_df) >= 20:
-                    fund_cache[ticker] = {
-                        "info": full_info or {},
-                        "qi": full_qi,
-                        "ai": full_ai,
-                        "ih": full_ih,
-                        "qe": full_qe,
-                        "ed": full_ed,
-                        "qraw": full_qraw,
-                        "fmp_err": full_fmp_err,
-                    }
-                    st.session_state["stock_fundamentals_cache"] = fund_cache
-                    st.success("Fundamentaldaten geladen.")
-                    st.rerun()
-                else:
-                    st.warning("Fundamentaldaten konnten aktuell nicht geladen werden.")
-        else:
-            fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
-            fok = sum(1 for _, ok, _ in fc if ok)
-            for label, ok, detail in fc:
-                render_check(label, ok, detail)
-            sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
-            st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
+        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
+        fok = sum(1 for _, ok, _ in fc if ok)
+        for label, ok, detail in fc:
+            render_check(label, ok, detail)
+        sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
+        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_t:
