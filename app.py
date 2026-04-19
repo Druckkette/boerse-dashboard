@@ -3094,6 +3094,11 @@ def _load_stock_full_core(ticker, lookback_days=500):
             return out
 
         info = _safe_attr("info") or {}
+        if not isinstance(info, dict) or not info:
+            try:
+                info = t.get_info() or {}
+            except Exception as exc:
+                logger.debug("Ticker get_info failed for %s: %s", ticker, exc)
         if not isinstance(info, dict):
             info = {}
 
@@ -3109,6 +3114,9 @@ def _load_stock_full_core(ticker, lookback_days=500):
 
         needs_profile = any(info.get(k) in (None, "", "N/A") for k in ["sector", "industry", "returnOnEquity", "beta"])
         if needs_profile:
+            fallback_info = _fetch_yahoo_profile_snapshot(ticker)
+            info = _merge_info(info, fallback_info)
+        if info.get("shortName") in (None, "", "N/A"):
             fallback_info = _fetch_yahoo_profile_snapshot(ticker)
             info = _merge_info(info, fallback_info)
 
