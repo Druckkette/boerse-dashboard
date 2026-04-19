@@ -7375,9 +7375,17 @@ def _tab_aktienbewertung():
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
+    lookback_days = st.radio(
+        "Lookback",
+        options=[300, 500],
+        index=1,
+        horizontal=True,
+        key="stock_lookback_days",
+        help="Bestimmt, wie viele Kalendertage Historie für die Analyse geladen werden.",
+    )
 
-    with st.spinner(f"Lade {ticker} (Stufe 1: Kursdaten) …"):
-        df, info = load_stock_price_only(ticker)
+    with st.spinner(f"Lade {ticker} …"):
+        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
         spx_df = load_sp500_for_rs()
         rs_universe = load_cached_universe_closes_for_rs()
 
@@ -7387,7 +7395,7 @@ def _tab_aktienbewertung():
         except Exception:
             pass
         with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
-            df, info = _load_stock_price_only_core(ticker)
+            df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker, lookback_days=lookback_days)
 
     if spx_df is None or len(spx_df) < 120:
         try:
