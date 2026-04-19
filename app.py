@@ -3115,6 +3115,11 @@ def _fetch_yahoo_profile_snapshot(symbol: str):
         roe_val = _extract_num(fin.get("returnOnEquity"))
         if roe_val is not None:
             out["returnOnEquity"] = roe_val
+        profit_margin_val = _extract_num(fin.get("profitMargins"))
+        if profit_margin_val is None:
+            profit_margin_val = _extract_num(stats.get("profitMargins"))
+        if profit_margin_val is not None:
+            out["profitMargins"] = _safe_float(profit_margin_val, profit_margin_val)
         beta_val = _extract_num(summary.get("beta"))
         if beta_val is None:
             beta_val = _extract_num(stats.get("beta"))
@@ -3195,17 +3200,50 @@ def _fetch_fmp_profile_snapshot(symbol: str):
         return {}
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_fmp_fundamentals_snapshot(symbol: str):
+    """FMP fallback for ROE / profit margin when Yahoo is incomplete."""
+    api_key = _read_secret_value("FMP_API_KEY")
+    if not api_key:
+        return {}
+    try:
+        url = "https://financialmodelingprep.com/stable/ratios-ttm"
+        params = {"symbol": symbol, "apikey": api_key}
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        resp.raise_for_status()
+        data = resp.json() or []
+        if not isinstance(data, list) or not data:
+            return {}
+        item = data[0] or {}
+        out = {}
+        roe = _safe_float(item.get("returnOnEquityTTM"), np.nan)
+        profit_margin = _safe_float(item.get("netProfitMarginTTM"), np.nan)
+        if not np.isnan(roe):
+            out["returnOnEquity"] = roe
+        if not np.isnan(profit_margin):
+            out["profitMargins"] = profit_margin
+        return out
+    except Exception as exc:
+        logger.debug("FMP fundamentals snapshot failed for %s: %s", symbol, exc)
+        return {}
+
+
 def _enrich_profile_info(ticker: str, info: dict | None, close_series: pd.Series | None = None) -> dict:
     """Fill missing profile fields from Yahoo, FMP and price-derived beta."""
     enriched = dict(info or {})
 
-    if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "returnOnEquity", "beta", "shortName"]):
+    if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "returnOnEquity", "profitMargins", "beta", "shortName"]):
         yahoo_snapshot = _fetch_yahoo_profile_snapshot(ticker)
         enriched = _merge_missing_info(enriched, yahoo_snapshot)
 
     if any(_info_value_missing(enriched.get(k)) for k in ["sector", "industry", "beta", "shortName"]):
         fmp_snapshot = _fetch_fmp_profile_snapshot(ticker)
         enriched = _merge_missing_info(enriched, fmp_snapshot)
+
+    if any(_info_value_missing(enriched.get(k)) for k in ["returnOnEquity", "profitMargins"]):
+        fmp_fundamentals = _fetch_fmp_fundamentals_snapshot(ticker)
+        enriched = _merge_missing_info(enriched, fmp_fundamentals)
 
     beta_val = _safe_float(enriched.get("beta"), np.nan)
     if np.isnan(beta_val):
@@ -7005,6 +7043,8 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     pm = _g("profitMargins")
     if pm is not None:
         checks.append(("Gewinnmarge positiv", pm > 0, f"{pm*100:.1f}%"))
+    else:
+        checks.append(("Gewinnmarge positiv", False, "Nicht verfügbar"))
 
     return checks
 
@@ -7524,7 +7564,7 @@ def _tab_aktienbewertung():
         return
 
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
+        df, info = load_stock_price_only(ticker, lookback_days=lookback_days)
         spx_df = load_sp500_for_rs()
         rs_universe = load_cached_universe_closes_for_rs()
 
@@ -7534,6 +7574,12 @@ def _tab_aktienbewertung():
         except Exception:
             pass
         with st.spinner(f"Lade {ticker} erneut (Live-Fallback) …"):
+            df, info = _load_stock_price_only_core(ticker, lookback_days=lookback_days)
+
+    qi = ai = ih = qe = ed = qraw = fmp_err = None
+
+    if df is None or len(df) < 20:
+        with st.spinner(f"Lade {ticker} erneut (Fundamentals-Fallback) …"):
             df, info, qi, ai, ih, qe, ed, qraw, fmp_err = _load_stock_full_core(ticker, lookback_days=lookback_days)
 
     if spx_df is None or len(spx_df) < 120:
@@ -7547,7 +7593,6 @@ def _tab_aktienbewertung():
         st.error(f"Keine Daten für '{ticker}'.")
         return
 
-    qi = ai = ih = qe = ed = qraw = fmp_err = None
     fund_cache = st.session_state.setdefault("stock_fundamentals_cache", {})
     fund_payload = fund_cache.get(ticker)
     if isinstance(fund_payload, dict):
@@ -7736,7 +7781,7 @@ def _tab_aktienbewertung():
             st.caption("2-Stufen-Load aktiv: Technik/Chart sind bereits da. Fundamentals werden bei Bedarf separat geladen.")
             if st.button("Fundamentaldaten laden", key=f"load_fundamentals_{ticker}", use_container_width=True):
                 with st.spinner(f"Lade {ticker} (Stufe 2: Fundamentals) …"):
-                    full_df, full_info, full_qi, full_ai, full_ih, full_qe, full_ed, full_qraw, full_fmp_err = load_stock_full(ticker)
+                    full_df, full_info, full_qi, full_ai, full_ih, full_qe, full_ed, full_qraw, full_fmp_err = load_stock_full(ticker, lookback_days=lookback_days)
                 if full_df is not None and len(full_df) >= 20:
                     fund_cache[ticker] = {
                         "info": full_info or {},
