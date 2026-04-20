@@ -3,13 +3,12 @@ name: market-refresh
 on:
   schedule:
     # GitHub Cron läuft in UTC.
-    # Der geplante Lauf erzeugt standardmäßig die RS-CSV außerhalb von Neon.
-    # Entspricht aktuell 08:15, 15:30, 18:00, 22:00 Uhr in Deutschland (CEST, UTC+2).
-    # Im Winter (CET, UTC+1) verschiebt sich die lokale Uhrzeit um +1h.
-    - cron: "15 6 * * 1-5"
-    - cron: "30 13 * * 1-5"
-    - cron: "0 16 * * 1-5"
-    - cron: "0 20 * * 1-5"
+    # Zur Abbildung von 16:00 und 22:30 Uhr Europe/Berlin ganzjährig
+    # werden Sommer- und Winterzeitfenster in UTC geplant und danach lokal gefiltert.
+    - cron: "0 14 * * 1-5"
+    - cron: "0 15 * * 1-5"
+    - cron: "30 20 * * 1-5"
+    - cron: "30 21 * * 1-5"
   workflow_dispatch:
     inputs:
       job_id:
@@ -19,7 +18,7 @@ on:
       job_type:
         description: export_rs_csv | refresh_universe | rescue_missing | auto_remap
         required: false
-        default: export_rs_csv
+        default: refresh_universe
         type: string
       requested_by:
         description: Optionaler Auslöser
@@ -52,27 +51,58 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run refresh worker
+      - name: Check Europe/Berlin schedule window
+        if: github.event_name == 'schedule'
+        id: berlin_window
         env:
-          EVENT_NAME: ${{ github.event_name }}
+          TZ: Europe/Berlin
+        run: |
+          berlin_time="$(date '+%H:%M')"
+          echo "berlin_time=${berlin_time}" >> "$GITHUB_OUTPUT"
+          if [[ "${berlin_time}" == "16:00" || "${berlin_time}" == "22:30" ]]; then
+            echo "run_jobs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_jobs=false" >> "$GITHUB_OUTPUT"
+            echo "Kein geplanter Lauf für ${berlin_time} Europe/Berlin."
+          fi
+
+      - name: Run scheduled DB refresh
+        if: github.event_name == 'schedule' && steps.berlin_window.outputs.run_jobs == 'true'
+        run: |
+          python worker.py \
+            --job-type "refresh_universe" \
+            --requested-by "github_schedule" \
+            --create-job-if-missing
+
+      - name: Run scheduled RS CSV export
+        if: success() && github.event_name == 'schedule' && steps.berlin_window.outputs.run_jobs == 'true'
+        run: |
+          python worker.py \
+            --job-type "export_rs_csv" \
+            --requested-by "github_schedule" \
+            --create-job-if-missing
+
+      - name: Run manual worker
+        if: github.event_name != 'schedule'
+        env:
           INPUT_JOB_ID: ${{ inputs.job_id }}
           INPUT_JOB_TYPE: ${{ inputs.job_type }}
           INPUT_REQUESTED_BY: ${{ inputs.requested_by }}
         run: |
-          if [[ "${EVENT_NAME}" == "schedule" ]]; then
-            python worker.py \
-              --job-type "export_rs_csv" \
-              --requested-by "github_schedule" \
-              --create-job-if-missing
-          else
+          if [[ -n "${INPUT_JOB_ID}" ]]; then
             python worker.py \
               --job-id "${INPUT_JOB_ID}" \
               --job-type "${INPUT_JOB_TYPE}" \
               --requested-by "${INPUT_REQUESTED_BY}"
+          else
+            python worker.py \
+              --job-type "${INPUT_JOB_TYPE}" \
+              --requested-by "${INPUT_REQUESTED_BY:-github_manual}" \
+              --create-job-if-missing
           fi
 
       - name: Commit updated RS CSV
-        if: success() && (github.event_name == 'schedule' || inputs.job_type == 'export_rs_csv')
+        if: success() && ((github.event_name == 'schedule' && steps.berlin_window.outputs.run_jobs == 'true') || inputs.job_type == 'export_rs_csv')
         run: |
           if [[ -n "$(git status --porcelain -- output/rs_stocks.csv)" ]]; then
             git config user.name "github-actions[bot]"
