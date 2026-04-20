@@ -110,13 +110,16 @@ WORKSPACE_FILE = "user_workspace.json"
 WORKSPACE_SCOPE_DEFAULT = "default"
 DEFAULT_FAVORITES = ["NVDA", "MSFT", "AAPL", "META", "AMZN", "PLTR", "LLY", "TSLA"]
 RS_SOURCE_CSV_LATEST = "csv_latest"
+RS_SOURCE_FRED_CSV = "csv_fred"
 RS_SOURCE_COMPUTED = "computed"
 RS_SOURCE_LABELS = {
-    RS_SOURCE_CSV_LATEST: "CSV aus GitHub (Standard)",
+    RS_SOURCE_CSV_LATEST: "Eigene CSV aus diesem Repo (Standard)",
+    RS_SOURCE_FRED_CSV: "Fred RS-Rating CSV (rs-log)",
     RS_SOURCE_COMPUTED: "DB / Live-Berechnung",
 }
 RS_OUTPUT_DIR_NAME = "output"
 RS_OUTPUT_FILE_NAME = "rs_stocks.csv"
+FRED_RS_CSV_URL = "https://raw.githubusercontent.com/Fred6725/rs-log/main/output/rs_stocks.csv"
 METRIC_GLOSSARY = {
     "Dist.-Tage": "Verkaufstage mit höherem Volumen als am Vortag. Viele Distribution Days sprechen für institutionellen Abgabedruck.",
     "21-EMA": "Abstand zur 21-EMA in ATR. Je weiter der Index darüber liegt, desto eher ist er kurzfristig überdehnt.",
@@ -702,14 +705,23 @@ def _get_portfolio_settings() -> dict:
             settings[key] = fallback
     settings["curve_start_date"] = str(settings.get("curve_start_date", "") or "").strip()
     rs_source = str(settings.get("rs_rating_source", RS_SOURCE_CSV_LATEST) or RS_SOURCE_CSV_LATEST).strip().lower()
-    settings["rs_rating_source"] = RS_SOURCE_CSV_LATEST if rs_source == RS_SOURCE_CSV_LATEST else RS_SOURCE_COMPUTED
+    if rs_source == RS_SOURCE_FRED_CSV:
+        settings["rs_rating_source"] = RS_SOURCE_FRED_CSV
+    elif rs_source == RS_SOURCE_COMPUTED:
+        settings["rs_rating_source"] = RS_SOURCE_COMPUTED
+    else:
+        settings["rs_rating_source"] = RS_SOURCE_CSV_LATEST
     return settings
 
 
 def _get_rs_rating_source_setting() -> str:
     settings = _get_portfolio_settings()
     source = str(settings.get("rs_rating_source", RS_SOURCE_CSV_LATEST) or RS_SOURCE_CSV_LATEST).strip().lower()
-    return RS_SOURCE_CSV_LATEST if source == RS_SOURCE_CSV_LATEST else RS_SOURCE_COMPUTED
+    if source == RS_SOURCE_FRED_CSV:
+        return RS_SOURCE_FRED_CSV
+    if source == RS_SOURCE_COMPUTED:
+        return RS_SOURCE_COMPUTED
+    return RS_SOURCE_CSV_LATEST
 
 def _save_portfolio_settings(settings: dict) -> None:
     merged = dict(_default_portfolio_settings())
@@ -3217,14 +3229,69 @@ def load_external_rs_ratings_map():
         return payload
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_fred_rs_ratings_map():
+    payload = {
+        "ok": False,
+        "source": "fred_csv",
+        "file": "rs_stocks.csv",
+        "path": FRED_RS_CSV_URL,
+        "value_column": "",
+        "score_column": "",
+        "count": 0,
+        "ratings": {},
+        "scores": {},
+        "as_of_date": "",
+        "generated_at_utc": "",
+        "error": "",
+    }
+    try:
+        response = requests.get(FRED_RS_CSV_URL, headers={"User-Agent": "boerse-dashboard"}, timeout=20)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text))
+        return _parse_rs_ratings_frame(
+            df,
+            source_name="fred_csv",
+            file_name="rs_stocks.csv",
+            path_name=FRED_RS_CSV_URL,
+        )
+    except Exception as exc:
+        logger.debug("load_fred_rs_ratings_map failed: %s", exc)
+        payload["error"] = f"Fred-RS-CSV konnte nicht geladen werden ({exc})."
+        return payload
+
+
+def _load_selected_rs_ratings_map(source: str | None = None):
+    selected = str(source or _get_rs_rating_source_setting() or RS_SOURCE_CSV_LATEST).strip().lower()
+    if selected == RS_SOURCE_COMPUTED:
+        return {
+            "ok": False,
+            "source": RS_SOURCE_COMPUTED,
+            "file": "",
+            "path": "",
+            "value_column": "",
+            "score_column": "",
+            "count": 0,
+            "ratings": {},
+            "scores": {},
+            "as_of_date": "",
+            "generated_at_utc": "",
+            "error": "",
+        }
+    if selected == RS_SOURCE_FRED_CSV:
+        return load_fred_rs_ratings_map()
+    return load_external_rs_ratings_map()
+
+
 def _apply_rs_source_override(ticker: str, rs_ctx: dict | None):
     source = _get_rs_rating_source_setting()
-    if source != RS_SOURCE_CSV_LATEST:
+    if source == RS_SOURCE_COMPUTED:
         return rs_ctx, None
 
-    external = load_external_rs_ratings_map()
+    external = _load_selected_rs_ratings_map(source)
     note = {
-        "source": RS_SOURCE_CSV_LATEST,
+        "source": source,
+        "source_label": RS_SOURCE_LABELS.get(source, source),
         "ok": bool(external.get("ok")),
         "file": str(external.get("file", "")),
         "path": str(external.get("path", "")),
@@ -6902,7 +6969,7 @@ def _tab_aktienbewertung():
 
     rs_rating_val = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
     rs_rating_detail = (
-        "CSV-Rating aus GitHub" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "external_csv"
+        "CSV-Rating" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "external_csv"
         else "Perzentil im Universum" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "universe_percentile"
         else "Gewichtete RS" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "weighted_proxy"
         else "Vergleich zum S&P 500"
@@ -6947,17 +7014,17 @@ def _tab_aktienbewertung():
     with low_metrics[3]:
         st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
 
-    if isinstance(rs_source_note, dict) and rs_source_note.get("source") == RS_SOURCE_CSV_LATEST:
+    if isinstance(rs_source_note, dict) and rs_source_note.get("source") in {RS_SOURCE_CSV_LATEST, RS_SOURCE_FRED_CSV}:
         if rs_source_note.get("matched"):
             note_bits = [
-                f"RS-Quelle: {rs_source_note.get('file') or RS_OUTPUT_FILE_NAME}",
+                f"RS-Quelle: {rs_source_note.get('source_label') or rs_source_note.get('file') or RS_OUTPUT_FILE_NAME}",
                 "CSV aktiv",
             ]
             if rs_source_note.get("as_of_date"):
                 note_bits.append(f"Stand {rs_source_note.get('as_of_date')}")
             st.caption(" · ".join(note_bits))
         elif rs_source_note.get("ok"):
-            st.caption(f"RS-Quelle: {rs_source_note.get('file') or RS_OUTPUT_FILE_NAME} · Kein Eintrag für {ticker}, nutze internen Fallback.")
+            st.caption(f"RS-Quelle: {rs_source_note.get('source_label') or rs_source_note.get('file') or RS_OUTPUT_FILE_NAME} · Kein Eintrag für {ticker}, nutze internen Fallback.")
         elif rs_source_note.get("error"):
             st.caption(f"RS-CSV derzeit nicht verfügbar ({rs_source_note.get('error')}). Nutze internen Fallback.")
 
@@ -7743,22 +7810,25 @@ def _render_technical_setup_area():
                 st.rerun()
 
     settings = _get_portfolio_settings()
+    current_rs_source = _get_rs_rating_source_setting()
+    rs_source_options = list(RS_SOURCE_LABELS.keys())
     rs_source_choice = st.selectbox(
         "RS-Rating Quelle",
-        options=list(RS_SOURCE_LABELS.keys()),
-        index=0 if _get_rs_rating_source_setting() == RS_SOURCE_CSV_LATEST else 1,
+        options=rs_source_options,
+        index=rs_source_options.index(current_rs_source) if current_rs_source in rs_source_options else 0,
         format_func=lambda key: RS_SOURCE_LABELS.get(key, key),
         key="tech_rs_source_select",
-        help="Standardmäßig nutzt die Aktienbewertung die im GitHub-Repo abgelegte RS-CSV. Die DB-Variante greift wieder auf den internen Snapshot bzw. die Live-Berechnung zu.",
+        help="Du kannst zwischen deiner eigenen Repo-CSV, Freds RS-CSV und der DB-/Live-Berechnung umschalten. Die Auswahl wird dauerhaft gespeichert.",
     )
     if st.button("RS-Quelle speichern", use_container_width=False, key="tech_rs_source_save"):
-        settings["rs_rating_source"] = RS_SOURCE_CSV_LATEST if rs_source_choice == RS_SOURCE_CSV_LATEST else RS_SOURCE_COMPUTED
+        settings["rs_rating_source"] = rs_source_choice if rs_source_choice in RS_SOURCE_LABELS else RS_SOURCE_CSV_LATEST
         _save_portfolio_settings(settings)
         st.success("RS-Quelle gespeichert. Die Auswahl bleibt auch nach Neustart erhalten.")
 
-    rs_csv_info = load_external_rs_ratings_map()
+    rs_csv_info = _load_selected_rs_ratings_map(rs_source_choice)
     if rs_csv_info.get("ok"):
         csv_caption_parts = [
+            f"Quelle: {RS_SOURCE_LABELS.get(rs_source_choice, rs_source_choice)}",
             f"CSV: {rs_csv_info.get('file')}",
             f"{int(rs_csv_info.get('count', 0) or 0)} Ratings",
         ]
@@ -7767,10 +7837,10 @@ def _render_technical_setup_area():
         if rs_csv_info.get("generated_at_utc"):
             csv_caption_parts.append(f"Erzeugt {rs_csv_info.get('generated_at_utc')} UTC")
         st.caption(" · ".join(csv_caption_parts))
-    elif _get_rs_rating_source_setting() == RS_SOURCE_CSV_LATEST:
-        st.warning(rs_csv_info.get("error") or "Die RS-CSV ist noch nicht vorhanden. Die App fällt bis dahin auf die interne Berechnung zurück.")
+    elif rs_source_choice != RS_SOURCE_COMPUTED:
+        st.warning(rs_csv_info.get("error") or "Die gewählte RS-CSV ist noch nicht verfügbar. Die App fällt bis dahin auf die interne Berechnung zurück.")
     else:
-        st.caption(rs_csv_info.get("error") or "Noch keine lokale RS-CSV gefunden.")
+        st.caption("Die DB-Variante nutzt den internen Snapshot bzw. die Live-Berechnung aus dem Datenspeicher.")
 
     btn_refresh, btn_rescue, btn_remap, btn_export, btn_diag = st.columns(5)
     with btn_refresh:
