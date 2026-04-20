@@ -2575,6 +2575,60 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
+def _load_ticker_attr_value(ticker, attr_name):
+    try:
+        return getattr(yf.Ticker(ticker), attr_name)
+    except Exception as exc:
+        logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
+        return None
+
+
+def _load_ticker_earnings_dates(ticker, limit=12):
+    try:
+        return yf.Ticker(ticker).get_earnings_dates(limit=limit)
+    except Exception as exc:
+        logger.debug("earnings dates failed for %s: %s", ticker, exc)
+        return None
+
+
+def _load_stock_reference_data_parallel(ticker, fmp_key):
+    task_specs = {
+        "info": (_load_ticker_attr_value, ticker, "info"),
+        "qi": (_load_ticker_attr_value, ticker, "quarterly_income_stmt"),
+        "ai": (_load_ticker_attr_value, ticker, "income_stmt"),
+        "ih": (_load_ticker_attr_value, ticker, "institutional_holders"),
+        "qe": (_load_ticker_attr_value, ticker, "quarterly_earnings"),
+        "ed": (_load_ticker_earnings_dates, ticker, 12),
+        "sec": (_fetch_quarterly_sec_companyfacts, ticker),
+    }
+    if fmp_key:
+        task_specs["fmp"] = (_fetch_quarterly_fmp, ticker, fmp_key)
+
+    results = {
+        "info": {},
+        "qi": None,
+        "ai": None,
+        "ih": None,
+        "qe": None,
+        "ed": None,
+        "fmp": (None, None),
+        "sec": (None, None),
+    }
+    max_workers = max(1, min(6, len(task_specs)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for key, spec in task_specs.items():
+            fn, *args = spec
+            futures[executor.submit(fn, *args)] = key
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as exc:
+                logger.debug("Parallel stock component %s failed for %s: %s", key, ticker, exc)
+    return results
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_stock_full(ticker, lookback_days=500):
     """Load price history plus the most important fundamental datasets for one ticker."""
@@ -2582,8 +2636,7 @@ def load_stock_full(ticker, lookback_days=500):
     start = end - timedelta(days=lookback_days)
     empty_result = (None, None, None, None, None, None, None, None, None)
     try:
-        t = yf.Ticker(ticker)
-        df = t.history(start=start, end=end, auto_adjust=True)
+        df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
         if df is None or len(df) < 20:
             return empty_result
 
@@ -2593,36 +2646,26 @@ def load_stock_full(ticker, lookback_days=500):
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        def _safe_attr(attr_name):
-            try:
-                return getattr(t, attr_name)
-            except Exception as exc:
-                logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
-                return None
-
-        info = _safe_attr("info") or {}
-        qi = _safe_attr("quarterly_income_stmt")
-        ai = _safe_attr("income_stmt")
-        ih = _safe_attr("institutional_holders")
-        qe = _safe_attr("quarterly_earnings")
-        try:
-            ed = t.get_earnings_dates(limit=12)
-        except Exception as exc:
-            logger.debug("earnings dates failed for %s: %s", ticker, exc)
-            ed = None
-
         fmp_key = _read_secret_value("FMP_API_KEY")
+        components = _load_stock_reference_data_parallel(ticker, fmp_key)
+
+        info = components.get("info") or {}
+        qi = components.get("qi")
+        ai = components.get("ai")
+        ih = components.get("ih")
+        qe = components.get("qe")
+        ed = components.get("ed")
+
         qraw = None
         fmp_err = None
-        if fmp_key:
-            result = _fetch_quarterly_fmp(ticker, fmp_key)
-            if isinstance(result, tuple):
-                qraw, fmp_err = result
-            else:
-                qraw = result
+        fmp_result = components.get("fmp")
+        if isinstance(fmp_result, tuple):
+            qraw, fmp_err = fmp_result
+        elif fmp_result is not None:
+            qraw = fmp_result
 
         # SEC fallback/augment (especially useful when Yahoo/FMP provides only few quarters)
-        sec_raw, sec_err = _fetch_quarterly_sec_companyfacts(ticker)
+        sec_raw, sec_err = components.get("sec") or (None, None)
         if sec_raw is not None:
             qraw = _merge_quarterly_raw(qraw, sec_raw)
             if qraw is not None:
@@ -2644,6 +2687,38 @@ def load_sp500_for_rs(lookback_days=400):
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
     return _dl("^GSPC", start, end)
+
+
+def _load_stock_analysis_context_parallel(ticker, rs_source_setting):
+    stock_result = (None, None, None, None, None, None, None, None, None)
+    spx_df = None
+    rs_universe_scores = None
+    max_workers = 3 if rs_source_setting == RS_SOURCE_COMPUTED else 2
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        stock_future = executor.submit(load_stock_full, ticker)
+        spx_future = executor.submit(load_sp500_for_rs)
+        rs_future = (
+            executor.submit(load_cached_universe_rs_scores)
+            if rs_source_setting == RS_SOURCE_COMPUTED
+            else None
+        )
+
+        try:
+            stock_result = stock_future.result()
+        except Exception as exc:
+            logger.warning("Parallel stock load failed for %s: %s", ticker, exc)
+        try:
+            spx_df = spx_future.result()
+        except Exception as exc:
+            logger.warning("Parallel S&P load failed for %s: %s", ticker, exc)
+        if rs_future is not None:
+            try:
+                rs_universe_scores = rs_future.result()
+            except Exception as exc:
+                logger.warning("Parallel RS universe load failed for %s: %s", ticker, exc)
+
+    return (*stock_result, spx_df, rs_universe_scores)
 
 # ===== From cache_store.py =====
 try:
@@ -6312,6 +6387,10 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
             details = " → ".join(f"{g:+.0f}%" for _, g in reversed(normal_rates))
             checks.append(("EPS-Beschleunigung", full_accel,
                            f"Verlauf: {details}" + (" (bei Beschl. ab 13% akzeptabel)" if full_accel and normal_rates[0][1] < 20 else "")))
+        else:
+            checks.append(("EPS-Beschleunigung", False, "Nicht verfügbar"))
+    else:
+        checks.append(("EPS-Beschleunigung", False, "Nicht verfügbar"))
 
     # ── EPS: annual 3-year ──
     epsg_ann = _annual_yoy_growth(ai, "eps")
@@ -6323,6 +6402,8 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
         eg = _g("earningsGrowth")
         if eg is not None:
             checks.append(("Jährl. EPS-Wachstum ≥20%", eg*100 >= 20, f"{eg*100:+.1f}% (nur 1 Jahr verfügbar)"))
+        else:
+            checks.append(("Jährl. EPS-Wachstum ≥20%", False, "Nicht verfügbar"))
 
     # ── Sum of last 4 quarterly EPS > 0 ──
     eps_sum = _sum_last_4q_eps(qi)
@@ -6332,6 +6413,8 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
         te = _g("trailingEps")
         if te is not None:
             checks.append(("Trailing EPS > 0 (Proxy für 4Q-Summe)", te > 0, f"${te:.2f}"))
+        else:
+            checks.append(("Trailing EPS > 0 (Proxy für 4Q-Summe)", False, "Nicht verfügbar"))
 
     # ── Revenue: quarterly YoY (3 quarters) ──
     revg = _quarterly_yoy_growth(qi, "revenue", qe=qe, ed=ed, qraw=qraw)
@@ -6353,6 +6436,10 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
             accel = normal_rev[0][1] > normal_rev[1][1]
             checks.append(("Umsatz-Beschleunigung (Bonus)", accel,
                            f"{normal_rev[1][1]:+.0f}% → {normal_rev[0][1]:+.0f}%"))
+        else:
+            checks.append(("Umsatz-Beschleunigung (Bonus)", False, "Nicht verfügbar"))
+    else:
+        checks.append(("Umsatz-Beschleunigung (Bonus)", False, "Nicht verfügbar"))
 
     # ── Revenue: annual 3-year ──
     revg_ann = _annual_yoy_growth(ai, "revenue")
@@ -6364,6 +6451,8 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
         rg = _g("revenueGrowth")
         if rg is not None:
             checks.append(("Jährl. Umsatzwachstum ≥20%", rg*100 >= 20, f"{rg*100:+.1f}%"))
+        else:
+            checks.append(("Jährl. Umsatzwachstum ≥20%", False, "Nicht verfügbar"))
 
     # ── ROE ≥ 17% ──
     roe = _g("returnOnEquity")
@@ -6390,6 +6479,8 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     pm = _g("profitMargins")
     if pm is not None:
         checks.append(("Gewinnmarge positiv", pm > 0, f"{pm*100:.1f}%"))
+    else:
+        checks.append(("Gewinnmarge positiv", False, "Nicht verfügbar"))
 
     return checks
 
@@ -6402,15 +6493,22 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
     if not np.isnan(h52):
         d = (price / h52 - 1) * 100
         checks.append(("Nahe am 52W-Hoch", d > -10, f"{d:+.1f}% vom Hoch (${h52:,.2f})"))
+    else:
+        checks.append(("Nahe am 52W-Hoch", False, "Nicht verfügbar"))
 
     avg_v = df["Volume"].tail(20).mean(); dol_v = avg_v * price / 1e6
-    checks.append(("Dollar-Volumen ≥ $30 Mio.", dol_v >= 30, f"${dol_v:,.0f} Mio./Tag"))
+    if pd.notna(dol_v):
+        checks.append(("Dollar-Volumen ≥ $30 Mio.", dol_v >= 30, f"${dol_v:,.0f} Mio./Tag"))
+    else:
+        checks.append(("Dollar-Volumen ≥ $30 Mio.", False, "Nicht verfügbar"))
 
     pc = df["Close"].pct_change()
     uv = df["Volume"].where(pc > 0).tail(50).sum(); dv = df["Volume"].where(pc < 0).tail(50).sum()
     if dv > 0:
         udv = uv / dv
         checks.append(("Up/Down Vol. Ratio ≥1.0", udv >= 1.0, f"{udv:.2f}" + (" (ideal ≥1.1)" if udv >= 1.1 else "")))
+    else:
+        checks.append(("Up/Down Vol. Ratio ≥1.0", False, "Nicht verfügbar"))
 
     rs_ctx = rs_ctx or _calc_rs_rating(
         df["Close"],
@@ -6431,6 +6529,9 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
             lbl = "Elite" if rs >= 90 else "Stark" if rs >= 80 else "Meiden (<70)" if rs < 70 else "OK"
             checks.append(("RS-Bewertung ≥80", rs >= 80, f"RS: {rs} ({lbl})" + (f" · {method_note}{universe_note}" if method_note else "")))
             checks.append(("RS-Bewertung ≥90", rs >= 90, f"Aktuell {rs}"))
+        else:
+            checks.append(("RS-Bewertung ≥80", False, "Nicht verfügbar"))
+            checks.append(("RS-Bewertung ≥90", False, "Nicht verfügbar"))
 
         rs_line = rs_ctx.get("rs_line")
         ema21_rs = rs_ctx.get("ema21")
@@ -6439,39 +6540,71 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
             rs_now = rs_line.iloc[-1]
             if ema21_rs is not None and len(ema21_rs) > 0 and pd.notna(ema21_rs.iloc[-1]):
                 checks.append(("RS-Linie über 21-EMA", bool(rs_ctx.get("above_21")), f"{rs_now:.2f} vs {ema21_rs.iloc[-1]:.2f}"))
+            else:
+                checks.append(("RS-Linie über 21-EMA", False, "Nicht verfügbar"))
             if sma50_rs is not None and len(sma50_rs) > 0 and pd.notna(sma50_rs.iloc[-1]):
                 checks.append(("RS-Linie über 50-SMA", bool(rs_ctx.get("above_50")), f"{rs_now:.2f} vs {sma50_rs.iloc[-1]:.2f}"))
+            else:
+                checks.append(("RS-Linie über 50-SMA", False, "Nicht verfügbar"))
             if rs_ctx.get("trend_5w") is not None:
                 ex3 = rs_ctx.get("excess_return_3m")
                 detail = f"Excess 3M: {ex3:+.1f}%" if ex3 is not None else "letzte 5 Wochen"
                 checks.append(("RS-Linie steigt über 5 Wochen", bool(rs_ctx.get("trend_5w")), detail))
+            else:
+                checks.append(("RS-Linie steigt über 5 Wochen", False, "Nicht verfügbar"))
             if rs_ctx.get("trend_13w") is not None:
                 ex6 = rs_ctx.get("excess_return_6m")
                 detail = f"Excess 6M: {ex6:+.1f}%" if ex6 is not None else "letzte 13 Wochen"
                 checks.append(("RS-Linie steigt über 13 Wochen", bool(rs_ctx.get("trend_13w")), detail))
+            else:
+                checks.append(("RS-Linie steigt über 13 Wochen", False, "Nicht verfügbar"))
             if rs_ctx.get("distance_to_high_pct") is not None:
                 dist = rs_ctx.get("distance_to_high_pct")
                 detail = "Neues RS-Hoch" if rs_ctx.get("new_high_52w") else f"{dist:+.1f}% zum RS-Hoch"
                 checks.append(("RS-Linie nahe 52W-Hoch", bool(rs_ctx.get("near_high_52w")), detail))
+            else:
+                checks.append(("RS-Linie nahe 52W-Hoch", False, "Nicht verfügbar"))
+        else:
+            checks.append(("RS-Linie über 21-EMA", False, "Nicht verfügbar"))
+            checks.append(("RS-Linie über 50-SMA", False, "Nicht verfügbar"))
+            checks.append(("RS-Linie steigt über 5 Wochen", False, "Nicht verfügbar"))
+            checks.append(("RS-Linie steigt über 13 Wochen", False, "Nicht verfügbar"))
+            checks.append(("RS-Linie nahe 52W-Hoch", False, "Nicht verfügbar"))
     elif spx_df is not None and len(df) >= 126 and len(spx_df) >= 126:
         sp = (df["Close"].iloc[-1] / df["Close"].iloc[-126] - 1) * 100
         mp = (spx_df["Close"].iloc[-1] / spx_df["Close"].iloc[-126] - 1) * 100
         checks.append(("Relative Stärke vs. S&P (6M)", sp > mp, f"Aktie: {sp:+.1f}% · S&P: {mp:+.1f}% · Diff: {sp-mp:+.1f}%"))
+    else:
+        checks.append(("RS-Bewertung ≥80", False, "Nicht verfügbar"))
+        checks.append(("RS-Bewertung ≥90", False, "Nicht verfügbar"))
+        checks.append(("RS-Linie über 21-EMA", False, "Nicht verfügbar"))
+        checks.append(("RS-Linie über 50-SMA", False, "Nicht verfügbar"))
+        checks.append(("RS-Linie steigt über 5 Wochen", False, "Nicht verfügbar"))
+        checks.append(("RS-Linie steigt über 13 Wochen", False, "Nicht verfügbar"))
+        checks.append(("RS-Linie nahe 52W-Hoch", False, "Nicht verfügbar"))
 
     cmf = _calc_cmf(df, 20); cmf_val = cmf.iloc[-1] if len(cmf) > 0 else np.nan
     rat, meaning, _ = _cmf_rating(cmf_val)
-    checks.append(("CMF Rating A oder B", rat in ("A","B"), f"CMF: {cmf_val:+.3f} → {rat} ({meaning})"))
+    if pd.notna(cmf_val):
+        checks.append(("CMF Rating A oder B", rat in ("A","B"), f"CMF: {cmf_val:+.3f} → {rat} ({meaning})"))
+    else:
+        checks.append(("CMF Rating A oder B", False, "Nicht verfügbar"))
 
     e21 = df["Close"].ewm(span=21).mean().iloc[-1]
     s10 = df["Close"].rolling(10).mean().iloc[-1]
     s50 = df["Close"].rolling(50).mean().iloc[-1]
     s200 = df["Close"].rolling(200).mean().iloc[-1]
 
-    for nm, mv in [("21-EMA", e21), ("50-SMA", s50), ("200-SMA", s200)]:
-        if not np.isnan(mv): checks.append((f"Kurs über {nm}", price > mv, f"{price:,.2f} vs {mv:,.2f}"))
+    for nm, mv in [("10-SMA", s10), ("21-EMA", e21), ("50-SMA", s50), ("200-SMA", s200)]:
+        if not np.isnan(mv):
+            checks.append((f"Kurs über {nm}", price > mv, f"{price:,.2f} vs {mv:,.2f}"))
+        else:
+            checks.append((f"Kurs über {nm}", False, "Nicht verfügbar"))
 
     if not any(np.isnan(x) for x in [e21, s50, s200]):
         checks.append(("MA-Ordnung (21>50>200)", e21 > s50 > s200, f"21:{e21:,.0f} · 50:{s50:,.0f} · 200:{s200:,.0f}"))
+    else:
+        checks.append(("MA-Ordnung (21>50>200)", False, "Nicht verfügbar"))
 
     for nm, mv, thresh in [("10-SMA", s10, 10.0), ("21-EMA", e21, 14.0), ("50-SMA", s50, 25.0), ("200-SMA", s200, 70.0)]:
         if not np.isnan(mv):
@@ -6479,6 +6612,8 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
             extended = dist > thresh or dist < -thresh
             checks.append((f"Abstand {nm} (<{thresh:.0f}%)", not extended,
                            f"{dist:+.1f}% ({'überdehnt' if dist > 0 else 'darunter'}, Schwelle: ±{thresh:.0f}%)"))
+        else:
+            checks.append((f"Abstand {nm} (<{thresh:.0f}%)", False, "Nicht verfügbar"))
 
     return checks, cmf_val, rs_ctx
 
@@ -6904,9 +7039,19 @@ def _tab_aktienbewertung():
 
     rs_source_setting = _get_rs_rating_source_setting()
     with st.spinner(f"Lade {ticker} …"):
-        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(ticker)
-        spx_df = load_sp500_for_rs()
-        rs_universe_scores = load_cached_universe_rs_scores() if rs_source_setting == RS_SOURCE_COMPUTED else None
+        (
+            df,
+            info,
+            qi,
+            ai,
+            ih,
+            qe,
+            ed,
+            qraw,
+            fmp_err,
+            spx_df,
+            rs_universe_scores,
+        ) = _load_stock_analysis_context_parallel(ticker, rs_source_setting)
 
     if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
