@@ -3,10 +3,8 @@ name: market-refresh
 on:
   schedule:
     # GitHub Cron läuft in UTC.
-    # Zur Abbildung von 16:00 und 22:30 Uhr Europe/Berlin ganzjährig
+    # Für 22:30 Uhr Europe/Berlin ganzjährig
     # werden Sommer- und Winterzeitfenster in UTC geplant und danach lokal gefiltert.
-    - cron: "0 14 * * 1-5"
-    - cron: "0 15 * * 1-5"
     - cron: "30 20 * * 1-5"
     - cron: "30 21 * * 1-5"
   workflow_dispatch:
@@ -59,7 +57,7 @@ jobs:
         run: |
           berlin_time="$(date '+%H:%M')"
           echo "berlin_time=${berlin_time}" >> "$GITHUB_OUTPUT"
-          if [[ "${berlin_time}" == "16:00" || "${berlin_time}" == "22:30" ]]; then
+          if [[ "${berlin_time}" == "22:30" ]]; then
             echo "run_jobs=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_jobs=false" >> "$GITHUB_OUTPUT"

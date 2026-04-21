@@ -7890,7 +7890,7 @@ def _tab_marktanalyse():
             else:
                 st.info(
                     f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
-                    "Die Aktualisierung läuft zeitgesteuert über GitHub Actions. "
+                    "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions. "
                     "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
                 )
         else:
@@ -7910,7 +7910,7 @@ def _tab_marktanalyse():
                     else:
                         st.info(
                             f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
-                            "Die Aktualisierung läuft zeitgesteuert über GitHub Actions. "
+                            "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions. "
                             "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
                         )
                 elif breadth_last < benchmark_last and refresh_matches_cache:
@@ -7930,6 +7930,7 @@ def _tab_marktanalyse():
 def _render_technical_setup_area():
     st.markdown("### ⚙️ Technisches Setup")
     st.caption("Privater Wartungsbereich für Datenbankaktualisierung, Worker-Status und Diagnose.")
+    st.caption("Automatische Neon-Aktualisierung: Montag bis Freitag um 22:30 Uhr (Europe/Berlin). Manueller Start bleibt verfügbar.")
     store = _get_price_store()
     st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
     if store["backend"] != "neon":
