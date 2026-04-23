@@ -7076,8 +7076,10 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             dd_252 = ((close.iloc[-1] / close.tail(252).max()) - 1) * 100 if len(close) >= 252 else ((close.iloc[-1] / close.max()) - 1) * 100
             atr_val = _atr(df, 21).iloc[-1] if len(df) > 25 else np.nan
             atr_pct = (atr_val / latest * 100) if pd.notna(atr_val) and latest else np.nan
+            ema21 = close.ewm(span=21).mean().iloc[-1] if len(close) >= 21 else np.nan
             sma50 = close.rolling(50).mean().iloc[-1] if len(close) >= 50 else np.nan
             sma200 = close.rolling(200).mean().iloc[-1] if len(close) >= 200 else np.nan
+            above_21 = bool(pd.notna(ema21) and latest > ema21)
             above_50 = bool(pd.notna(sma50) and latest > sma50)
             above_200 = bool(pd.notna(sma200) and latest > sma200)
             beta = info.get("beta") if isinstance(info, dict) else np.nan
@@ -7095,12 +7097,25 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             fundamental_checks = evaluate_fundamentals(info, qi, ai, ih, qe=qe, ed=ed, qraw=qraw, fmp_err=fmp_err)
             chart_signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
 
+            trend_check_names = {
+                "Kurs über 10-SMA",
+                "Kurs über 21-EMA",
+                "Kurs über 50-SMA",
+                "Kurs über 200-SMA",
+                "MA-Ordnung (21>50>200)",
+            }
+            trend_checks = [(label, ok, detail) for label, ok, detail in technical_checks if label in trend_check_names]
+            technical_core_checks = [(label, ok, detail) for label, ok, detail in technical_checks if label not in trend_check_names]
+
             fund_pos = sum(1 for _, ok, _ in fundamental_checks if ok)
             fund_neg = sum(1 for _, ok, _ in fundamental_checks if not ok)
             fund_neu = 0
-            tech_pos = sum(1 for _, ok, _ in technical_checks if ok)
-            tech_neg = sum(1 for _, ok, _ in technical_checks if not ok)
+            tech_pos = sum(1 for _, ok, _ in technical_core_checks if ok)
+            tech_neg = sum(1 for _, ok, _ in technical_core_checks if not ok)
             tech_neu = 0
+            trend_pos = sum(1 for _, ok, _ in trend_checks if ok)
+            trend_neg = sum(1 for _, ok, _ in trend_checks if not ok)
+            trend_neu = 0
             chart_pos = len(chart_signs.get("positiv", []))
             chart_neg = len(chart_signs.get("negativ", []))
             chart_neu = len(chart_signs.get("neutral", []))
@@ -7122,8 +7137,12 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "ATR %": atr_pct,
                 "Beta": beta,
                 "RS-Rating": rs_rating,
+                "Über 21-EMA": above_21,
                 "Über 50-SMA": above_50,
                 "Über 200-SMA": above_200,
+                "Trend Positiv": trend_pos,
+                "Trend Negativ": trend_neg,
+                "Trend Neutral": trend_neu,
                 "Fundamental Positiv": fund_pos,
                 "Fundamental Negativ": fund_neg,
                 "Fundamental Neutral": fund_neu,
@@ -7133,6 +7152,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "Chart Positiv": chart_pos,
                 "Chart Negativ": chart_neg,
                 "Chart Neutral": chart_neu,
+                "Score Trend": _score_signs(trend_pos, trend_neg, trend_neu),
                 "Score Fundamental": _score_signs(fund_pos, fund_neg, fund_neu),
                 "Score Technisch": _score_signs(tech_pos, tech_neg, tech_neu),
                 "Score Chart": _score_signs(chart_pos, chart_neg, chart_neu),
@@ -7143,17 +7163,28 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
 
     df = pd.DataFrame(rows)
     momentum_input = df[["Perf 1M %", "Perf 3M %", "Perf 6M %"]].mean(axis=1)
-    trend_input = (df["Über 50-SMA"].astype(int) * 50) + (df["Über 200-SMA"].astype(int) * 50)
-
     df["Score Momentum"] = _scale_series_0_100(momentum_input)
-    df["Score RS"] = _scale_series_0_100(df["RS-Rating"])
+    rs_numeric = pd.to_numeric(df["RS-Rating"], errors="coerce")
+    rs_score = pd.Series(0.0, index=df.index)
+    band_50_60 = (rs_numeric >= 50) & (rs_numeric < 60)
+    band_60_70 = (rs_numeric >= 60) & (rs_numeric < 70)
+    band_70_80 = (rs_numeric >= 70) & (rs_numeric < 80)
+    band_80p = rs_numeric >= 80
+    rs_score.loc[band_50_60] = ((rs_numeric.loc[band_50_60] - 50) / 10 * 30).clip(0, 30)
+    rs_score.loc[band_60_70] = 30 + ((rs_numeric.loc[band_60_70] - 60) / 10 * 10).clip(0, 10)
+    rs_score.loc[band_70_80] = 40 + ((rs_numeric.loc[band_70_80] - 70) / 10 * 10).clip(0, 10)
+    if band_80p.any():
+        high_scaled = _scale_series_0_100(rs_numeric.loc[band_80p]).fillna(0)
+        rs_score.loc[band_80p] = 60 + high_scaled * 0.40
+    df["Score RS"] = rs_score.round(1)
     df["Score Risiko"] = _scale_series_0_100(df["ATR %"], invert=True) * 0.6 + _scale_series_0_100(df["Drawdown %"], invert=True) * 0.4
-    df["Score Trend"] = _scale_series_0_100(trend_input)
     df["Gesamt-Score"] = (
-        df["Score Momentum"] * 0.40
+        df["Score Momentum"] * 0.25
         + df["Score RS"] * 0.25
-        + df["Score Risiko"] * 0.20
-        + df["Score Trend"] * 0.15
+        + df["Score Trend"] * 0.20
+        + df["Score Fundamental"] * 0.15
+        + df["Score Technisch"] * 0.10
+        + df["Score Chart"] * 0.05
     ).round(1)
     df = df.sort_values(["Gesamt-Score", "RS-Rating"], ascending=[False, False]).reset_index(drop=True)
     df["Rang"] = np.arange(1, len(df) + 1)
@@ -7188,7 +7219,10 @@ def _render_stock_compare_section() -> None:
         st.warning("Für die ausgewählten Ticker konnten nicht genug Kursdaten geladen werden.")
         return
 
-    overview_cols = ["Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score Risiko", "Score RS", "Score Trend"]
+    overview_cols = [
+        "Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score RS", "Score Trend",
+        "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
+    ]
     st.markdown("##### 1) Gesamtranking")
     st.dataframe(compare_df[overview_cols].round(1), use_container_width=True, hide_index=True)
 
@@ -7197,7 +7231,11 @@ def _render_stock_compare_section() -> None:
         "Momentum": ["Rang", "Ticker", "Score Momentum", "Perf 1M %", "Perf 3M %", "Perf 6M %"],
         "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
         "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
-        "Trend": ["Rang", "Ticker", "Score Trend", "Über 50-SMA", "Über 200-SMA"],
+        "Trend": [
+            "Rang", "Ticker", "Score Trend",
+            "Trend Positiv", "Trend Negativ", "Trend Neutral",
+            "Über 21-EMA", "Über 50-SMA", "Über 200-SMA",
+        ],
         "Fundamental": ["Rang", "Ticker", "Score Fundamental", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral"],
         "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral"],
         "Chartverhalten": ["Rang", "Ticker", "Score Chart", "Chart Positiv", "Chart Negativ", "Chart Neutral"],
@@ -7222,7 +7260,8 @@ def _render_stock_compare_section() -> None:
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
             "Ticker", "Name", "Preis", "Perf 1M %", "Perf 3M %", "Perf 6M %", "Drawdown %", "ATR %", "Beta",
-            "RS-Rating", "Über 50-SMA", "Über 200-SMA",
+            "RS-Rating", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA",
+            "Trend Positiv", "Trend Negativ", "Trend Neutral",
             "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
             "Technisch Positiv", "Technisch Negativ", "Technisch Neutral",
             "Chart Positiv", "Chart Negativ", "Chart Neutral",
