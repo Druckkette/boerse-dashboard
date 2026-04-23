@@ -7028,10 +7028,180 @@ def evaluate_chart_signs(df, rs_ctx=None):
 
 # ===== From tabs.py =====
 
+def _scale_series_0_100(series: pd.Series, invert: bool = False) -> pd.Series:
+    numeric = pd.to_numeric(series, errors="coerce")
+    valid = numeric.dropna()
+    if valid.empty:
+        return pd.Series([50.0] * len(series), index=series.index)
+    v_min = float(valid.min())
+    v_max = float(valid.max())
+    if np.isclose(v_min, v_max):
+        scaled = pd.Series([60.0] * len(series), index=series.index)
+    else:
+        scaled = (numeric - v_min) / (v_max - v_min) * 100.0
+    if invert:
+        scaled = 100.0 - scaled
+    return scaled.clip(lower=0, upper=100).fillna(50.0)
+
+
+def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> pd.DataFrame:
+    if not tickers:
+        return pd.DataFrame()
+
+    spx_df = load_sp500_for_rs()
+    spx_close = spx_df["Close"] if spx_df is not None and "Close" in spx_df else None
+    rs_universe_scores = load_cached_universe_rs_scores() if rs_source_setting == RS_SOURCE_COMPUTED else None
+    rows = []
+
+    def _load_one(symbol: str):
+        df, info, *_ = load_stock_full(symbol)
+        return symbol, df, info
+
+    with ThreadPoolExecutor(max_workers=min(8, max(2, len(tickers)))) as executor:
+        futures = {executor.submit(_load_one, symbol): symbol for symbol in tickers}
+        for fut in as_completed(futures):
+            symbol = futures[fut]
+            try:
+                ticker, df, info = fut.result()
+            except Exception:
+                ticker, df, info = symbol, None, {}
+            if df is None or len(df) < 120:
+                continue
+
+            close = df["Close"]
+            latest = float(close.iloc[-1])
+            ret_21 = (close.iloc[-1] / close.iloc[-22] - 1) * 100 if len(close) > 22 else np.nan
+            ret_63 = (close.iloc[-1] / close.iloc[-64] - 1) * 100 if len(close) > 64 else np.nan
+            ret_126 = (close.iloc[-1] / close.iloc[-127] - 1) * 100 if len(close) > 127 else np.nan
+            dd_252 = ((close.iloc[-1] / close.tail(252).max()) - 1) * 100 if len(close) >= 252 else ((close.iloc[-1] / close.max()) - 1) * 100
+            atr_val = _atr(df, 21).iloc[-1] if len(df) > 25 else np.nan
+            atr_pct = (atr_val / latest * 100) if pd.notna(atr_val) and latest else np.nan
+            sma50 = close.rolling(50).mean().iloc[-1] if len(close) >= 50 else np.nan
+            sma200 = close.rolling(200).mean().iloc[-1] if len(close) >= 200 else np.nan
+            above_50 = bool(pd.notna(sma50) and latest > sma50)
+            above_200 = bool(pd.notna(sma200) and latest > sma200)
+            beta = info.get("beta") if isinstance(info, dict) else np.nan
+
+            rs_ctx = _calc_rs_rating(close, spx_close, universe_scores=rs_universe_scores)
+            rs_ctx, _ = _apply_rs_source_override(ticker, rs_ctx)
+            rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
+
+            rows.append({
+                "Ticker": ticker,
+                "Name": (info.get("shortName", ticker) if isinstance(info, dict) else ticker),
+                "Preis": latest,
+                "Perf 1M %": ret_21,
+                "Perf 3M %": ret_63,
+                "Perf 6M %": ret_126,
+                "Drawdown %": dd_252,
+                "ATR %": atr_pct,
+                "Beta": beta,
+                "RS-Rating": rs_rating,
+                "Über 50-SMA": above_50,
+                "Über 200-SMA": above_200,
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    momentum_input = df[["Perf 1M %", "Perf 3M %", "Perf 6M %"]].mean(axis=1)
+    trend_input = (df["Über 50-SMA"].astype(int) * 50) + (df["Über 200-SMA"].astype(int) * 50)
+
+    df["Score Momentum"] = _scale_series_0_100(momentum_input)
+    df["Score RS"] = _scale_series_0_100(df["RS-Rating"])
+    df["Score Risiko"] = _scale_series_0_100(df["ATR %"], invert=True) * 0.6 + _scale_series_0_100(df["Drawdown %"], invert=True) * 0.4
+    df["Score Trend"] = _scale_series_0_100(trend_input)
+    df["Gesamt-Score"] = (
+        df["Score Momentum"] * 0.40
+        + df["Score RS"] * 0.25
+        + df["Score Risiko"] * 0.20
+        + df["Score Trend"] * 0.15
+    ).round(1)
+    df = df.sort_values(["Gesamt-Score", "RS-Rating"], ascending=[False, False]).reset_index(drop=True)
+    df["Rang"] = np.arange(1, len(df) + 1)
+    return df
+
+
+def _render_stock_compare_section() -> None:
+    st.markdown("#### 🧮 Aktienvergleich mit Ranking")
+    st.caption("Zuerst Übersicht mit Gesamtranking, danach Kategorie-Rankings. Über die Kategorie-Buttons öffnest du die Detailtabelle für den direkten Vergleich.")
+
+    watchlist = st.session_state.get("watchlist", [])
+    base_defaults = [t for t in watchlist if isinstance(t, str) and t][:6] or DEFAULT_FAVORITES[:5]
+    tickers = st.multiselect(
+        "Ticker vergleichen",
+        options=sorted(set((watchlist or []) + DEFAULT_FAVORITES)),
+        default=base_defaults,
+        help="Wähle mindestens 2 Aktien für den Vergleich.",
+        key="compare_tickers_multi",
+    )
+    manual = st.text_input("Weitere Ticker (kommagetrennt)", value="", placeholder="z.B. AMD, AVGO, NFLX", key="compare_tickers_manual")
+    extra = [x.strip().upper() for x in manual.split(",") if x.strip()]
+    tickers = list(dict.fromkeys([t.upper() for t in tickers] + extra))[:12]
+
+    if len(tickers) < 2:
+        st.info("Bitte mindestens 2 Ticker auswählen, damit ein Vergleich möglich ist.")
+        return
+
+    rs_source_setting = _get_rs_rating_source_setting()
+    with st.spinner("Berechne Ranking und Kategorien …"):
+        compare_df = _compute_stock_compare_rows(tickers, rs_source_setting)
+    if compare_df.empty:
+        st.warning("Für die ausgewählten Ticker konnten nicht genug Kursdaten geladen werden.")
+        return
+
+    overview_cols = ["Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score RS", "Score Risiko", "Score Trend"]
+    st.markdown("##### 1) Gesamtranking")
+    st.dataframe(compare_df[overview_cols].round(1), use_container_width=True, hide_index=True)
+
+    st.markdown("##### 2) Kategorien")
+    category_map = {
+        "Momentum": ["Rang", "Ticker", "Score Momentum", "Perf 1M %", "Perf 3M %", "Perf 6M %"],
+        "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
+        "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
+        "Trend": ["Rang", "Ticker", "Score Trend", "Über 50-SMA", "Über 200-SMA"],
+    }
+    if "compare_selected_category" not in st.session_state:
+        st.session_state["compare_selected_category"] = "Momentum"
+
+    button_cols = st.columns(len(category_map))
+    for idx, category in enumerate(category_map.keys()):
+        if button_cols[idx].button(category, use_container_width=True, key=f"cmp_cat_{idx}"):
+            st.session_state["compare_selected_category"] = category
+
+    selected = st.session_state.get("compare_selected_category", "Momentum")
+    selected_cols = category_map.get(selected, category_map["Momentum"])
+    sort_col = selected_cols[2]
+    detail_df = compare_df.sort_values(sort_col, ascending=False).reset_index(drop=True).copy()
+    detail_df["Rang"] = np.arange(1, len(detail_df) + 1)
+
+    st.markdown(f"##### 3) Detailvergleich · {selected}")
+    st.dataframe(detail_df[selected_cols].round(2), use_container_width=True, hide_index=True)
+
+    with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
+        raw_cols = [
+            "Ticker", "Name", "Preis", "Perf 1M %", "Perf 3M %", "Perf 6M %", "Drawdown %", "ATR %", "Beta",
+            "RS-Rating", "Über 50-SMA", "Über 200-SMA", "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Gesamt-Score",
+        ]
+        st.dataframe(compare_df[raw_cols].round(2), use_container_width=True, hide_index=True)
+
+
 def _tab_aktienbewertung():
     _init_workspace_state()
     st.markdown("### 📋 Aktienbewertung")
     st.caption("Einzelaktien-Check mit komfortabler Suche, Watchlist und schneller Einordnung für Fundamentaldaten, Technik und Chartverhalten.")
+
+    mode = st.segmented_control(
+        "Modus",
+        options=["Vergleich & Ranking", "Einzelaktien-Check"],
+        default="Vergleich & Ranking",
+        key="stock_eval_mode",
+        label_visibility="collapsed",
+    )
+    if mode == "Vergleich & Ranking":
+        _render_stock_compare_section()
+        st.divider()
 
     ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
