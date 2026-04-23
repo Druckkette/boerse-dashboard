@@ -7054,17 +7054,17 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
     rows = []
 
     def _load_one(symbol: str):
-        df, info, *_ = load_stock_full(symbol)
-        return symbol, df, info
+        df, info, qi, ai, ih, qe, ed, qraw, fmp_err = load_stock_full(symbol)
+        return symbol, df, info, qi, ai, ih, qe, ed, qraw, fmp_err
 
     with ThreadPoolExecutor(max_workers=min(8, max(2, len(tickers)))) as executor:
         futures = {executor.submit(_load_one, symbol): symbol for symbol in tickers}
         for fut in as_completed(futures):
             symbol = futures[fut]
             try:
-                ticker, df, info = fut.result()
+                ticker, df, info, qi, ai, ih, qe, ed, qraw, fmp_err = fut.result()
             except Exception:
-                ticker, df, info = symbol, None, {}
+                ticker, df, info, qi, ai, ih, qe, ed, qraw, fmp_err = symbol, None, {}, None, None, None, None, None, None, None
             if df is None or len(df) < 120:
                 continue
 
@@ -7085,6 +7085,31 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             rs_ctx = _calc_rs_rating(close, spx_close, universe_scores=rs_universe_scores)
             rs_ctx, _ = _apply_rs_source_override(ticker, rs_ctx)
             rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
+            technical_checks, _, _ = evaluate_technicals(
+                df,
+                info,
+                spx_df=spx_df,
+                rs_ctx=rs_ctx,
+                rs_universe_scores=rs_universe_scores,
+            )
+            fundamental_checks = evaluate_fundamentals(info, qi, ai, ih, qe=qe, ed=ed, qraw=qraw, fmp_err=fmp_err)
+            chart_signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
+
+            fund_pos = sum(1 for _, ok, _ in fundamental_checks if ok)
+            fund_neg = sum(1 for _, ok, _ in fundamental_checks if not ok)
+            fund_neu = 0
+            tech_pos = sum(1 for _, ok, _ in technical_checks if ok)
+            tech_neg = sum(1 for _, ok, _ in technical_checks if not ok)
+            tech_neu = 0
+            chart_pos = len(chart_signs.get("positiv", []))
+            chart_neg = len(chart_signs.get("negativ", []))
+            chart_neu = len(chart_signs.get("neutral", []))
+
+            def _score_signs(pos: int, neg: int, neu: int) -> float:
+                total = pos + neg + neu
+                if total <= 0:
+                    return 50.0
+                return round((pos + neu * 0.5) / total * 100.0, 1)
 
             rows.append({
                 "Ticker": ticker,
@@ -7099,6 +7124,18 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "RS-Rating": rs_rating,
                 "Über 50-SMA": above_50,
                 "Über 200-SMA": above_200,
+                "Fundamental Positiv": fund_pos,
+                "Fundamental Negativ": fund_neg,
+                "Fundamental Neutral": fund_neu,
+                "Technisch Positiv": tech_pos,
+                "Technisch Negativ": tech_neg,
+                "Technisch Neutral": tech_neu,
+                "Chart Positiv": chart_pos,
+                "Chart Negativ": chart_neg,
+                "Chart Neutral": chart_neu,
+                "Score Fundamental": _score_signs(fund_pos, fund_neg, fund_neu),
+                "Score Technisch": _score_signs(tech_pos, tech_neg, tech_neu),
+                "Score Chart": _score_signs(chart_pos, chart_neg, chart_neu),
             })
 
     if not rows:
@@ -7161,6 +7198,9 @@ def _render_stock_compare_section() -> None:
         "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
         "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
         "Trend": ["Rang", "Ticker", "Score Trend", "Über 50-SMA", "Über 200-SMA"],
+        "Fundamental": ["Rang", "Ticker", "Score Fundamental", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral"],
+        "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral"],
+        "Chartverhalten": ["Rang", "Ticker", "Score Chart", "Chart Positiv", "Chart Negativ", "Chart Neutral"],
     }
     if "compare_selected_category" not in st.session_state:
         st.session_state["compare_selected_category"] = "Momentum"
@@ -7182,7 +7222,12 @@ def _render_stock_compare_section() -> None:
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
             "Ticker", "Name", "Preis", "Perf 1M %", "Perf 3M %", "Perf 6M %", "Drawdown %", "ATR %", "Beta",
-            "RS-Rating", "Über 50-SMA", "Über 200-SMA", "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Gesamt-Score",
+            "RS-Rating", "Über 50-SMA", "Über 200-SMA",
+            "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
+            "Technisch Positiv", "Technisch Negativ", "Technisch Neutral",
+            "Chart Positiv", "Chart Negativ", "Chart Neutral",
+            "Score Fundamental", "Score Technisch", "Score Chart",
+            "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Gesamt-Score",
         ]
         st.dataframe(compare_df[raw_cols].round(2), use_container_width=True, hide_index=True)
 
