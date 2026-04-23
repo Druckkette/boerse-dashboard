@@ -7151,15 +7151,15 @@ def _render_stock_compare_section() -> None:
         st.warning("Für die ausgewählten Ticker konnten nicht genug Kursdaten geladen werden.")
         return
 
-    overview_cols = ["Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score RS", "Score Risiko", "Score Trend"]
+    overview_cols = ["Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score Risiko", "Score RS", "Score Trend"]
     st.markdown("##### 1) Gesamtranking")
     st.dataframe(compare_df[overview_cols].round(1), use_container_width=True, hide_index=True)
 
     st.markdown("##### 2) Kategorien")
     category_map = {
         "Momentum": ["Rang", "Ticker", "Score Momentum", "Perf 1M %", "Perf 3M %", "Perf 6M %"],
-        "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
         "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
+        "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
         "Trend": ["Rang", "Ticker", "Score Trend", "Über 50-SMA", "Über 200-SMA"],
     }
     if "compare_selected_category" not in st.session_state:
