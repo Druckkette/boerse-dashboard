@@ -8810,20 +8810,41 @@ def _tab_mein_bereich():
     elif area_view == "⚙️ Technisches Setup":
         _render_technical_setup_area()
 
+def _tab_watchlist():
+    """Render watchlist-focused page while preserving existing workspace controls."""
+    st.session_state.setdefault("mein_bereich_view", "📝 Arbeitsbereich")
+    _tab_mein_bereich()
+
+def _tab_wissen():
+    """Show educational market context and keep advanced settings reachable."""
+    _tab_sektoranalyse()
+
+def _render_topbar() -> None:
+    """Render a compact app header above the Streamlit navigation pills."""
+    st.markdown(
+        """
+        <div class="app-topbar">
+          <p class="app-topbar__eyebrow">Börse ohne Bauchgefühl</p>
+          <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
+          <p class="app-topbar__subtitle">Regelbasiert investieren statt Bauchgefühl</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def main():
     configure_page()
     inject_css()
     _render_workspace_sidebar()
-    st.title("BÖRSE OHNE BAUCHGEFÜHL")
+    _render_topbar()
 
     pages = [
-        st.Page(_tab_dashboard, title="Dashboard", icon="📊", url_path="dashboard", default=True),
-        st.Page(_tab_marktanalyse, title="Marktanalyse", icon="📈", url_path="marktanalyse"),
-        st.Page(_tab_sektoranalyse, title="Sektoren", icon="🏭", url_path="sektoren"),
+        st.Page(_tab_dashboard, title="Marktampel", icon="🚦", url_path="marktampel", default=True),
         st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktienbewertung"),
-        st.Page(_tab_nach_kauf, title="Depot & Risiko", icon="💼", url_path="depot"),
-        st.Page(_tab_mein_bereich, title="Einstellungen", icon="🔐", url_path="einstellungen"),
+        st.Page(_tab_watchlist, title="Watchlist", icon="⭐", url_path="watchlist"),
+        st.Page(_tab_nach_kauf, title="Depot", icon="💼", url_path="depot"),
+        st.Page(_tab_marktanalyse, title="Tiefenanalyse", icon="📈", url_path="tiefenanalyse"),
+        st.Page(_tab_wissen, title="Wissen", icon="📚", url_path="wissen"),
     ]
     navigation = st.navigation(pages, position="top")
     navigation.run()
