@@ -7204,13 +7204,19 @@ def _render_stock_compare_section() -> None:
 
 def _tab_aktienbewertung():
     _init_workspace_state()
-    st.markdown("### 📋 Aktienbewertung")
-    st.caption("Einzelaktien-Check mit komfortabler Suche, Watchlist und schneller Einordnung für Fundamentaldaten, Technik und Chartverhalten.")
+    st.markdown(
+        '<div class="summary-hero"><div class="hero-title">Aktienbewertung</div>'
+        '<div class="hero-subtitle">Regelbasierter Qualitäts-, Trend- und Risiko-Check für Einzelaktien.</div>'
+        '<div class="mini-help">Keine Anlageberatung – nur eine systematische Einordnung.</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("#### 🔎 Ticker-Suche")
+    st.caption("Starte mit einem Symbol und erhalte eine geführte, regelbasierte Einordnung statt einer reinen Datenansicht.")
 
     mode = st.segmented_control(
         "Modus",
         options=["Vergleich & Ranking", "Einzelaktien-Check"],
-        default="Vergleich & Ranking",
+        default="Einzelaktien-Check",
         key="stock_eval_mode",
         label_visibility="collapsed",
     )
@@ -7218,7 +7224,7 @@ def _tab_aktienbewertung():
         _render_stock_compare_section()
         st.divider()
 
-    ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
+    ticker = _render_ticker_picker("stock", "Große Suche", "Ticker eingeben, z. B. NVDA, MSFT, PLTR", show_quick=True)
     if not ticker:
         return
 
@@ -7272,14 +7278,6 @@ def _tab_aktienbewertung():
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
 
-    st.markdown(
-        f'<div class="summary-hero"><div class="hero-title">{name} ({ticker})</div>'
-        f'<div class="hero-subtitle">Letzter Schluss {last_date}</div>'
-        f'<div class="hero-action {"hero-good" if chg >= 0 else "hero-bad"}">Aktuell ${price:,.2f} · {chg:+.2f}% zum Vortag</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Today / recent changes
     atr_s = _atr(df, 21)
     atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
@@ -7314,6 +7312,54 @@ def _tab_aktienbewertung():
     elif rs_hint:
         change_cards.append({"title": "Rel. Stärke", "value": rs_hint, "detail": "Vergleich zum S&P 500"})
     _render_change_cards(change_cards[:4])
+
+    # Schnellurteil
+    _ema21 = df["Close"].ewm(span=21).mean()
+    _sma50 = df["Close"].rolling(50).mean()
+    _sma200 = df["Close"].rolling(200).mean()
+
+    price_vs_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
+    is_extended = bool(pd.notna(price_vs_50) and price_vs_50 >= 20)
+    has_data = len(df) >= 200 and info is not None
+
+    fundamentals_checks = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
+    technical_checks, _, _ = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
+    signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
+
+    f_ok = sum(1 for _, ok, _ in fundamentals_checks if ok)
+    t_ok = sum(1 for _, ok, _ in technical_checks if ok)
+    chart_score = len(signs["positiv"]) - len(signs["negativ"])
+    norm_chart_score = max(0, min(100, 50 + chart_score * 10))
+    overall_score = round((f_ok / max(1, len(fundamentals_checks))) * 40 + (t_ok / max(1, len(technical_checks))) * 45 + (norm_chart_score / 100) * 15)
+
+    if not has_data:
+        verdict_label, verdict_cls = "Nicht bewertbar", "status-neutral"
+        verdict_text = "Zu wenige verwertbare Datenpunkte für eine belastbare regelbasierte Einordnung."
+    elif is_extended and overall_score >= 55:
+        verdict_label, verdict_cls = "Zu erweitert", "status-warn"
+        verdict_text = "Das Regelset zeigt Stärke, aber die Aktie wirkt aktuell erweitert und eher als Beobachtungskandidat geeignet."
+    elif overall_score >= 70:
+        verdict_label, verdict_cls = "Attraktiv", "status-good"
+        verdict_text = "Die regelbasierte Einordnung ist konstruktiv über Qualität, Trend und Risiko."
+    elif overall_score >= 50:
+        verdict_label, verdict_cls = "Beobachten", "status-warn"
+        verdict_text = "Mehrere Kriterien passen, trotzdem bleibt die Lage gemischt und sollte weiter beobachtet werden."
+    else:
+        verdict_label, verdict_cls = "Zu schwach", "status-bad"
+        verdict_text = "Der aktuelle Mix aus Fundament, Trend und Risiko ist technisch angeschlagen."
+
+    st.markdown(
+        f'<div class="info-card">'
+        f'<div class="card-label">Schnellurteil</div>'
+        f'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center;">'
+        f'<div><div class="hero-title" style="font-size:1.05rem;">{name} ({ticker})</div>'
+        f'<div class="mini-help">Letzter Schluss {last_date} · Aktuell ${price:,.2f} · {chg:+.2f}%</div></div>'
+        f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+        f'<span class="pill">Gesamtscore: {overall_score}/100</span>'
+        f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
+        f'<div class="mini-help">{verdict_text}</div></div>',
+        unsafe_allow_html=True,
+    )
 
     # Key metrics arranged in two rows for better readability
     rng_hl = L["High"] - L["Low"]
@@ -7364,10 +7410,93 @@ def _tab_aktienbewertung():
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
 
+    # Geführte 4er-Analysekarte
+    def _pct_or_na(value):
+        return f"{value*100:.1f}%" if value is not None and pd.notna(value) else "n/a"
+
+    def _val_or_na(value, fmt="{:.2f}"):
+        return fmt.format(value) if value is not None and pd.notna(value) else "n/a"
+
+    roe = info.get("returnOnEquity") if info else None
+    gross_margin = info.get("grossMargins") if info else None
+    op_margin = info.get("operatingMargins") if info else None
+    debt_to_equity = info.get("debtToEquity") if info else None
+    revenue_growth = info.get("revenueGrowth") if info else None
+    earnings_growth = info.get("earningsGrowth") if info else None
+    q_revenue_growth = info.get("quarterlyRevenueGrowth") if info else None
+    q_earnings_growth = info.get("quarterlyEarningsGrowth") if info else None
+    drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
+    qual_green = sum([
+        bool(roe is not None and pd.notna(roe) and roe >= 0.15),
+        bool(gross_margin is not None and pd.notna(gross_margin) and gross_margin >= 0.40),
+        bool(op_margin is not None and pd.notna(op_margin) and op_margin >= 0.15),
+        bool(debt_to_equity is not None and pd.notna(debt_to_equity) and debt_to_equity <= 150),
+    ])
+    growth_green = sum([
+        bool(revenue_growth is not None and pd.notna(revenue_growth) and revenue_growth >= 0.10),
+        bool(earnings_growth is not None and pd.notna(earnings_growth) and earnings_growth >= 0.10),
+        bool(q_revenue_growth is not None and pd.notna(q_revenue_growth) and q_revenue_growth >= 0.05),
+        bool(q_earnings_growth is not None and pd.notna(q_earnings_growth) and q_earnings_growth >= 0.05),
+    ])
+    trend_green = sum([
+        bool(pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1]),
+        bool(pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1]),
+        bool(pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1]),
+        bool(rs_rating_val is not None and rs_rating_val >= 80),
+    ])
+    risk_green = sum([
+        bool(pd.notna(atr_pct) and atr_pct <= 4.0),
+        bool(beta is not None and pd.notna(beta) and beta <= 1.5),
+        bool(pd.notna(drawdown_52w) and drawdown_52w >= -20),
+        bool(vol_ratio is not None and pd.notna(vol_ratio) and vol_ratio <= 2.0),
+    ])
+
+    def _status_chip(score_ok: int, max_score: int):
+        ratio = score_ok / max_score if max_score else 0
+        if ratio >= 0.75:
+            return "status-good", "konstruktiv"
+        if ratio >= 0.45:
+            return "status-warn", "gemischt"
+        return "status-bad", "angeschlagen"
+
+    q_cls, q_txt = _status_chip(qual_green, 4)
+    g_cls, g_txt = _status_chip(growth_green, 4)
+    t_cls, t_txt = _status_chip(trend_green, 4)
+    r_cls, r_txt = _status_chip(risk_green, 4)
+
+    area_cols = st.columns(2)
+    with area_cols[0]:
+        st.markdown(
+            f'<div class="info-card"><div class="card-label">Qualität</div>'
+            f'<div class="status-chip {q_cls}">Status: {q_txt}</div>'
+            f'<div class="mini-help">ROE: {_pct_or_na(roe)} · Bruttomarge: {_pct_or_na(gross_margin)} · Operative Marge: {_pct_or_na(op_margin)} · Debt/Equity: {_val_or_na(debt_to_equity, "{:.0f}")}</div>'
+            f'<div class="mini-help">Interpretation: Profitabilität und Bilanzqualität werden regelbasiert zusammengeführt. Fehlende Werte werden als n/a markiert.</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="info-card"><div class="card-label">Wachstum</div>'
+            f'<div class="status-chip {g_cls}">Status: {g_txt}</div>'
+            f'<div class="mini-help">Umsatzwachstum: {_pct_or_na(revenue_growth)} · Gewinnwachstum: {_pct_or_na(earnings_growth)} · Quartals-Umsatz: {_pct_or_na(q_revenue_growth)} · Quartals-Gewinn: {_pct_or_na(q_earnings_growth)}</div>'
+            f'<div class="mini-help">Interpretation: Wachstum wird auf Jahres- und Quartalsebene geprüft. n/a bedeutet: Datenquelle hat keinen Wert geliefert.</div></div>',
+            unsafe_allow_html=True,
+        )
+    with area_cols[1]:
+        st.markdown(
+            f'<div class="info-card"><div class="card-label">Chart & Trend</div>'
+            f'<div class="status-chip {t_cls}">Status: {t_txt}</div>'
+            f'<div class="mini-help">Über 21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · RS-Rating: {rs_rating_val if rs_rating_val is not None else "n/a"}</div>'
+            f'<div class="mini-help">Interpretation: Trendrichtung und relative Stärke zeigen, ob das Chartbild eher konstruktiv oder aktuell erweitert ist.</div></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="info-card"><div class="card-label">Risiko</div>'
+            f'<div class="status-chip {r_cls}">Status: {r_txt}</div>'
+            f'<div class="mini-help">ATR (21T): {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · Beta: {f"{beta:.2f}" if beta and pd.notna(beta) else "n/a"} · Drawdown 52W: {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"} · Volumenfaktor: {f"{vol_ratio:.2f}x" if pd.notna(vol_ratio) else "n/a"}</div>'
+            f'<div class="mini-help">Interpretation: Risikoprofil kombiniert Schwankung, Markt-Sensitivität und Rückschlagsanfälligkeit. n/a bedeutet fehlende Daten vom Provider.</div></div>',
+            unsafe_allow_html=True,
+        )
+
     # Chart
-    _ema21 = df["Close"].ewm(span=21).mean()
-    _sma50 = df["Close"].rolling(50).mean()
-    _sma200 = df["Close"].rolling(200).mean()
     _vol_sma50 = df["Volume"].rolling(50).mean()
     rs_line = rs_ctx.get("rs_line") if isinstance(rs_ctx, dict) else None
     rs_ema21 = rs_ctx.get("ema21") if isinstance(rs_ctx, dict) else None
@@ -7406,25 +7535,22 @@ def _tab_aktienbewertung():
     col_f, col_t = st.columns(2)
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
-        fc = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
-        fok = sum(1 for _, ok, _ in fc if ok)
-        for label, ok, detail in fc:
+        fok = sum(1 for _, ok, _ in fundamentals_checks if ok)
+        for label, ok, detail in fundamentals_checks:
             render_check(label, ok, detail)
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
-        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fundamentals_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_t:
         st.markdown('<div class="info-card"><div class="card-label">Technische Checkliste</div>', unsafe_allow_html=True)
-        tc, cmf_val, rs_val = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
-        tok = sum(1 for _, ok, _ in tc if ok)
-        for label, ok, detail in tc:
+        tok = sum(1 for _, ok, _ in technical_checks if ok)
+        for label, ok, detail in technical_checks:
             render_check(label, ok, detail)
         sc = "#22c55e" if tok >= 10 else "#f59e0b" if tok >= 6 else "#ef4444"
-        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(tc)} Kriterien erfüllt</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(technical_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
     st.markdown('<div class="card-label">Chartverhalten</div>', unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns(3)
     for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
