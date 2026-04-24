@@ -34,6 +34,23 @@ APP_CSS = """<style>
 html, body, [class*="css"]{font-family:'Inter',system-ui,sans-serif;}
 .stApp{background:radial-gradient(1100px 500px at 86% -10%, rgba(59,130,246,.10), transparent 56%), var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;}
 .main .block-container{max-width:1240px;padding-top:1.2rem;padding-bottom:2.2rem;}
+.app-topbar{
+  margin:0 0 .8rem 0;
+  padding:12px 14px 8px;
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.005)), var(--panel);
+}
+.app-topbar__eyebrow{
+  margin:0;
+  color:var(--muted);
+  font-size:.68rem;
+  text-transform:uppercase;
+  letter-spacing:.1em;
+  font-weight:700;
+}
+.app-topbar__title{margin:.2rem 0 0;font-size:1.35rem!important;line-height:1.2;font-weight:800!important;}
+.app-topbar__subtitle{margin:.25rem 0 0;color:var(--muted);font-size:.9rem;line-height:1.45;}
 
 h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em;}
 h1{font-size:1.88rem!important;font-weight:800!important;line-height:1.14;}
@@ -43,6 +60,29 @@ p,li,label,.stMarkdown,.stCaption{font-family:'Inter',system-ui,sans-serif!impor
 code,pre{font-family:'JetBrains Mono',monospace!important;}
 
 hr{border:none;border-top:1px solid var(--border);margin:1rem 0;}
+
+/* Navigation pills */
+[data-testid="stNavigation"]{
+  margin-bottom:1rem;
+}
+[data-testid="stNavigation"] [data-baseweb="tab-list"]{
+  gap:8px;
+  flex-wrap:wrap;
+}
+[data-testid="stNavigation"] [data-baseweb="tab"]{
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:var(--panel-2);
+  color:var(--muted);
+  padding:7px 12px;
+  min-height:36px;
+  font-weight:600;
+}
+[data-testid="stNavigation"] [aria-selected="true"]{
+  background:linear-gradient(180deg, rgba(59,130,246,.34), rgba(59,130,246,.2));
+  border-color:#4e8ff6;
+  color:#eaf2ff;
+}
 
 /* Core cards */
 .summary-hero,.change-card,.info-card,.workspace-card,.score-card{
@@ -197,8 +237,12 @@ hr{border:none;border-top:1px solid var(--border);margin:1rem 0;}
 
 @media (max-width:640px){
   .main .block-container{padding-top:.85rem;padding-bottom:1.4rem;}
+  .app-topbar{padding:10px 12px 8px;}
+  .app-topbar__title{font-size:1.12rem!important;}
+  .app-topbar__subtitle{font-size:.82rem;}
   .stTabs [data-baseweb="tab-list"]{gap:6px;}
   .stTabs [data-baseweb="tab"]{flex:1 1 calc(50% - 6px);justify-content:center;text-align:center;padding:8px 10px;}
+  [data-testid="stNavigation"] [data-baseweb="tab"]{flex:1 1 calc(50% - 6px);justify-content:center;text-align:center;padding:7px 8px;}
   [data-testid="stMetric"]{border-radius:var(--radius-md);padding:12px 12px;}
   [data-testid="stMetricLabel"]{font-size:.67rem!important;}
   [data-testid="stMetricValue"]{font-size:1.18rem!important;}
@@ -207,5 +251,8 @@ hr{border:none;border-top:1px solid var(--border);margin:1rem 0;}
   .mobile-stack{display:flex;flex-direction:column;gap:10px;}
   .kpi-value{font-size:1.15rem;}
   .kpi-copy{font-size:.83rem;}
+  .stButton > button{width:100%;}
+  [data-testid="stDataFrame"]{overflow-x:auto;}
+  [data-testid="stPlotlyChart"] > div{min-height:260px;}
 }
 </style>"""
