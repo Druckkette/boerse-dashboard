@@ -22,7 +22,7 @@
 4. **WICHTIG**: Klicke auf **"Advanced settings"** bevor du deployst
 5. Füge unter **"Secrets"** ein:
    ```
-   FRED_API_KEY = "ea84969a42d2cc415e5b36ab2a4a2fab"
+   FRED_API_KEY = "dein_fred_api_key"
    ```
 6. Klicke **"Deploy!"**
 

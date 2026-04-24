@@ -50,7 +50,7 @@ APP_CSS = """<style>
   --border:#1e293b;
   --muted:#94a3b8;
   --text:#e5eefb;
-  --accent:#06b6d4;
+  --accent:#2563eb;
   --good:#22c55e;
   --warn:#f59e0b;
   --bad:#ef4444;
@@ -59,19 +59,20 @@ html, body, [class*="css"] {font-family:'Inter',system-ui,sans-serif;}
 .stApp{background-color:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif}
 .main .block-container{padding-top:1.1rem;max-width:1220px}
 h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em}
-h1{font-size:1.85rem!important;font-weight:800!important;background:linear-gradient(135deg,#22d3ee,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+h1{font-size:1.85rem!important;font-weight:800!important;background:linear-gradient(135deg,#60a5fa,#2563eb);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 h2{font-size:1.25rem!important}
 h3{font-size:1.05rem!important}
 p, li, label, .stMarkdown, .stCaption {font-family:'Inter',system-ui,sans-serif!important}
-code, pre, .card-label, [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{font-family:'JetBrains Mono',monospace!important}
+code, pre{font-family:'JetBrains Mono',monospace!important}
+.card-label, [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{font-family:'Inter',system-ui,sans-serif!important}
 [data-testid="stMetric"]{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:0 0 0 1px rgba(255,255,255,.01) inset}
 [data-testid="stMetricLabel"]{color:#7c8aa0!important;font-size:.72rem!important;text-transform:uppercase;letter-spacing:.08em}
 [data-testid="stMetricValue"]{color:var(--text)!important;font-size:1.32rem!important;font-weight:700!important}
 .stTabs [data-baseweb="tab-list"]{gap:6px;background:transparent;flex-wrap:wrap}
 .stTabs [data-baseweb="tab"]{background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--muted);padding:8px 14px;font-size:.86rem}
-.stTabs [aria-selected="true"]{background:#06b6d415;border-color:#0891b2;color:#67e8f9}
+.stTabs [aria-selected="true"]{background:#2563eb22;border-color:#2563eb;color:#bfdbfe}
 .summary-hero,.change-card,.info-card,.workspace-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
-.summary-hero{padding:18px 20px;background:linear-gradient(135deg,rgba(6,182,212,.08),rgba(59,130,246,.06))}
+.summary-hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.14),rgba(30,41,59,.35))}
 .ampel-box{border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px}
 .ampel-dot{width:48px;height:48px;border-radius:50%;flex-shrink:0}
 .check-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
@@ -638,7 +639,7 @@ def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, fre
     if freshness.get("nyse_refresh"):
         refresh_txt = f" · Tiefenanalyse aktualisiert {_elapsed_text(freshness['nyse_refresh'])}"
     st.markdown(
-        f'<div class="summary-hero"><div class="hero-title">Marktmodus: {mode}</div><div class="hero-subtitle">Stand Index {freshness.get("index_date","—")} · VIX {freshness.get("vix_date","—")} · Speicher {freshness.get("store_label","—")}{nyse_txt}{refresh_txt}</div><ul style="margin:0 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
+        f'<div class="summary-hero"><div class="hero-title">Börse ohne Bauchgefühl</div><div class="hero-subtitle">Regelbasiertes Markt-Dashboard für Trend, Breite und Risiko</div><div class="pill-wrap"><span class="pill">Marktmodus: {mode}</span><span class="pill">Index-Stand: {freshness.get("index_date","—")}</span><span class="pill">VIX-Stand: {freshness.get("vix_date","—")}</span></div><div class="mini-help" style="margin:10px 0 8px 0;">Speicher {freshness.get("store_label","—")}{nyse_txt}{refresh_txt}</div><ul style="margin:0 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -7463,7 +7464,7 @@ def _tab_aktienbewertung():
             fig_stock.add_trace(go.Scatter(x=rs_sma50.index, y=rs_sma50, name="RS 50-SMA", line=dict(color="#fb923c", width=1.0, dash="dash")), row=3, col=1)
     six_months_ago = df.index[-1] - pd.Timedelta(days=180)
     fig_stock.update_layout(
-        template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
+        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         height=560, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
         xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#1e293b"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
@@ -7989,22 +7990,22 @@ def _tab_marktanalyse():
     # Compact metric layout
     row1 = st.columns(3)
     with row1[0]:
-        st.metric(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%")
+        st.metric(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%", border=True)
         st.caption("Tagesveränderung des gewählten Index")
     with row1[1]:
-        st.metric("Dist.-Tage", int(L["Dist_Count_25"]), "⚠ Häufung" if int(L["Dist_Count_25"]) >= 4 else "OK")
+        st.metric("Dist.-Tage", int(L["Dist_Count_25"]), "⚠ Häufung" if int(L["Dist_Count_25"]) >= 4 else "OK", border=True)
         st.caption("Institutioneller Abgabedruck im 25-Tage-Fenster")
     with row1[2]:
-        st.metric("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—")
+        st.metric("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", border=True)
         st.caption("Kurzfristige Überdehnung in ATR")
 
     row2 = st.columns(2)
     with row2[0]:
-        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠>{t50:.0f}%" if (not np.isnan(d50) and d50 > t50) else "")
+        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠>{t50:.0f}%" if (not np.isnan(d50) and d50 > t50) else "", border=True)
         st.caption("Mittelfristige Überdehnung")
     with row2[1]:
         dd = L["Dist_52w_pct"]
-        st.metric("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—")
+        st.metric("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—", border=True)
         st.caption("Abstand zum 52-Wochen-Hoch")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
@@ -8400,21 +8401,23 @@ def main():
 
     main_view = st.segmented_control(
         "Navigation",
-        options=["📊 Marktanalyse", "🏭 Sektoranalyse", "📋 Aktienbewertung", "🎯 Nach dem Kauf", "🔐 Mein Bereich"],
-        default="📊 Marktanalyse",
+        options=["📊 Dashboard", "📈 Marktanalyse", "🏭 Sektoren", "📋 Aktienbewertung", "💼 Depot & Risiko", "🔐 Einstellungen"],
+        default="📊 Dashboard",
         key="main_view",
         label_visibility="collapsed",
     )
 
-    if main_view == "📊 Marktanalyse":
+    if main_view == "📊 Dashboard":
         _tab_marktanalyse()
-    elif main_view == "🏭 Sektoranalyse":
+    elif main_view == "📈 Marktanalyse":
+        _tab_marktanalyse()
+    elif main_view == "🏭 Sektoren":
         _tab_sektoranalyse()
     elif main_view == "📋 Aktienbewertung":
         _tab_aktienbewertung()
-    elif main_view == "🎯 Nach dem Kauf":
+    elif main_view == "💼 Depot & Risiko":
         _tab_nach_kauf()
-    elif main_view == "🔐 Mein Bereich":
+    elif main_view == "🔐 Einstellungen":
         _tab_mein_bereich()
 
 if __name__ == "__main__":
