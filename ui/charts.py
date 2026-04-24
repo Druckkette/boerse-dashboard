@@ -5,33 +5,56 @@ from __future__ import annotations
 import plotly.graph_objects as go
 
 CHART_COLORS = {
-    "primary": "#2563eb",
-    "secondary": "#60a5fa",
+    "primary": "#3b82f6",
+    "secondary": "#7fb0ff",
     "positive": "#22c55e",
     "warning": "#f59e0b",
     "negative": "#ef4444",
-    "muted": "#94a3b8",
-    "grid": "#1e293b",
-    "bg": "#0f172a",
+    "muted": "#93a1b8",
+    "grid": "rgba(147, 161, 184, 0.16)",
+    "bg": "rgba(8, 15, 29, 0)",
 }
 
 
-def apply_consistent_layout(fig: go.Figure, *, height: int, top_margin: int = 30, show_legend: bool = True) -> go.Figure:
+def apply_consistent_layout(fig: go.Figure, *, height: int, top_margin: int = 28, show_legend: bool = True) -> go.Figure:
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor=CHART_COLORS["bg"],
         plot_bgcolor=CHART_COLORS["bg"],
-        margin=dict(l=0, r=0, t=top_margin, b=0),
+        margin=dict(l=8, r=8, t=top_margin, b=8),
         height=height,
         showlegend=show_legend,
         legend=dict(
             orientation="h",
-            yanchor="top",
-            y=1.12,
-            font=dict(size=9, color=CHART_COLORS["muted"]),
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+            font=dict(size=10, color=CHART_COLORS["muted"]),
+            bgcolor="rgba(0,0,0,0)",
+            borderwidth=0,
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
         ),
-        xaxis=dict(gridcolor=CHART_COLORS["grid"], tickfont=dict(size=9, color="#64748b")),
-        yaxis=dict(gridcolor=CHART_COLORS["grid"], tickfont=dict(size=9, color="#64748b")),
         hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="#131d33",
+            bordercolor="rgba(147,161,184,0.32)",
+            font=dict(color="#e8edf7", size=11),
+        ),
+        xaxis=dict(
+            gridcolor=CHART_COLORS["grid"],
+            zeroline=False,
+            tickfont=dict(size=10, color=CHART_COLORS["muted"]),
+            title_font=dict(size=11, color=CHART_COLORS["muted"]),
+            linecolor="rgba(147,161,184,0.24)",
+        ),
+        yaxis=dict(
+            gridcolor=CHART_COLORS["grid"],
+            zeroline=False,
+            tickfont=dict(size=10, color=CHART_COLORS["muted"]),
+            title_font=dict(size=11, color=CHART_COLORS["muted"]),
+            linecolor="rgba(147,161,184,0.24)",
+        ),
     )
     return fig
