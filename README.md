@@ -15,16 +15,18 @@
    - Inhalt aus der config.toml kopieren
 4. **"Commit changes"**
 
-### Schritt 3: FRED API Key als Secret hinterlegen
+### Schritt 3: FRED API Key als Secret hinterlegen (und regelmäßig rotieren)
 1. Gehe zu [share.streamlit.io](https://share.streamlit.io)
 2. Logge dich mit GitHub ein → **"New app"**
 3. Wähle dein Repo, Branch `main`, Main file `app.py`
 4. **WICHTIG**: Klicke auf **"Advanced settings"** bevor du deployst
 5. Füge unter **"Secrets"** ein:
    ```
-   FRED_API_KEY = "dein_fred_api_key"
+   FRED_API_KEY = "dein_neuer_fred_api_key"
    ```
 6. Klicke **"Deploy!"**
+
+7. Falls ein Key jemals in einem öffentlichen Artefakt auftaucht: im FRED-Portal sofort **revoke/regenerate** und anschließend den neuen Key in Streamlit Secrets ersetzen.
 
 ### Fertig!
 Die App ist live unter: `https://dein-name-boerse-dashboard.streamlit.app`

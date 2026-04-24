@@ -1,7 +1,4 @@
-"""
-Single-file Streamlit app.
-Merged back into one app.py while keeping the refactor improvements.
-"""
+"""Main Streamlit app orchestrating modularized UI components and pages."""
 
 import hashlib
 import hmac
@@ -33,75 +30,9 @@ except Exception:
     psycopg2 = None
     execute_values = None
 
-# ===== From config.py =====
-PAGE_CONFIG = {
-    "page_title": "Börse ohne Bauchgefühl",
-    "page_icon": "🚦",
-    "layout": "wide",
-    "initial_sidebar_state": "collapsed",
-}
-
-APP_CSS = """<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
-:root{
-  --bg:#0b1220;
-  --panel:#111827;
-  --panel-2:#0f172a;
-  --border:#1e293b;
-  --muted:#94a3b8;
-  --text:#e5eefb;
-  --accent:#2563eb;
-  --good:#22c55e;
-  --warn:#f59e0b;
-  --bad:#ef4444;
-}
-html, body, [class*="css"] {font-family:'Inter',system-ui,sans-serif;}
-.stApp{background-color:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif}
-.main .block-container{padding-top:1.1rem;max-width:1220px}
-h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em}
-h1{font-size:1.85rem!important;font-weight:800!important;background:linear-gradient(135deg,#60a5fa,#2563eb);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-h2{font-size:1.25rem!important}
-h3{font-size:1.05rem!important}
-p, li, label, .stMarkdown, .stCaption {font-family:'Inter',system-ui,sans-serif!important}
-code, pre{font-family:'JetBrains Mono',monospace!important}
-.card-label, [data-testid="stMetricLabel"], [data-testid="stMetricValue"]{font-family:'Inter',system-ui,sans-serif!important}
-[data-testid="stMetric"]{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px 16px;box-shadow:0 0 0 1px rgba(255,255,255,.01) inset}
-[data-testid="stMetricLabel"]{color:#7c8aa0!important;font-size:.72rem!important;text-transform:uppercase;letter-spacing:.08em}
-[data-testid="stMetricValue"]{color:var(--text)!important;font-size:1.32rem!important;font-weight:700!important}
-.stTabs [data-baseweb="tab-list"]{gap:6px;background:transparent;flex-wrap:wrap}
-.stTabs [data-baseweb="tab"]{background:var(--panel);border:1px solid var(--border);border-radius:10px;color:var(--muted);padding:8px 14px;font-size:.86rem}
-.stTabs [aria-selected="true"]{background:#2563eb22;border-color:#2563eb;color:#bfdbfe}
-.summary-hero,.change-card,.info-card,.workspace-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
-.summary-hero{padding:18px 20px;background:linear-gradient(135deg,rgba(37,99,235,.14),rgba(30,41,59,.35))}
-.ampel-box{border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:16px}
-.ampel-dot{width:48px;height:48px;border-radius:50%;flex-shrink:0}
-.check-item{display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
-.check-item:last-child{border-bottom:none}
-.check-icon{width:22px;height:22px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.check-ok{background:#22c55e20;border:1.5px solid #22c55e50;color:var(--good)}
-.check-fail{background:#ef444420;border:1.5px solid #ef444450;color:var(--bad)}
-.check-warn{background:#f59e0b20;border:1.5px solid #f59e0b50;color:var(--warn)}
-.info-card,.workspace-card{margin-bottom:12px}
-.card-label{font-size:.7rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
-.mini-help{font-size:.76rem;color:#7c8aa0;line-height:1.45;margin-top:6px}
-.hero-title{font-size:1.25rem;font-weight:800;color:var(--text);margin-bottom:4px}
-.hero-subtitle{font-size:.9rem;color:var(--muted);margin-bottom:14px}
-.hero-action{font-size:.95rem;font-weight:700;padding:10px 12px;border-radius:10px;margin-top:10px}
-.hero-good{background:#22c55e18;color:#86efac;border:1px solid #22c55e40}
-.hero-warn{background:#f59e0b18;color:#fcd34d;border:1px solid #f59e0b40}
-.hero-bad{background:#ef444418;color:#fca5a5;border:1px solid #ef444440}
-.change-card{padding:14px 16px}
-.change-title{font-size:.72rem;color:#7c8aa0;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
-.change-value{font-size:1rem;font-weight:700;color:var(--text)}
-.change-detail{font-size:.8rem;color:var(--muted);margin-top:4px;line-height:1.35}
-.kpi-explainer{background:rgba(15,23,42,.85);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font-size:.8rem;color:var(--muted)}
-.pill-wrap{display:flex;flex-wrap:wrap;gap:8px}
-.pill{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#0f172a;border:1px solid var(--border);color:var(--text);font-size:.82rem}
-.workspace-note{font-size:.82rem;color:var(--muted);line-height:1.45}
-.breadth-track{height:10px;border-radius:5px;background:var(--border);position:relative;overflow:hidden;margin:8px 0}
-.breadth-fill{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:linear-gradient(90deg,#22c55e,#f59e0b,#ef4444);transition:width .5s}
-hr{border:none;border-top:1px solid var(--border);margin:1rem 0}
-</style>"""
+from ui.charts import CHART_COLORS, apply_consistent_layout
+from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
+from ui.theme import APP_CSS, PAGE_CONFIG
 
 def configure_page() -> None:
     st.set_page_config(**PAGE_CONFIG)
@@ -1637,7 +1568,7 @@ def _render_portfolio_72_area():
             worst["pnl_pct"] = worst["pnl_pct"].round(2)
             worst["risk_contribution"] = worst["risk_contribution"].round(3)
             st.markdown("#### Verkaufskandidaten nach relativer Schwäche")
-            st.dataframe(worst.rename(columns={"ticker": "Ticker", "pnl_pct": "P&L %", "risk_contribution": "Risikobeitrag"}), use_container_width=True, hide_index=True)
+            st.dataframe(worst.rename(columns={"ticker": "Ticker", "pnl_pct": "P&L %", "risk_contribution": "Risikobeitrag"}), use_container_width=True, hide_index=True, column_config=performance_column_config())
     else:
         st.info("Für das Depotcockpit werden nur Positionen mit Stückzahl größer 0 berücksichtigt.")
 
@@ -1689,15 +1620,12 @@ def _render_portfolio_72_area():
         fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma21"], mode="lines", name="21-Tage SMA", line=dict(width=1.6, dash="dash")))
         if "sp500_index" in auto_curve and auto_curve["sp500_index"].notna().any():
             fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["sp500_index"], mode="lines", name="S&P 500 Index"))
+        apply_consistent_layout(fig_auto, height=380, top_margin=20)
         fig_auto.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="#0f172a",
-            plot_bgcolor="#0f172a",
-            height=380,
             margin=dict(l=10, r=10, t=20, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            yaxis=dict(title="Index (Start = 100)", gridcolor="#1e293b"),
-            xaxis=dict(title="", gridcolor="#1e293b"),
+            yaxis=dict(title="Index (Start = 100)", gridcolor=CHART_COLORS["grid"]),
+            xaxis=dict(title="", gridcolor=CHART_COLORS["grid"]),
         )
         st.plotly_chart(fig_auto, use_container_width=True, key="pf_curve_chart_auto")
         auto_display = auto_curve[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]].copy()
@@ -1712,7 +1640,7 @@ def _render_portfolio_72_area():
             "portfolio_index_sma21": "SMA 21",
             "sp500_index": "S&P 500",
         })
-        st.dataframe(auto_display.round(2), use_container_width=True, hide_index=True)
+        st.dataframe(auto_display.round(2), use_container_width=True, hide_index=True, column_config={"Datum": st.column_config.TextColumn("Datum", width="small"), "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"), "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f"), "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f"), "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f")})
     else:
         st.info("Für die Depotkurve fehlen aktuell verwertbare Kursdaten oder Positionen mit Stückzahl.")
 
@@ -1722,11 +1650,11 @@ def _render_portfolio_72_area():
         flow_df["date"] = pd.to_datetime(flow_df["date"], errors="coerce")
         flow_df = flow_df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
         flow_df["Typ"] = flow_df["type"].map({"deposit": "Einzahlung", "withdrawal": "Auszahlung"}).fillna("—")
-        flow_df["Datum"] = flow_df["date"].dt.strftime("%Y-%m-%d")
+        flow_df["Datum"] = flow_df["date"].dt.date
         flow_df["Betrag"] = pd.to_numeric(flow_df.get("amount", 0), errors="coerce").fillna(0.0)
         flow_df["Notiz"] = flow_df.get("note", "").astype(str)
         st.markdown("##### Erfasste Ein- und Auszahlungen")
-        st.dataframe(flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2), use_container_width=True, hide_index=True)
+        st.dataframe(flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2), use_container_width=True, hide_index=True, column_config=flow_column_config())
         delete_idx = st.selectbox("Cash-Flow löschen", options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f}" for i, row in flow_df.iterrows()], key="pf_flow_delete_sel")
         if delete_idx and st.button("Cash-Flow löschen", use_container_width=True, key="pf_flow_delete_btn"):
             idx = int(str(delete_idx).split(":", 1)[0])
@@ -5671,7 +5599,8 @@ def plot_price_with_volume(df, sd=90):
     vol_colors = ["#22c55e" if p >= 0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig.add_trace(go.Bar(x=x, y=_y(dv["Volume"]), marker_color=vol_colors, opacity=0.7, name="Volumen", showlegend=False), row=2, col=1)
     fig.add_trace(go.Scatter(x=x, y=_y(dv["Vol_SMA50"]), name="Vol 50-SMA", line=dict(color="#64748b", width=1, dash="dot"), showlegend=False), row=2, col=1)
-    fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=30, b=0), height=500, legend=dict(orientation="h", yanchor="top", y=1.10, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis2=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), tickformat=".2s"), hovermode="x unified")
+    apply_consistent_layout(fig, height=500)
+    fig.update_layout(yaxis2=dict(gridcolor=CHART_COLORS["grid"], tickfont=dict(size=9, color="#64748b"), tickformat=".2s"))
     fig.update_xaxes(showgrid=False, row=1, col=1)
     fig.update_xaxes(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), row=2, col=1)
     return fig
@@ -5684,8 +5613,8 @@ def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
     ma_col = "EMA10" if "EMA10" in d.columns else "SMA10" if "SMA10" in d.columns else None
     ma_name = "10-EMA" if ma_col == "EMA10" else "10-SMA"
     if ma_col is not None:
-        fig.add_trace(go.Scatter(x=x, y=_y(d[ma_col]), name=ma_name, line=dict(color="#3b82f6", width=1, dash="dot")))
-    fig.update_layout(template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827", margin=dict(l=0, r=0, t=10, b=0), height=180, legend=dict(orientation="h", yanchor="top", y=1.15, font=dict(size=9, color="#94a3b8")), xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")), yaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")))
+        fig.add_trace(go.Scatter(x=x, y=_y(d[ma_col]), name=ma_name, line=dict(color=CHART_COLORS["secondary"], width=1, dash="dot")))
+    apply_consistent_layout(fig, height=180, top_margin=10)
     return fig
 
 def render_signal_card(title, status, detail, tone="#64748b"):
@@ -5705,7 +5634,7 @@ def plot_breadth_deep(br,sd=90):
         subplot_titles=("A/D-Linie (kumulativ)","McClellan Oscillator","Neue Hochs vs. Neue Tiefs","% über gleitenden Durchschnitten","Deemer Ratio (Breitenschub)"),
         row_heights=[0.2,0.2,0.2,0.2,0.2])
     # A/D Line
-    fig.add_trace(go.Scatter(x=x,y=_y(d["AD_Line"]),name="A/D-Linie",line=dict(color="#06b6d4",width=1.5)),row=1,col=1)
+    fig.add_trace(go.Scatter(x=x,y=_y(d["AD_Line"]),name="A/D-Linie",line=dict(color=CHART_COLORS["primary"],width=1.5)),row=1,col=1)
     fig.add_trace(go.Scatter(x=x,y=_y(d["AD_Line_SMA21"]),name="21-SMA",line=dict(color="#64748b",width=1,dash="dot")),row=1,col=1)
     # McClellan
     mc_colors=[("#22c55e" if v>=0 else "#ef4444") for v in d["McClellan"].fillna(0)]
@@ -5716,15 +5645,15 @@ def plot_breadth_deep(br,sd=90):
     fig.add_trace(go.Bar(x=x,y=_y(d["New_Highs"]),name="Neue Hochs",marker_color="#22c55e",opacity=0.7),row=3,col=1)
     fig.add_trace(go.Bar(x=x,y=_y(-d["New_Lows"]),name="Neue Tiefs",marker_color="#ef4444",opacity=0.7),row=3,col=1)
     # % above MAs
-    fig.add_trace(go.Scatter(x=x,y=_y(d["Pct_Above_50SMA"]),name="% > 50-SMA",line=dict(color="#f97316",width=1.5)),row=4,col=1)
-    fig.add_trace(go.Scatter(x=x,y=_y(d["Pct_Above_200SMA"]),name="% > 200-SMA",line=dict(color="#a855f7",width=1.5)),row=4,col=1)
+    fig.add_trace(go.Scatter(x=x,y=_y(d["Pct_Above_50SMA"]),name="% > 50-SMA",line=dict(color=CHART_COLORS["warning"],width=1.5)),row=4,col=1)
+    fig.add_trace(go.Scatter(x=x,y=_y(d["Pct_Above_200SMA"]),name="% > 200-SMA",line=dict(color=CHART_COLORS["secondary"],width=1.5)),row=4,col=1)
     fig.add_hline(y=70,line_dash="dot",line_color="#f59e0b",line_width=0.5,row=4,col=1)
     # Deemer Ratio
-    fig.add_trace(go.Scatter(x=x,y=_y(d["Deemer_Ratio"]),name="Deemer Ratio",line=dict(color="#06b6d4",width=1.5)),row=5,col=1)
+    fig.add_trace(go.Scatter(x=x,y=_y(d["Deemer_Ratio"]),name="Deemer Ratio",line=dict(color=CHART_COLORS["primary"],width=1.5)),row=5,col=1)
     fig.add_hline(y=1.97,line_dash="dash",line_color="#22c55e",line_width=1,annotation_text="1.97 (Thrust)",annotation_font_color="#22c55e",annotation_font_size=9,row=5,col=1)
     fig.add_hline(y=1.0,line_dash="dot",line_color="#64748b",line_width=0.5,row=5,col=1)
 
-    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=750,showlegend=False)
+    apply_consistent_layout(fig, height=750, show_legend=False)
     for i in range(1,6): fig.update_xaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
     for ann in fig.layout.annotations: ann.font.size=10;ann.font.color="#94a3b8"
     return fig
@@ -5732,7 +5661,8 @@ def plot_breadth_deep(br,sd=90):
 def plot_fed_rate(fed_df,sd=200):
     d=fed_df.tail(sd);x=_x(d.index);fig=go.Figure()
     fig.add_trace(go.Scatter(x=x,y=_y(d["FedRate"]),name="Fed Funds Rate",line=dict(color="#f59e0b",width=2),fill="tozeroy",fillcolor="rgba(245,158,11,0.1)"))
-    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=150,showlegend=False,xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),title="% p.a.",title_font=dict(size=9,color="#64748b")))
+    apply_consistent_layout(fig, height=150, top_margin=10, show_legend=False)
+    fig.update_layout(yaxis=dict(gridcolor=CHART_COLORS["grid"], tickfont=dict(size=9, color="#64748b"), title="% p.a.", title_font=dict(size=9, color="#64748b")))
     return fig
 
 
@@ -7225,7 +7155,7 @@ def _render_stock_compare_section() -> None:
         "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
     ]
     st.markdown("##### 1) Gesamtranking")
-    st.dataframe(compare_df[overview_cols].round(1), use_container_width=True, hide_index=True)
+    st.dataframe(compare_df[overview_cols].round(1), use_container_width=True, hide_index=True, column_config=rating_overview_column_config())
 
     st.markdown("##### 2) Kategorien")
     category_map = {
@@ -7878,7 +7808,7 @@ def _tab_sektoranalyse():
             mode="lines+markers", marker=dict(size=4),
         ))
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor="#111827", plot_bgcolor="#111827",
+        template="plotly_dark", paper_bgcolor=CHART_COLORS["bg"], plot_bgcolor=CHART_COLORS["bg"],
         margin=dict(l=0, r=0, t=10, b=0), height=350,
         yaxis=dict(autorange="reversed", gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"),
                    title="Rang", title_font=dict(size=9, color="#64748b"), dtick=1),
@@ -8107,12 +8037,12 @@ def _tab_marktanalyse(compact: bool = False):
         vc1, vc2 = st.columns(2)
         with vc1:
             if vix_df is not None:
-                st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color="#ef4444"), use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color=CHART_COLORS["negative"]), use_container_width=True, config={"displayModeBar": False})
             else:
                 st.info("Keine VIX-Daten verfügbar")
         with vc2:
             if vixy_df is not None:
-                st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color="#f59e0b"), use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color=CHART_COLORS["warning"]), use_container_width=True, config={"displayModeBar": False})
             else:
                 st.info("Keine VIXY-Daten verfügbar")
 
@@ -8197,8 +8127,35 @@ def _tab_marktanalyse(compact: bool = False):
 
 
 def _tab_dashboard():
-    """Kompakter Start-Tab mit reduzierter Marktübersicht."""
-    _tab_marktanalyse(compact=True)
+    """Reduziertes Dashboard mit Fokus auf Zustand und nächste Aktion."""
+    _init_workspace_state()
+    with st.spinner("Lade Kernindikatoren …"):
+        data = load_market_data()
+    if not data or "S&P 500" not in data:
+        st.error("Für das Dashboard fehlen S&P-500-Daten.")
+        return
+
+    df = compute_ampel(detect_distribution_days(add_indicators(data["S&P 500"].copy())))
+    latest = df.iloc[-1]
+    warnings = int((latest.get("Dist_Count_25", 0) >= 4)) + int(bool(latest.get("Up_Vol_Declining", False)))
+    mode, tone, action = _market_action_and_tone(latest.get("Ampel_Phase", ""), warnings, "ausgewogen", "Neutral")
+    reasons = _build_market_reasons(latest, warnings, "ausgewogen", pd.Series(dtype=float))
+    freshness = _format_data_freshness("S&P 500", df, None)
+
+    _render_hero_card(mode, tone, reasons, action, freshness)
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.metric("S&P 500", f"{latest['Close']:,.2f}", f"{latest['Pct_Change']:+.2f}%", border=True)
+    with k2:
+        st.metric("Dist.-Tage", int(latest.get("Dist_Count_25", 0)), border=True)
+    with k3:
+        st.metric("21-EMA", f"{latest.get('Dist_21EMA', float('nan')):.1f} ATR" if pd.notna(latest.get("Dist_21EMA")) else "—", border=True)
+    with k4:
+        st.metric("Drawdown", f"{latest.get('Dist_52w_pct', float('nan')):.1f}%" if pd.notna(latest.get("Dist_52w_pct")) else "—", border=True)
+
+    st.plotly_chart(plot_price_with_volume(df, 90), use_container_width=True, config={"displayModeBar": False})
+    st.caption("Das Dashboard zeigt bewusst nur Kernsignale. Für Diagnose und Breadth verwende die Seite „Marktanalyse“.")
 
 
 # ===== Main entry point =====
@@ -8401,7 +8358,7 @@ def _tab_mein_bereich():
                         "P&L %": round(float(health["pnl"]), 2) if health and health.get("pnl") is not None and not np.isnan(health.get("pnl")) else np.nan,
                         "Notiz": pos.get("note", ""),
                     })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config={"Ticker": st.column_config.TextColumn("Ticker", width="small"), "Stück": st.column_config.NumberColumn("Stück", format="%.2f"), "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f"), "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f%%")})
                 remove_pos = st.selectbox("Position entfernen", options=[""] + [p.get("ticker", "") for p in positions], key="pos_remove_sel")
                 if remove_pos and st.button("Position löschen", use_container_width=True, key="pos_remove_btn"):
                     _remove_position(remove_pos)
@@ -8423,26 +8380,16 @@ def main():
     _render_workspace_sidebar()
     st.title("BÖRSE OHNE BAUCHGEFÜHL")
 
-    main_view = st.segmented_control(
-        "Navigation",
-        options=["📊 Dashboard", "📈 Marktanalyse", "🏭 Sektoren", "📋 Aktienbewertung", "💼 Depot & Risiko", "🔐 Einstellungen"],
-        default="📊 Dashboard",
-        key="main_view",
-        label_visibility="collapsed",
-    )
-
-    if main_view == "📊 Dashboard":
-        _tab_dashboard()
-    elif main_view == "📈 Marktanalyse":
-        _tab_marktanalyse()
-    elif main_view == "🏭 Sektoren":
-        _tab_sektoranalyse()
-    elif main_view == "📋 Aktienbewertung":
-        _tab_aktienbewertung()
-    elif main_view == "💼 Depot & Risiko":
-        _tab_nach_kauf()
-    elif main_view == "🔐 Einstellungen":
-        _tab_mein_bereich()
+    pages = [
+        st.Page(_tab_dashboard, title="Dashboard", icon="📊", url_path="dashboard", default=True),
+        st.Page(_tab_marktanalyse, title="Marktanalyse", icon="📈", url_path="marktanalyse"),
+        st.Page(_tab_sektoranalyse, title="Sektoren", icon="🏭", url_path="sektoren"),
+        st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktienbewertung"),
+        st.Page(_tab_nach_kauf, title="Depot & Risiko", icon="💼", url_path="depot"),
+        st.Page(_tab_mein_bereich, title="Einstellungen", icon="🔐", url_path="einstellungen"),
+    ]
+    navigation = st.navigation(pages, position="top")
+    navigation.run()
 
 if __name__ == "__main__":
     main()
