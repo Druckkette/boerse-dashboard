@@ -1,6 +1,7 @@
 """Main Streamlit app orchestrating modularized UI components and pages."""
 
 import hashlib
+import html
 import hmac
 import io
 import json
@@ -582,6 +583,47 @@ def _render_market_glossary(keys):
             items.append(f"<strong>{key}</strong> — {text}")
     if items:
         st.markdown('<div class="kpi-explainer">' + "<br>".join(items) + "</div>", unsafe_allow_html=True)
+
+
+def render_kpi_card(
+    label: str,
+    value: str,
+    interpretation: str,
+    tone: str,
+    help_text: str | None = None,
+    why_important: str | None = None,
+    rule_note: str | None = None,
+    glossary_key: str | None = None,
+) -> None:
+    tone_cls = {
+        "good": "status-good",
+        "warn": "status-warn",
+        "bad": "status-bad",
+        "neutral": "status-neutral",
+    }.get(str(tone or "neutral").lower(), "status-neutral")
+    tone_label = {
+        "good": "konstruktiv",
+        "warn": "beobachten",
+        "bad": "kritisch",
+        "neutral": "informativ",
+    }.get(str(tone or "neutral").lower(), "informativ")
+    glossary_text = METRIC_GLOSSARY.get(glossary_key or label)
+    what_it_means = help_text or glossary_text or "Keine zusätzliche Einordnung verfügbar."
+    safe = lambda v: html.escape(str(v), quote=True)
+    why_html = f'<div class="kpi-copy"><strong>Warum wichtig?</strong> {safe(why_important)}</div>' if why_important else ""
+    rule_html = f'<div class="kpi-copy"><strong>Regelbasierte Einordnung:</strong> {safe(rule_note)}</div>' if rule_note else ""
+    st.markdown(
+        f'<article class="kpi-card">'
+        f'<div class="kpi-header"><div class="kpi-label">{safe(label)}</div>'
+        f'<span class="status-chip {tone_cls}">{safe(tone_label)}</span></div>'
+        f'<div class="kpi-value">{safe(value)}</div>'
+        f'<div class="kpi-interpretation">{safe(interpretation)}</div>'
+        f'<div class="kpi-copy"><strong>Was bedeutet das?</strong> {safe(what_it_means)}</div>'
+        f"{why_html}"
+        f"{rule_html}"
+        f'</article>',
+        unsafe_allow_html=True,
+    )
 
 def _simple_position_health(position: dict):
     ticker = position.get("ticker", "")
@@ -7534,6 +7576,22 @@ def _tab_aktienbewertung():
     verdict_text = assessment["summary"]
     overall_score = assessment["total_score"]
 
+    def _pct_or_na(value):
+        return f"{value*100:.1f}%" if value is not None and pd.notna(value) else "n/a"
+
+    def _val_or_na(value, fmt="{:.2f}"):
+        return fmt.format(value) if value is not None and pd.notna(value) else "n/a"
+
+    roe = info.get("returnOnEquity") if info else None
+    gross_margin = info.get("grossMargins") if info else None
+    op_margin = info.get("operatingMargins") if info else None
+    debt_to_equity = info.get("debtToEquity") if info else None
+    revenue_growth = info.get("revenueGrowth") if info else None
+    earnings_growth = info.get("earningsGrowth") if info else None
+    q_revenue_growth = info.get("quarterlyRevenueGrowth") if info else None
+    q_earnings_growth = info.get("quarterlyEarningsGrowth") if info else None
+    drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
+
     st.markdown(
         f'<div class="info-card">'
         f'<div class="card-label">Schnellurteil</div>'
@@ -7548,34 +7606,118 @@ def _tab_aktienbewertung():
         unsafe_allow_html=True,
     )
 
-    # Key metrics arranged in two rows for better readability
+    # KPI-Cockpit mit Einordnung
     rng_hl = L["High"] - L["Low"]
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
     beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
+    dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
+    dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
 
-    top_metrics = st.columns(3)
-    with top_metrics[0]:
-        st.metric("Sektor", (info.get("sector", "—") if info else "—")[:22])
-        st.caption("Geschäftsfeld der Aktie")
-    with top_metrics[1]:
-        st.metric("Branche", (info.get("industry", "—") if info else "—")[:28])
-        st.caption("Feinere Untergruppe innerhalb des Sektors")
-    with top_metrics[2]:
-        st.metric("Closing Range", f"{cr_today:.0f}%")
-        st.caption("Wie stark der Schluss im Tagesbereich lag")
+    kpi_cols_a = st.columns(3)
+    with kpi_cols_a[0]:
+        render_kpi_card(
+            label="Gesamtscore",
+            value=f"{overall_score}/100",
+            interpretation=f"{verdict_label} · {name} ({ticker})",
+            tone=assessment["status_tone"],
+            help_text=assessment["summary"],
+            why_important="Der Gesamtscore bündelt Qualität, Wachstum, Trend und Risiko in einer konsistenten Gesamtperspektive.",
+            rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
+        )
+    with kpi_cols_a[1]:
+        render_kpi_card(
+            label="Qualität",
+            value=f'{assessment["quality_score"]}/100',
+            interpretation=f'ROE {_pct_or_na(roe)} · Operative Marge {_pct_or_na(op_margin)}',
+            tone="good" if assessment["quality_score"] >= 70 else "warn" if assessment["quality_score"] >= 45 else "bad",
+            help_text="Misst Profitabilität und Bilanzstabilität auf Basis der verfügbaren Fundamentaldaten.",
+            why_important="Höhere Qualität kann die Robustheit des Geschäftsmodells in schwierigeren Marktphasen unterstützen.",
+            rule_note="ROE, Margen und Debt/Equity werden zu einem Teilscore zusammengeführt; fehlende Daten werden neutral behandelt.",
+        )
+    with kpi_cols_a[2]:
+        render_kpi_card(
+            label="Wachstum",
+            value=f'{assessment["growth_score"]}/100',
+            interpretation=f'Umsatz {_pct_or_na(revenue_growth)} · Gewinn {_pct_or_na(earnings_growth)}',
+            tone="good" if assessment["growth_score"] >= 70 else "warn" if assessment["growth_score"] >= 45 else "bad",
+            help_text="Bewertet die Dynamik von Umsatz und Gewinn auf Jahres- und Quartalsbasis.",
+            why_important="Nachhaltiges Wachstum kann die Wahrscheinlichkeit steigender Gewinnerwartungen erhöhen.",
+            rule_note="Jahres- und Quartalsraten werden kombiniert; stabile positive Raten verbessern den Teilscore.",
+        )
 
-    low_metrics = st.columns(4)
-    with low_metrics[0]:
-        st.metric("ATR (21T)", f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", cat_lbl)
-    with low_metrics[1]:
-        st.metric("DRR (Ø21T)", f"{drr:.2f}%")
-    with low_metrics[2]:
-        rs_metric_delta = "Elite" if rs_rating_val is not None and rs_rating_val >= 90 else "Stark" if rs_rating_val is not None and rs_rating_val >= 80 else ""
-        st.metric("RS-Rating", f"{rs_rating_val}" if rs_rating_val is not None else "—", rs_metric_delta)
-    with low_metrics[3]:
-        st.metric("Beta", f"{beta:.2f}" if beta else "—", ">1.3 dynamisch" if beta and beta > 1.3 else "")
+    kpi_cols_b = st.columns(3)
+    with kpi_cols_b[0]:
+        render_kpi_card(
+            label="Trend",
+            value=f'{assessment["trend_score"]}/100',
+            interpretation=f'Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"}',
+            tone="good" if assessment["trend_score"] >= 70 else "warn" if assessment["trend_score"] >= 45 else "bad",
+            help_text="Trend und Marktführerschaft werden über gleitende Durchschnitte, RS-Rating und Chartsignale bewertet.",
+            why_important="Ein stabiler Trend reduziert häufig die Zahl impulsiver Entscheidungen gegen den Marktfluss.",
+            rule_note="Kurslage über EMA/SMA und relative Stärke bestimmen, ob das Setup konstruktiv oder anfällig wirkt.",
+        )
+    with kpi_cols_b[1]:
+        render_kpi_card(
+            label="Risiko",
+            value=f'{assessment["risk_score"]}/100',
+            interpretation=f'ATR {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · Drawdown {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"}',
+            tone="good" if assessment["risk_score"] >= 70 else "warn" if assessment["risk_score"] >= 45 else "bad",
+            help_text="Kombiniert Schwankungsbreite, Marktsensitivität und Abstand zu zentralen Referenzniveaus.",
+            why_important="Risikokennzahlen helfen, Positionsgrößen und Erwartungshaltung realistisch zu kalibrieren.",
+            rule_note="Niedrigere ATR/Beta-Werte sowie moderatere Abstände zu 50-SMA und 52W-Hoch verbessern die Einordnung.",
+        )
+    with kpi_cols_b[2]:
+        rs_tone = "neutral"
+        rs_interp = "Kein RS-Rating verfügbar"
+        if rs_rating_val is not None:
+            rs_tone = "good" if rs_rating_val >= 80 else "warn" if rs_rating_val >= 65 else "bad"
+            rs_interp = "Marktführerschaft" if rs_rating_val >= 80 else "im Mittelfeld" if rs_rating_val >= 65 else "unterdurchschnittlich"
+        render_kpi_card(
+            label="RS-Rating",
+            value=f"{rs_rating_val}" if rs_rating_val is not None else "n/a",
+            interpretation=f"{rs_interp} · {rs_hint or 'Tempo stabil'}",
+            tone=rs_tone,
+            glossary_key="RS-Rating",
+            why_important="Relative Stärke zeigt, ob eine Aktie im Vergleich zum Markt eher Kapital anzieht oder verliert.",
+            rule_note="Werte ab 80 gelten im Regelset als klar konstruktiv, 65–79 als beobachtbar, darunter als schwächer.",
+        )
+
+    kpi_cols_c = st.columns(3)
+    with kpi_cols_c[0]:
+        dist50_tone = "neutral" if pd.isna(dist_50) else "good" if abs(dist_50) <= 6 else "warn" if abs(dist_50) <= 14 else "bad"
+        render_kpi_card(
+            label="Abstand 50-SMA",
+            value=f"{dist_50:+.1f}%" if pd.notna(dist_50) else "n/a",
+            interpretation="Nahe der 50-SMA" if pd.notna(dist_50) and abs(dist_50) <= 6 else "deutlich erweitert" if pd.notna(dist_50) and abs(dist_50) > 14 else "moderat entfernt",
+            tone=dist50_tone,
+            glossary_key="50-SMA",
+            why_important="Große Abstände zur 50-SMA erhöhen oft Rücksetzer-Risiko oder zeigen fortgeschrittene Bewegungen.",
+            rule_note="Im Regelset gilt ein Abstand bis ca. ±6% als stabil, darüber steigt der Beobachtungsbedarf.",
+        )
+    with kpi_cols_c[1]:
+        dist200_tone = "neutral" if pd.isna(dist_200) else "good" if dist_200 >= 0 else "warn" if dist_200 >= -8 else "bad"
+        render_kpi_card(
+            label="Abstand 200-SMA",
+            value=f"{dist_200:+.1f}%" if pd.notna(dist_200) else "n/a",
+            interpretation="oberhalb langfristigem Trend" if pd.notna(dist_200) and dist_200 >= 0 else "unter langfristigem Trend" if pd.notna(dist_200) else "keine 200-Tage-Basis",
+            tone=dist200_tone,
+            help_text="Der Abstand zur 200-SMA zeigt, ob der Kurs im langfristigen Auf- oder Abwärtstrend liegt.",
+            why_important="Der langfristige Trend wirkt als struktureller Filter für Erwartungsmanagement und Risiko.",
+            rule_note="Kurse über der 200-SMA gelten hier als konstruktiver Grundzustand, darunter vorsichtiger.",
+        )
+    with kpi_cols_c[2]:
+        atr_tone = "neutral" if pd.isna(atr_pct) else "good" if atr_pct <= 2.5 else "warn" if atr_pct <= 4.5 else "bad"
+        render_kpi_card(
+            label="ATR / Volatilität",
+            value=f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a",
+            interpretation=f"{cat_lbl or 'ohne Kategorie'} · DRR {drr:.2f}%",
+            tone=atr_tone,
+            glossary_key="ATR (21T)",
+            why_important="Volatilität beeinflusst das kurzfristige Schwankungsrisiko und die sinnvolle Positionsgröße.",
+            rule_note="Niedrigere ATR-Werte stabilisieren den Risikoscore; hohe Werte signalisieren mehr Bewegungsrisiko.",
+        )
 
     if isinstance(rs_source_note, dict) and rs_source_note.get("source") in {RS_SOURCE_CSV_LATEST, RS_SOURCE_FRED_CSV}:
         if rs_source_note.get("matched"):
@@ -7598,21 +7740,6 @@ def _tab_aktienbewertung():
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
 
     # Geführte 4er-Analysekarte
-    def _pct_or_na(value):
-        return f"{value*100:.1f}%" if value is not None and pd.notna(value) else "n/a"
-
-    def _val_or_na(value, fmt="{:.2f}"):
-        return fmt.format(value) if value is not None and pd.notna(value) else "n/a"
-
-    roe = info.get("returnOnEquity") if info else None
-    gross_margin = info.get("grossMargins") if info else None
-    op_margin = info.get("operatingMargins") if info else None
-    debt_to_equity = info.get("debtToEquity") if info else None
-    revenue_growth = info.get("revenueGrowth") if info else None
-    earnings_growth = info.get("earningsGrowth") if info else None
-    q_revenue_growth = info.get("quarterlyRevenueGrowth") if info else None
-    q_earnings_growth = info.get("quarterlyEarningsGrowth") if info else None
-    drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
     def _status_chip(score_value: int):
         ratio = score_value / 100 if score_value is not None else 0
         if ratio >= 0.7:
