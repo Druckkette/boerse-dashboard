@@ -7891,8 +7891,8 @@ def _tab_sektoranalyse():
 
 
 
-def _tab_marktanalyse():
-    """Tab 1: Markt-Dashboard mit klarer Führung, kompaktem Startblock und Technik im Expander."""
+def _tab_marktanalyse(compact: bool = False):
+    """Marktanalyse mit optional kompakter Dashboard-Ansicht."""
     _init_workspace_state()
     with st.spinner("Lade Marktdaten …"):
         data = load_market_data()
@@ -8013,7 +8013,7 @@ def _tab_marktanalyse():
 
     st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
 
-    with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
+    with st.expander("Frühwarnzeichen und Warnzeichen", expanded=not compact):
         st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
         for label, ok, detail, warn in warning_items:
             render_check(label, ok, detail, warn=warn)
@@ -8024,6 +8024,25 @@ def _tab_marktanalyse():
         else:
             st.markdown(f'<div style="text-align:center;padding:8px;color:#ef4444;">⚠ {wc} Warnzeichen — Risiko reduzieren</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
+
+    if compact:
+        st.markdown("### 📌 Dashboard-Fokus")
+        focus_cols = st.columns(3)
+        top_warnings = [item for item in warning_items if item[3]]
+        with focus_cols[0]:
+            st.metric("Marktmodus", mode)
+            st.caption(f"Konsequenz: {action}")
+        with focus_cols[1]:
+            st.metric("Warnzeichen", wc, "stabil" if wc == 0 else "beobachten")
+            if top_warnings:
+                st.caption("Top-Risiko: " + top_warnings[0][0])
+        with focus_cols[2]:
+            st.metric("Marktbreite", breadth_label.capitalize())
+            st.caption(f"Volatilität: {vol_latest.get('VIX_Regime', 'n/a')}")
+
+        st.caption("Für die vollständige Diagnose nutze den Tab „📈 Marktanalyse“.")
+        st.caption(f"Börse ohne Bauchgefühl · Dashboard · Stand: {L.name.strftime('%d.%m.%Y')}")
+        return
 
     with st.expander("Trendcheck, Ordnung und Sektorrotation", expanded=False):
         cl, cr_ = st.columns(2)
@@ -8175,6 +8194,11 @@ def _tab_marktanalyse():
                     )
 
     st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
+
+
+def _tab_dashboard():
+    """Kompakter Start-Tab mit reduzierter Marktübersicht."""
+    _tab_marktanalyse(compact=True)
 
 
 # ===== Main entry point =====
@@ -8408,7 +8432,7 @@ def main():
     )
 
     if main_view == "📊 Dashboard":
-        _tab_marktanalyse()
+        _tab_dashboard()
     elif main_view == "📈 Marktanalyse":
         _tab_marktanalyse()
     elif main_view == "🏭 Sektoren":
