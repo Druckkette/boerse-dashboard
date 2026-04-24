@@ -6957,6 +6957,206 @@ def evaluate_chart_signs(df, rs_ctx=None):
     if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-SMA", ""))
     return signs
 
+
+def build_stock_assessment(
+    df: pd.DataFrame,
+    info: dict | None,
+    fundamentals_checks: list[tuple[str, bool, str]] | None,
+    technical_checks: list[tuple[str, bool, str]] | None,
+    chart_signs: dict | None,
+    rs_ctx: dict | None = None,
+) -> dict:
+    if df is None or df.empty:
+        return {
+            "total_score": 0,
+            "status": "Nicht bewertbar",
+            "status_tone": "neutral",
+            "summary": "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar.",
+            "quality_score": 0,
+            "growth_score": 0,
+            "trend_score": 0,
+            "risk_score": 0,
+            "drivers": [],
+            "warnings": ["Keine Kursdaten verfügbar."],
+            "data_basis": "none",
+        }
+
+    info = info or {}
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    price = float(close.iloc[-1]) if len(close) else np.nan
+    ema21 = close.ewm(span=21).mean()
+    sma50 = close.rolling(50).mean()
+    sma200 = close.rolling(200).mean()
+    atr_s = _atr(df, 21)
+    atr_val = atr_s.iloc[-1] if len(atr_s) else np.nan
+    atr_pct = (atr_val / price * 100) if pd.notna(atr_val) and pd.notna(price) and price else np.nan
+    drawdown_52w = (price / close.rolling(252).max().iloc[-1] - 1) * 100 if len(close) >= 252 else np.nan
+    rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
+    rs_rating = float(rs_rating) if rs_rating is not None and pd.notna(rs_rating) else np.nan
+
+    quality_metrics = []
+    growth_metrics = []
+    trend_metrics = []
+    risk_metrics = []
+    drivers: list[str] = []
+    warnings: list[str] = []
+
+    def _add_metric(bucket: list[float], value, good=None, mid=None, invert=False):
+        if value is None or pd.isna(value):
+            return
+        val = float(value)
+        if good is not None:
+            if invert:
+                score = 100 if val <= good else 60 if mid is not None and val <= mid else 25
+            else:
+                score = 100 if val >= good else 60 if mid is not None and val >= mid else 25
+        else:
+            score = np.clip(val, 0, 100)
+        bucket.append(float(score))
+
+    # Qualität
+    roe = info.get("returnOnEquity")
+    gross_margin = info.get("grossMargins")
+    op_margin = info.get("operatingMargins")
+    debt_to_equity = info.get("debtToEquity")
+    _add_metric(quality_metrics, roe * 100 if roe is not None else np.nan, good=17, mid=10)
+    _add_metric(quality_metrics, gross_margin * 100 if gross_margin is not None else np.nan, good=45, mid=30)
+    _add_metric(quality_metrics, op_margin * 100 if op_margin is not None else np.nan, good=18, mid=10)
+    _add_metric(quality_metrics, debt_to_equity, good=80, mid=160, invert=True)
+    if pd.notna(roe) and roe >= 0.17:
+        drivers.append("Hohe Eigenkapitalrendite (ROE) stützt die Qualitätsbewertung.")
+
+    # Wachstum
+    revenue_growth = info.get("revenueGrowth")
+    earnings_growth = info.get("earningsGrowth")
+    q_rev_growth = info.get("quarterlyRevenueGrowth")
+    q_eps_growth = info.get("quarterlyEarningsGrowth")
+    _add_metric(growth_metrics, revenue_growth * 100 if revenue_growth is not None else np.nan, good=15, mid=5)
+    _add_metric(growth_metrics, earnings_growth * 100 if earnings_growth is not None else np.nan, good=15, mid=5)
+    _add_metric(growth_metrics, q_rev_growth * 100 if q_rev_growth is not None else np.nan, good=10, mid=3)
+    _add_metric(growth_metrics, q_eps_growth * 100 if q_eps_growth is not None else np.nan, good=10, mid=3)
+    if pd.notna(earnings_growth) and earnings_growth >= 0.15:
+        drivers.append("Gewinnwachstum liegt über dem Basisschwellenwert.")
+
+    # Trend
+    above_ema21 = bool(pd.notna(ema21.iloc[-1]) and pd.notna(price) and price > ema21.iloc[-1])
+    above_50 = bool(pd.notna(sma50.iloc[-1]) and pd.notna(price) and price > sma50.iloc[-1])
+    above_200 = bool(pd.notna(sma200.iloc[-1]) and pd.notna(price) and price > sma200.iloc[-1])
+    _add_metric(trend_metrics, 100 if above_ema21 else 25, good=None)
+    _add_metric(trend_metrics, 100 if above_50 else 20, good=None)
+    _add_metric(trend_metrics, 100 if above_200 else 15, good=None)
+    _add_metric(trend_metrics, rs_rating, good=80, mid=65)
+    if isinstance(rs_ctx, dict):
+        if rs_ctx.get("trend_5w") is True:
+            trend_metrics.append(80.0)
+        elif rs_ctx.get("trend_5w") is False:
+            trend_metrics.append(30.0)
+    if above_50 and above_200:
+        drivers.append("Der Kurs notiert über 50- und 200-Tage-Linie.")
+    if pd.notna(rs_rating) and rs_rating >= 80:
+        drivers.append("Die Aktie zeigt relative Stärke gegenüber dem Vergleichsuniversum.")
+
+    # Risiko
+    beta = info.get("beta")
+    dist_50 = (price / sma50.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma50.iloc[-1]) and sma50.iloc[-1] else np.nan
+    atr_extension = dist_50 / atr_pct if pd.notna(dist_50) and pd.notna(atr_pct) and atr_pct > 0 else np.nan
+    _add_metric(risk_metrics, atr_pct, good=2.5, mid=4.5, invert=True)
+    _add_metric(risk_metrics, beta, good=1.0, mid=1.6, invert=True)
+    _add_metric(risk_metrics, abs(drawdown_52w) if pd.notna(drawdown_52w) else np.nan, good=12, mid=25, invert=True)
+    _add_metric(risk_metrics, abs(dist_50) if pd.notna(dist_50) else np.nan, good=6, mid=14, invert=True)
+
+    if pd.notna(atr_pct) and atr_pct >= 6:
+        warnings.append("Hohe Volatilität (ATR) erhöht das kurzfristige Risiko.")
+    if pd.notna(dist_50) and dist_50 >= 18:
+        warnings.append("Der Abstand zur 50-SMA ist groß; die Aktie wirkt überdehnt.")
+    if pd.notna(beta) and beta > 1.6:
+        warnings.append("Überdurchschnittliches Beta signalisiert erhöhte Marktsensitivität.")
+    if pd.notna(drawdown_52w) and drawdown_52w <= -30:
+        warnings.append("Der Abstand zum 52-Wochen-Hoch bleibt deutlich negativ.")
+
+    signs_pos = len((chart_signs or {}).get("positiv", []))
+    signs_neg = len((chart_signs or {}).get("negativ", []))
+    if signs_pos > signs_neg + 2:
+        trend_metrics.append(75.0)
+    elif signs_neg > signs_pos + 2:
+        risk_metrics.append(30.0)
+
+    quality_score = round(float(np.mean(quality_metrics))) if quality_metrics else np.nan
+    growth_score = round(float(np.mean(growth_metrics))) if growth_metrics else np.nan
+    trend_score = round(float(np.mean(trend_metrics))) if trend_metrics else np.nan
+    risk_score = round(float(np.mean(risk_metrics))) if risk_metrics else np.nan
+
+    available_groups = sum(pd.notna(x) for x in [quality_score, growth_score, trend_score, risk_score])
+    has_fundamentals = bool(quality_metrics or growth_metrics)
+    data_basis = "full" if has_fundamentals else "chart_only"
+
+    def _safe_score(value, fallback=50.0):
+        return float(value) if pd.notna(value) else float(fallback)
+
+    total_score = round(
+        _safe_score(quality_score) * 0.25
+        + _safe_score(growth_score) * 0.20
+        + _safe_score(trend_score) * 0.35
+        + _safe_score(risk_score) * 0.20
+    )
+
+    if available_groups <= 1 or len(df) < 120:
+        status = "Nicht bewertbar"
+        tone = "neutral"
+    elif trend_score >= 75 and ((pd.notna(dist_50) and dist_50 >= 18) or (pd.notna(atr_extension) and atr_extension >= 4.5)):
+        status = "Zu erweitert"
+        tone = "warn"
+    elif total_score >= 80 and _safe_score(risk_score) >= 45:
+        status = "Attraktiv"
+        tone = "good"
+    elif total_score >= 60:
+        status = "Beobachten"
+        tone = "warn"
+    else:
+        status = "Zu schwach"
+        tone = "bad"
+
+    if data_basis == "chart_only":
+        warnings.append("Fundamentaldaten fehlen – Einordnung ist chartbasiert.")
+
+    if available_groups <= 1:
+        summary = "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar."
+    elif status == "Zu erweitert":
+        summary = "Die Aktie zeigt relative Stärke, ist kurzfristig jedoch deutlich erweitert."
+    elif _safe_score(quality_score) >= 65 and _safe_score(trend_score) >= 65 and _safe_score(risk_score) < 50:
+        summary = "Qualität und Trend sind konstruktiv, das Risiko ist aber erhöht."
+    elif data_basis == "chart_only":
+        summary = "Chartbasierte Einordnung: Trend ist sichtbar, Fundamentaldaten sind derzeit nicht vollständig."
+    elif status == "Attraktiv":
+        summary = "Mehrere Teilbereiche wirken stabil und liefern ein konstruktives Gesamtbild."
+    elif status == "Beobachten":
+        summary = "Das Bild ist gemischt und sollte mit Blick auf Trend und Risiko weiter beobachtet werden."
+    else:
+        summary = "Die regelbasierte Gesamtlage bleibt derzeit zu schwach für eine belastbare positive Einordnung."
+
+    if fundamentals_checks:
+        failed_fund = [label for label, ok, _ in fundamentals_checks if not ok]
+        if len(failed_fund) >= 8:
+            warnings.append("Viele fundamentale Prüfpunkte sind aktuell nicht erfüllt oder nicht verfügbar.")
+    if technical_checks:
+        failed_tech = [label for label, ok, _ in technical_checks if not ok]
+        if len(failed_tech) >= 8:
+            warnings.append("Mehrere technische Prüfpunkte sind aktuell nicht erfüllt.")
+
+    return {
+        "total_score": int(np.clip(total_score, 0, 100)),
+        "status": status,
+        "status_tone": tone,
+        "summary": summary,
+        "quality_score": int(np.clip(_safe_score(quality_score), 0, 100)),
+        "growth_score": int(np.clip(_safe_score(growth_score), 0, 100)),
+        "trend_score": int(np.clip(_safe_score(trend_score), 0, 100)),
+        "risk_score": int(np.clip(_safe_score(risk_score), 0, 100)),
+        "drivers": list(dict.fromkeys(drivers))[:5],
+        "warnings": list(dict.fromkeys(warnings))[:5],
+        "data_basis": data_basis,
+    }
+
 # ===== From tabs.py =====
 
 def _scale_series_0_100(series: pd.Series, invert: bool = False) -> pd.Series:
@@ -7318,35 +7518,21 @@ def _tab_aktienbewertung():
     _sma50 = df["Close"].rolling(50).mean()
     _sma200 = df["Close"].rolling(200).mean()
 
-    price_vs_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
-    is_extended = bool(pd.notna(price_vs_50) and price_vs_50 >= 20)
-    has_data = len(df) >= 200 and info is not None
-
     fundamentals_checks = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
     technical_checks, _, _ = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
     signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
-
-    f_ok = sum(1 for _, ok, _ in fundamentals_checks if ok)
-    t_ok = sum(1 for _, ok, _ in technical_checks if ok)
-    chart_score = len(signs["positiv"]) - len(signs["negativ"])
-    norm_chart_score = max(0, min(100, 50 + chart_score * 10))
-    overall_score = round((f_ok / max(1, len(fundamentals_checks))) * 40 + (t_ok / max(1, len(technical_checks))) * 45 + (norm_chart_score / 100) * 15)
-
-    if not has_data:
-        verdict_label, verdict_cls = "Nicht bewertbar", "status-neutral"
-        verdict_text = "Zu wenige verwertbare Datenpunkte für eine belastbare regelbasierte Einordnung."
-    elif is_extended and overall_score >= 55:
-        verdict_label, verdict_cls = "Zu erweitert", "status-warn"
-        verdict_text = "Das Regelset zeigt Stärke, aber die Aktie wirkt aktuell erweitert und eher als Beobachtungskandidat geeignet."
-    elif overall_score >= 70:
-        verdict_label, verdict_cls = "Attraktiv", "status-good"
-        verdict_text = "Die regelbasierte Einordnung ist konstruktiv über Qualität, Trend und Risiko."
-    elif overall_score >= 50:
-        verdict_label, verdict_cls = "Beobachten", "status-warn"
-        verdict_text = "Mehrere Kriterien passen, trotzdem bleibt die Lage gemischt und sollte weiter beobachtet werden."
-    else:
-        verdict_label, verdict_cls = "Zu schwach", "status-bad"
-        verdict_text = "Der aktuelle Mix aus Fundament, Trend und Risiko ist technisch angeschlagen."
+    assessment = build_stock_assessment(
+        df=df,
+        info=info,
+        fundamentals_checks=fundamentals_checks,
+        technical_checks=technical_checks,
+        chart_signs=signs,
+        rs_ctx=rs_ctx,
+    )
+    verdict_label = assessment["status"]
+    verdict_cls = f"status-{assessment['status_tone']}"
+    verdict_text = assessment["summary"]
+    overall_score = assessment["total_score"]
 
     st.markdown(
         f'<div class="info-card">'
@@ -7357,7 +7543,8 @@ def _tab_aktienbewertung():
         f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         f'<span class="pill">Gesamtscore: {overall_score}/100</span>'
         f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
-        f'<div class="mini-help">{verdict_text}</div></div>',
+        f'<div class="mini-help">{verdict_text}</div>'
+        f'<div class="mini-help">Bewertungsbasis: {"Chartbasierte Einordnung" if assessment.get("data_basis") == "chart_only" else "Fundamental + Chart"}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -7426,49 +7613,25 @@ def _tab_aktienbewertung():
     q_revenue_growth = info.get("quarterlyRevenueGrowth") if info else None
     q_earnings_growth = info.get("quarterlyEarningsGrowth") if info else None
     drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
-    qual_green = sum([
-        bool(roe is not None and pd.notna(roe) and roe >= 0.15),
-        bool(gross_margin is not None and pd.notna(gross_margin) and gross_margin >= 0.40),
-        bool(op_margin is not None and pd.notna(op_margin) and op_margin >= 0.15),
-        bool(debt_to_equity is not None and pd.notna(debt_to_equity) and debt_to_equity <= 150),
-    ])
-    growth_green = sum([
-        bool(revenue_growth is not None and pd.notna(revenue_growth) and revenue_growth >= 0.10),
-        bool(earnings_growth is not None and pd.notna(earnings_growth) and earnings_growth >= 0.10),
-        bool(q_revenue_growth is not None and pd.notna(q_revenue_growth) and q_revenue_growth >= 0.05),
-        bool(q_earnings_growth is not None and pd.notna(q_earnings_growth) and q_earnings_growth >= 0.05),
-    ])
-    trend_green = sum([
-        bool(pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1]),
-        bool(pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1]),
-        bool(pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1]),
-        bool(rs_rating_val is not None and rs_rating_val >= 80),
-    ])
-    risk_green = sum([
-        bool(pd.notna(atr_pct) and atr_pct <= 4.0),
-        bool(beta is not None and pd.notna(beta) and beta <= 1.5),
-        bool(pd.notna(drawdown_52w) and drawdown_52w >= -20),
-        bool(vol_ratio is not None and pd.notna(vol_ratio) and vol_ratio <= 2.0),
-    ])
-
-    def _status_chip(score_ok: int, max_score: int):
-        ratio = score_ok / max_score if max_score else 0
-        if ratio >= 0.75:
+    def _status_chip(score_value: int):
+        ratio = score_value / 100 if score_value is not None else 0
+        if ratio >= 0.7:
             return "status-good", "konstruktiv"
         if ratio >= 0.45:
             return "status-warn", "gemischt"
         return "status-bad", "angeschlagen"
 
-    q_cls, q_txt = _status_chip(qual_green, 4)
-    g_cls, g_txt = _status_chip(growth_green, 4)
-    t_cls, t_txt = _status_chip(trend_green, 4)
-    r_cls, r_txt = _status_chip(risk_green, 4)
+    q_cls, q_txt = _status_chip(assessment["quality_score"])
+    g_cls, g_txt = _status_chip(assessment["growth_score"])
+    t_cls, t_txt = _status_chip(assessment["trend_score"])
+    r_cls, r_txt = _status_chip(assessment["risk_score"])
 
     area_cols = st.columns(2)
     with area_cols[0]:
         st.markdown(
             f'<div class="info-card"><div class="card-label">Qualität</div>'
             f'<div class="status-chip {q_cls}">Status: {q_txt}</div>'
+            f'<div class="mini-help">Teilscore: {assessment["quality_score"]}/100</div>'
             f'<div class="mini-help">ROE: {_pct_or_na(roe)} · Bruttomarge: {_pct_or_na(gross_margin)} · Operative Marge: {_pct_or_na(op_margin)} · Debt/Equity: {_val_or_na(debt_to_equity, "{:.0f}")}</div>'
             f'<div class="mini-help">Interpretation: Profitabilität und Bilanzqualität werden regelbasiert zusammengeführt. Fehlende Werte werden als n/a markiert.</div></div>',
             unsafe_allow_html=True,
@@ -7476,6 +7639,7 @@ def _tab_aktienbewertung():
         st.markdown(
             f'<div class="info-card"><div class="card-label">Wachstum</div>'
             f'<div class="status-chip {g_cls}">Status: {g_txt}</div>'
+            f'<div class="mini-help">Teilscore: {assessment["growth_score"]}/100</div>'
             f'<div class="mini-help">Umsatzwachstum: {_pct_or_na(revenue_growth)} · Gewinnwachstum: {_pct_or_na(earnings_growth)} · Quartals-Umsatz: {_pct_or_na(q_revenue_growth)} · Quartals-Gewinn: {_pct_or_na(q_earnings_growth)}</div>'
             f'<div class="mini-help">Interpretation: Wachstum wird auf Jahres- und Quartalsebene geprüft. n/a bedeutet: Datenquelle hat keinen Wert geliefert.</div></div>',
             unsafe_allow_html=True,
@@ -7484,6 +7648,7 @@ def _tab_aktienbewertung():
         st.markdown(
             f'<div class="info-card"><div class="card-label">Chart & Trend</div>'
             f'<div class="status-chip {t_cls}">Status: {t_txt}</div>'
+            f'<div class="mini-help">Teilscore: {assessment["trend_score"]}/100</div>'
             f'<div class="mini-help">Über 21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · RS-Rating: {rs_rating_val if rs_rating_val is not None else "n/a"}</div>'
             f'<div class="mini-help">Interpretation: Trendrichtung und relative Stärke zeigen, ob das Chartbild eher konstruktiv oder aktuell erweitert ist.</div></div>',
             unsafe_allow_html=True,
@@ -7491,10 +7656,29 @@ def _tab_aktienbewertung():
         st.markdown(
             f'<div class="info-card"><div class="card-label">Risiko</div>'
             f'<div class="status-chip {r_cls}">Status: {r_txt}</div>'
+            f'<div class="mini-help">Teilscore: {assessment["risk_score"]}/100</div>'
             f'<div class="mini-help">ATR (21T): {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · Beta: {f"{beta:.2f}" if beta and pd.notna(beta) else "n/a"} · Drawdown 52W: {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"} · Volumenfaktor: {f"{vol_ratio:.2f}x" if pd.notna(vol_ratio) else "n/a"}</div>'
             f'<div class="mini-help">Interpretation: Risikoprofil kombiniert Schwankung, Markt-Sensitivität und Rückschlagsanfälligkeit. n/a bedeutet fehlende Daten vom Provider.</div></div>',
             unsafe_allow_html=True,
         )
+
+    bullet_cols = st.columns(2)
+    with bullet_cols[0]:
+        st.markdown('<div class="info-card"><div class="card-label">Positive Treiber</div>', unsafe_allow_html=True)
+        if assessment.get("drivers"):
+            for item in assessment["drivers"]:
+                st.markdown(f"- {item}")
+        else:
+            st.markdown("- Keine klaren positiven Treiber aus den aktuell verfügbaren Daten.")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with bullet_cols[1]:
+        st.markdown('<div class="info-card"><div class="card-label">Warnsignale</div>', unsafe_allow_html=True)
+        if assessment.get("warnings"):
+            for item in assessment["warnings"]:
+                st.markdown(f"- {item}")
+        else:
+            st.markdown("- Aktuell keine dominanten Warnsignale im Regelset.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     # Chart
     _vol_sma50 = df["Volume"].rolling(50).mean()
