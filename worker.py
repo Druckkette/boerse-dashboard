@@ -45,6 +45,19 @@ def _mark_done(store, job_id, stats):
     )
 
 
+
+
+def _is_scheduled_request(requested_by: str) -> bool:
+    value = (requested_by or "").strip().lower()
+    return value.startswith("github_schedule") or value.startswith("schedule")
+
+
+def _is_neon_auto_update_allowed(store) -> bool:
+    if not isinstance(store, dict) or store.get("backend") != "neon":
+        return True
+    return bool(app._is_neon_auto_update_enabled(store))
+
+
 def _mark_failed(store, job_id, message, result=None):
     return app._update_refresh_job(
         store,
@@ -77,6 +90,11 @@ def main():
     job = None
     job_id = (args.job_id or "").strip()
     requested_by = (args.requested_by or "").strip() or "github-actions"
+    scheduled_request = _is_scheduled_request(requested_by)
+    if scheduled_request and not _is_neon_auto_update_allowed(store):
+        print("Neon Auto-Update deaktiviert: geplanter GitHub-Lauf wird übersprungen.")
+        return
+
     if job_id:
         job = app._get_refresh_job(store, job_id)
         if not job:
