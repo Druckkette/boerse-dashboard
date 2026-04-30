@@ -122,6 +122,7 @@ def _default_portfolio_settings():
         "max_depot_loss_high": 12.0,
         "curve_start_date": "",
         "rs_rating_source": RS_SOURCE_CSV_LATEST,
+        "db_backend_preference": "sqlite",
     }
 
 def _workspace_payload():
@@ -2761,8 +2762,13 @@ def _get_cache_db_path():
     return str(cache_dir / CACHE_DB_NAME)
 
 def _get_price_store():
+    settings = st.session_state.get("portfolio_settings", {})
+    preference = settings.get("db_backend_preference", "sqlite") if isinstance(settings, dict) else "sqlite"
+    if preference not in {"sqlite", "neon"}:
+        preference = "sqlite"
+
     neon_url = _get_neon_connection_url()
-    if neon_url and psycopg2 is not None and _can_connect_neon(neon_url):
+    if preference == "neon" and neon_url and psycopg2 is not None and _can_connect_neon(neon_url):
         return {"backend": "neon", "dsn": neon_url, "label": "Neon Postgres"}
     return {"backend": "sqlite", "db_path": _get_cache_db_path(), "label": "lokaler SQLite-Cache"}
 
@@ -8643,6 +8649,27 @@ def _render_technical_setup_area():
         settings["rs_rating_source"] = rs_source_choice if rs_source_choice in RS_SOURCE_LABELS else RS_SOURCE_CSV_LATEST
         _save_portfolio_settings(settings)
         st.success("RS-Quelle gespeichert. Die Auswahl bleibt auch nach Neustart erhalten.")
+
+    backend_options = ["sqlite", "neon"]
+    backend_labels = {
+        "sqlite": "SQLite (Standard)",
+        "neon": "Neon Postgres",
+    }
+    current_backend = settings.get("db_backend_preference", "sqlite")
+    if current_backend not in backend_options:
+        current_backend = "sqlite"
+    backend_choice = st.selectbox(
+        "Datenbank-Backend",
+        options=backend_options,
+        index=backend_options.index(current_backend),
+        format_func=lambda key: backend_labels.get(key, key),
+        key="tech_db_backend_select",
+        help="SQLite ist der Standard. Neon wird nur genutzt, wenn konfiguriert und erreichbar.",
+    )
+    if st.button("Backend speichern", use_container_width=False, key="tech_db_backend_save"):
+        settings["db_backend_preference"] = backend_choice if backend_choice in backend_options else "sqlite"
+        _save_portfolio_settings(settings)
+        st.rerun()
 
     rs_csv_info = _load_selected_rs_ratings_map(rs_source_choice)
     if rs_csv_info.get("ok"):
