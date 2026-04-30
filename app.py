@@ -123,6 +123,7 @@ def _default_portfolio_settings():
         "curve_start_date": "",
         "rs_rating_source": RS_SOURCE_CSV_LATEST,
         "db_backend_preference": "sqlite",
+        "neon_auto_update_preference": "on",
     }
 
 def _workspace_payload():
@@ -8697,22 +8698,30 @@ def _render_technical_setup_area():
                 st.rerun()
 
     settings = _get_portfolio_settings()
-    if store.get("backend") == "neon":
-        neon_auto_enabled = _is_neon_auto_update_enabled(store)
-        auto_cols = st.columns([1, 1.6])
-        with auto_cols[0]:
-            neon_auto_choice = st.selectbox(
-                "Neon Auto-Update",
-                options=["on", "off"],
-                index=0 if neon_auto_enabled else 1,
-                format_func=lambda value: "Aktiviert" if value == "on" else "Deaktiviert",
-                key="tech_neon_auto_update_select",
-            )
-        with auto_cols[1]:
-            st.caption("Steuert den automatischen GitHub-Workflow für Neon (22:30 Berlin). Manuelle Jobs bleiben möglich.")
-            if st.button("Auto-Update speichern", key="tech_neon_auto_update_save"):
+    saved_neon_pref = settings.get("neon_auto_update_preference", "on")
+    if saved_neon_pref not in {"on", "off"}:
+        saved_neon_pref = "on"
+    neon_auto_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else (saved_neon_pref == "on")
+    auto_cols = st.columns([1, 1.6])
+    with auto_cols[0]:
+        neon_auto_choice = st.selectbox(
+            "Neon Auto-Update",
+            options=["on", "off"],
+            index=0 if neon_auto_enabled else 1,
+            format_func=lambda value: "Aktiviert" if value == "on" else "Deaktiviert",
+            key="tech_neon_auto_update_select",
+        )
+    with auto_cols[1]:
+        if store.get("backend") == "neon":
+            st.caption("Aktiver Rhythmus: Montag–Freitag um 22:30 Uhr (Europe/Berlin) via GitHub Actions.")
+        else:
+            st.caption("Neon ist nicht aktiv. Du kannst die Auto-Update-Präferenz trotzdem schon speichern.")
+        if st.button("Auto-Update speichern", key="tech_neon_auto_update_save"):
+            settings["neon_auto_update_preference"] = neon_auto_choice
+            _save_portfolio_settings(settings)
+            if store.get("backend") == "neon":
                 _set_neon_auto_update_enabled(store, neon_auto_choice == "on")
-                st.rerun()
+            st.rerun()
 
     current_rs_source = _get_rs_rating_source_setting()
     rs_source_options = list(RS_SOURCE_LABELS.keys())
