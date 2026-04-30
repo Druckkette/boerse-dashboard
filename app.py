@@ -5508,7 +5508,11 @@ def render_ampel_section(L):
             f'</details>'
         )
 
-    if phase in ("gelb", "gruen") and ss_low and anchor:
+    ss_low_valid = pd.notna(ss_low)
+    floor_valid = pd.notna(floor)
+    anchor_valid = bool(anchor)
+
+    if phase in ("gelb", "gruen") and ss_low_valid and anchor_valid:
         startschuss_html = (
             f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
             f'<span style="font-size:1.4rem;">🔫</span>'
@@ -5548,9 +5552,9 @@ def render_ampel_section(L):
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
     _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
     details = {
-        "Ankertag": anchor if anchor else "— (kein aktiver Zyklus)" if phase in ("neutral", "aufwaertstrend") else "Warte auf Ankertag",
-        "Bodenmarke": f"{floor:,.2f}" if floor else "—",
-        "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low else "—",
+        "Ankertag": anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase in ("neutral", "aufwaertstrend") else "Warte auf Ankertag",
+        "Bodenmarke": f"{floor:,.2f}" if floor_valid else "—",
+        "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low_valid else "—",
         "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
     }
     cols = st.columns(4)
