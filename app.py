@@ -2763,12 +2763,19 @@ def _get_cache_db_path():
 
 def _get_price_store():
     settings = st.session_state.get("portfolio_settings", {})
+    has_explicit_preference = isinstance(settings, dict) and "db_backend_preference" in settings
     preference = settings.get("db_backend_preference", "sqlite") if isinstance(settings, dict) else "sqlite"
     if preference not in {"sqlite", "neon"}:
         preference = "sqlite"
 
     neon_url = _get_neon_connection_url()
-    if preference == "neon" and neon_url and psycopg2 is not None and _can_connect_neon(neon_url):
+    should_try_neon = preference == "neon"
+    # Backward-compatible bootstrap for existing workspaces that do not yet persist
+    # db_backend_preference: keep former auto-neon behavior until a preference is saved.
+    if not has_explicit_preference:
+        should_try_neon = True
+
+    if should_try_neon and neon_url and psycopg2 is not None and _can_connect_neon(neon_url):
         return {"backend": "neon", "dsn": neon_url, "label": "Neon Postgres"}
     return {"backend": "sqlite", "db_path": _get_cache_db_path(), "label": "lokaler SQLite-Cache"}
 
@@ -4845,6 +4852,35 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
         "store": _get_store_label(store),
         "backend": store["backend"],
     }
+
+def _maybe_auto_refresh_sqlite_cache(store, reason="auto"):
+    """Run a best-effort auto refresh when SQLite is active.
+
+    Prevents stale local-only setups from waiting on external Neon/GitHub schedules.
+    """
+    if not isinstance(store, dict) or store.get("backend") != "sqlite":
+        return {"triggered": False, "reason": "not_sqlite"}
+
+    lock_key = f"sqlite_auto_refresh_running_{reason}"
+    if st.session_state.get(lock_key):
+        return {"triggered": False, "reason": "already_running"}
+
+    last_run_key = f"sqlite_auto_refresh_last_{reason}"
+    last_run = st.session_state.get(last_run_key)
+    now_utc = datetime.now(timezone.utc)
+    if isinstance(last_run, datetime) and (now_utc - last_run) < timedelta(minutes=30):
+        return {"triggered": False, "reason": "cooldown"}
+
+    st.session_state[lock_key] = True
+    st.session_state[last_run_key] = now_utc
+    try:
+        result = refresh_nyse_price_store()
+        return {"triggered": True, "ok": bool(result.get("ok")), "result": result}
+    except Exception as exc:
+        logger.warning("SQLite auto refresh failed (%s): %s", reason, exc)
+        return {"triggered": True, "ok": False, "error": str(exc)}
+    finally:
+        st.session_state[lock_key] = False
 
 def rescue_missing_nyse_price_store(lookback_days=550, rescue_batch_size=24, max_workers=8):
     """Try to backfill still-missing NYSE symbols without manual ticker input."""
@@ -8516,9 +8552,16 @@ def _tab_marktanalyse(compact: bool = False):
     if not st.session_state.get("show_deep_analysis", False):
         st.caption("Die Tiefenanalyse wird nur bei Bedarf geladen, damit die Startansicht schnell bleibt.")
     else:
+        store = _get_price_store()
+        if store.get("backend") == "sqlite":
+            auto_refresh = _maybe_auto_refresh_sqlite_cache(store, reason="deep_analysis")
+            if auto_refresh.get("triggered"):
+                if auto_refresh.get("ok"):
+                    st.caption("SQLite-Auto-Refresh ausgeführt, lade aktuelle Tiefenanalyse …")
+                else:
+                    st.warning("SQLite-Auto-Refresh fehlgeschlagen. Es werden die zuletzt verfügbaren Daten verwendet.")
         with st.spinner("Lese Tiefenanalyse-Daten aus dem persistenten Datenspeicher …"):
             component_bundle = load_nyse_breadth_data()
-        store = _get_price_store()
         benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
         refresh_at_raw = _get_cache_metadata(store, "last_refresh_at", "")
         refresh_date = None
