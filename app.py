@@ -3749,10 +3749,22 @@ def _trigger_github_actions_workflow(job_id, job_type, extra_inputs=None):
     cfg = _github_actions_config()
     if not cfg.get("ready"):
         return {"ok": False, "error": "GitHub Actions ist nicht vollständig konfiguriert.", "config": cfg}
-    inputs = {"job_id": str(job_id), "job_type": str(job_type)}
-    if extra_inputs:
-        for key, value in extra_inputs.items():
-            inputs[str(key)] = "" if value is None else str(value)
+
+    extra_inputs = extra_inputs if isinstance(extra_inputs, dict) else {}
+    store = _get_price_store()
+    neon_auto_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else True
+    trigger_name = str(extra_inputs.get("trigger", "") or "").strip().lower()
+    is_automatic_trigger = trigger_name.startswith("auto") or trigger_name.startswith("schedule")
+    if store.get("backend") == "neon" and (not neon_auto_enabled) and is_automatic_trigger:
+        return {"ok": False, "error": "Neon Auto-Update ist deaktiviert. Automatischer GitHub-Job wurde nicht gestartet.", "actions_url": cfg.get("actions_url", "")}
+
+    inputs = {
+        "job_id": str(job_id),
+        "job_type": str(job_type),
+        "neon_auto_update_enabled": "1" if neon_auto_enabled else "0",
+    }
+    for key, value in extra_inputs.items():
+        inputs[str(key)] = "" if value is None else str(value)
     payload = {"ref": cfg["ref"], "inputs": inputs}
     headers = {
         "Accept": "application/vnd.github+json",
@@ -8701,8 +8713,15 @@ def _tab_dashboard():
 def _render_technical_setup_area():
     st.markdown("### ⚙️ Technisches Setup")
     st.caption("Privater Wartungsbereich für Datenbankaktualisierung, Worker-Status und Diagnose.")
-    st.caption("Automatische Neon-Aktualisierung: Montag bis Freitag um 22:30 Uhr (Europe/Berlin). Manueller Start bleibt verfügbar.")
     store = _get_price_store()
+    settings_preview = _get_portfolio_settings()
+    pref_auto = settings_preview.get("neon_auto_update_preference", "on")
+    pref_enabled = str(pref_auto).strip().lower() == "on"
+    runtime_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else pref_enabled
+    if runtime_enabled:
+        st.caption("Automatische Neon-Aktualisierung: Montag bis Freitag um 22:30 Uhr (Europe/Berlin). Manueller Start bleibt verfügbar.")
+    else:
+        st.caption("Automatische Neon-Aktualisierung ist deaktiviert. Manueller Start bleibt verfügbar.")
     st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
     if store["backend"] != "neon":
         st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon meist stabiler.")
