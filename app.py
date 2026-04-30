@@ -8749,8 +8749,9 @@ def _render_technical_setup_area():
     saved_neon_pref = settings.get("neon_auto_update_preference", "on")
     if saved_neon_pref not in {"on", "off"}:
         saved_neon_pref = "on"
-    # UI always reflects the persisted user preference first.
-    neon_auto_enabled = (saved_neon_pref == "on")
+    # If Neon is active, the runtime metadata is authoritative for actual job execution.
+    # Otherwise use the stored user preference preview.
+    neon_auto_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else (saved_neon_pref == "on")
     auto_cols = st.columns([1, 1.6])
     with auto_cols[0]:
         neon_auto_choice = st.selectbox(
