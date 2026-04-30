@@ -5548,6 +5548,11 @@ def render_ampel_section(L, history_df=None):
     else:
         if phase == "rot" and anchor:
             ss_detail = f"Ankertag: {anchor} · Warte auf Tag ≥5 mit ≥1% Gewinn + Vol. > Vortag"
+        elif phase == "aufwaertstrend" and anchor_valid:
+            anchor_txt = anchor
+            floor_txt = f"{floor:,.2f}" if floor_valid else "—"
+            ss_txt = f"{ss_low:,.2f}" if ss_low_valid else "—"
+            ss_detail = f"Letzter Zyklus · Ankertag: {anchor_txt} · Bodenmarke: {floor_txt} · Startschuss-Tief: {ss_txt}"
         elif phase == "rot":
             ss_detail = "Warte auf Ankertag, dann frühestens am 5. Tag möglich"
         else:
@@ -5579,7 +5584,7 @@ def render_ampel_section(L, history_df=None):
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
     _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
     details = {
-        "Ankertag": anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase in ("neutral", "aufwaertstrend") else "Warte auf Ankertag",
+        "Ankertag": anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase == "neutral" else "Warte auf Ankertag",
         "Bodenmarke": f"{floor:,.2f}" if floor_valid else "—",
         "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low_valid else "—",
         "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
