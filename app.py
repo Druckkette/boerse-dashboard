@@ -5427,12 +5427,27 @@ def detect_failing_rally(df):
     if drop/hv<0.03: return None,None
     rec=(df["Close"].iloc[-1]-lv);return round(rec/drop*100,1),round(drop/hv*100,1)
 
-def render_ampel_section(L):
+def render_ampel_section(L, history_df=None):
     """Render the full Trendwende-Ampel section with clickable inline rule explanations."""
     phase = L["Ampel_Phase"]
     anchor = L["Anchor_Date"]
     floor = L["Floor_Mark"]
     ss_low = L["Startschuss_Low"]
+
+    # Fallback for display: use last known cycle markers if the latest bar has blanks.
+    if history_df is not None and isinstance(history_df, pd.DataFrame):
+        if not anchor and "Anchor_Date" in history_df:
+            anchor_candidates = history_df["Anchor_Date"].dropna()
+            if len(anchor_candidates):
+                anchor = anchor_candidates.iloc[-1]
+        if pd.isna(floor) and "Floor_Mark" in history_df:
+            floor_candidates = pd.to_numeric(history_df["Floor_Mark"], errors="coerce").dropna()
+            if len(floor_candidates):
+                floor = float(floor_candidates.iloc[-1])
+        if pd.isna(ss_low) and "Startschuss_Low" in history_df:
+            ss_candidates = pd.to_numeric(history_df["Startschuss_Low"], errors="coerce").dropna()
+            if len(ss_candidates):
+                ss_low = float(ss_candidates.iloc[-1])
 
     phase_info = {
         "rot": {
@@ -8422,7 +8437,7 @@ def _tab_marktanalyse(compact: bool = False):
     _render_change_cards(changes)
 
     # Trendwende-Ampel wieder als zentrales Element sichtbar machen
-    render_ampel_section(L)
+    render_ampel_section(L, sd)
 
     # Compact metric layout
     row1 = st.columns(3)
