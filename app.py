@@ -5562,6 +5562,16 @@ def render_ampel_section(L):
         with cols[i]:
             st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
 
+    missing_reasons = []
+    if not anchor_valid:
+        missing_reasons.append("Kein aktiver Ankertag")
+    if not floor_valid:
+        missing_reasons.append("Bodenmarke noch nicht gesetzt")
+    if not ss_low_valid:
+        missing_reasons.append("Startschuss-Tief noch nicht gesetzt")
+    if missing_reasons:
+        st.caption("Diagnose: " + " · ".join(missing_reasons))
+
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
     st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#e2e8f0;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
