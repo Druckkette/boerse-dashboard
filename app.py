@@ -2782,6 +2782,19 @@ def _get_price_store():
 def _get_store_label(store):
     return store.get("label", store.get("backend", "Datenspeicher"))
 
+
+def _is_neon_auto_update_enabled(store) -> bool:
+    if not isinstance(store, dict) or store.get("backend") != "neon":
+        return False
+    raw = str(_get_cache_metadata(store, "neon_auto_update_enabled", "1") or "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _set_neon_auto_update_enabled(store, enabled: bool) -> None:
+    if not isinstance(store, dict) or store.get("backend") != "neon":
+        return
+    _set_cache_metadata_many(store, {"neon_auto_update_enabled": "1" if enabled else "0"})
+
 def _get_cache_conn(store):
     if store["backend"] == "neon":
         if psycopg2 is None:
@@ -8578,9 +8591,12 @@ def _tab_marktanalyse(compact: bool = False):
                     "Bitte komm in ca. 10 Minuten erneut auf die Seite."
                 )
             else:
+                neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
+                if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
+                    neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
                 st.info(
                     f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
-                    "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions. "
+                    f"{neon_auto_text} "
                     "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
                 )
         else:
@@ -8598,9 +8614,12 @@ def _tab_marktanalyse(compact: bool = False):
                             "Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite."
                         )
                     else:
+                        neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
+                        if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
+                            neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
                         st.info(
                             f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
-                            "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions. "
+                            f"{neon_auto_text} "
                             "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
                         )
                 elif breadth_last < benchmark_last and refresh_matches_cache:
@@ -8678,6 +8697,23 @@ def _render_technical_setup_area():
                 st.rerun()
 
     settings = _get_portfolio_settings()
+    if store.get("backend") == "neon":
+        neon_auto_enabled = _is_neon_auto_update_enabled(store)
+        auto_cols = st.columns([1, 1.6])
+        with auto_cols[0]:
+            neon_auto_choice = st.selectbox(
+                "Neon Auto-Update",
+                options=["on", "off"],
+                index=0 if neon_auto_enabled else 1,
+                format_func=lambda value: "Aktiviert" if value == "on" else "Deaktiviert",
+                key="tech_neon_auto_update_select",
+            )
+        with auto_cols[1]:
+            st.caption("Steuert den automatischen GitHub-Workflow für Neon (22:30 Berlin). Manuelle Jobs bleiben möglich.")
+            if st.button("Auto-Update speichern", key="tech_neon_auto_update_save"):
+                _set_neon_auto_update_enabled(store, neon_auto_choice == "on")
+                st.rerun()
+
     current_rs_source = _get_rs_rating_source_setting()
     rs_source_options = list(RS_SOURCE_LABELS.keys())
     rs_source_choice = st.selectbox(
