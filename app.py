@@ -8730,7 +8730,8 @@ def _render_technical_setup_area():
     saved_neon_pref = settings.get("neon_auto_update_preference", "on")
     if saved_neon_pref not in {"on", "off"}:
         saved_neon_pref = "on"
-    neon_auto_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else (saved_neon_pref == "on")
+    # UI always reflects the persisted user preference first.
+    neon_auto_enabled = (saved_neon_pref == "on")
     auto_cols = st.columns([1, 1.6])
     with auto_cols[0]:
         neon_auto_choice = st.selectbox(
@@ -8742,7 +8743,8 @@ def _render_technical_setup_area():
         )
     with auto_cols[1]:
         if store.get("backend") == "neon":
-            st.caption("Aktiver Rhythmus: Montag–Freitag um 22:30 Uhr (Europe/Berlin) via GitHub Actions.")
+            runtime_flag = "Aktiviert" if _is_neon_auto_update_enabled(store) else "Deaktiviert"
+            st.caption(f"Aktiver Rhythmus: Montag–Freitag um 22:30 Uhr (Europe/Berlin) via GitHub Actions · Laufzeitstatus: {runtime_flag}.")
         else:
             st.caption("Neon ist nicht aktiv. Du kannst die Auto-Update-Präferenz trotzdem schon speichern.")
         if st.button("Auto-Update speichern", key="tech_neon_auto_update_save"):
