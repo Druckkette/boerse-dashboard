@@ -1721,23 +1721,27 @@ def _render_workspace_sidebar():
         st.markdown("### Arbeitsbereich")
         st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
         if _private_area_enabled():
-            state_label = "entsperrt" if _is_private_unlocked() else "gesperrt"
+            state_label = "✓ entsperrt" if _is_private_unlocked() else "🔒 gesperrt"
             st.caption(f"Privater Bereich: {state_label}")
             if _is_private_unlocked():
                 if st.button("🔒 Sperren", use_container_width=True, key="sidebar_lock_private"):
                     _lock_private_area()
                     st.rerun()
         if not _is_private_unlocked():
-            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind aktuell ausgeblendet.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind gesperrt.</div>', unsafe_allow_html=True)
+            st.caption("→ Workspace öffnen zum Entsperren")
             return
         _init_workspace_state()
         watchlist = st.session_state.get("watchlist", [])
+        st.markdown("**Watchlist**")
         if watchlist:
             st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="workspace-note">Noch keine Watchlist gespeichert.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
         positions = st.session_state.get("positions", [])
         st.caption(f"{len(positions)} Positionen · {len(st.session_state.get('recent_tickers', []))} zuletzt genutzt")
+        st.divider()
+        st.caption("Seiten: Workspace ⭐ · Einstellungen ⚙️")
 
 # ===== From market_data.py =====
 logger = logging.getLogger(__name__)
@@ -9017,27 +9021,48 @@ def _tab_mein_bereich():
     elif area_view == "⚙️ Technisches Setup":
         _render_technical_setup_area()
 
-def _tab_watchlist():
-    """Render watchlist-focused page while preserving existing workspace controls."""
+def _tab_mein_depot():
+    """Depot: Nach-Kauf-Analyse und Portfolio-Kurve kombiniert."""
+    view = st.segmented_control(
+        "Depot-Bereich",
+        options=["📊 Nach-Kauf-Analyse", "📈 Portfolio-Kurve"],
+        default="📊 Nach-Kauf-Analyse",
+        key="mein_depot_view",
+        label_visibility="collapsed",
+    )
+    if view == "📈 Portfolio-Kurve":
+        if not _render_private_gate("🔐 Portfolio-Kurve"):
+            return
+        _init_workspace_state()
+        _render_portfolio_72_area()
+    else:
+        _tab_nach_kauf()
+
+
+def _tab_workspace():
+    """Persönlicher Arbeitsbereich: Watchlist, Notizen und Workspace-Einstellungen."""
     st.session_state.setdefault("mein_bereich_view", "📝 Arbeitsbereich")
     _tab_mein_bereich()
 
-def _tab_wissen():
-    """Show educational market context and keep advanced settings reachable."""
-    _tab_sektoranalyse()
+
+def _tab_einstellungen():
+    """Systemeinstellungen: Datenbankpflege, Worker-Status und technische Konfiguration."""
+    if not _render_private_gate("🔐 Einstellungen"):
+        return
+    _render_technical_setup_area()
+
 
 def _render_topbar() -> None:
-    """Render a compact app header above the Streamlit navigation pills."""
     st.markdown(
         """
         <div class="app-topbar">
-          <p class="app-topbar__eyebrow">Börse ohne Bauchgefühl</p>
+          <p class="app-topbar__eyebrow">regelbasiert investieren · v3.2</p>
           <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
-          <p class="app-topbar__subtitle">Regelbasiert investieren statt Bauchgefühl</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
 
 def main():
     configure_page()
@@ -9047,14 +9072,16 @@ def main():
 
     pages = [
         st.Page(_tab_dashboard, title="Marktampel", icon="🚦", url_path="marktampel", default=True),
-        st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktienbewertung"),
-        st.Page(_tab_watchlist, title="Watchlist", icon="⭐", url_path="watchlist"),
-        st.Page(_tab_nach_kauf, title="Depot", icon="💼", url_path="depot"),
-        st.Page(_tab_marktanalyse, title="Tiefenanalyse", icon="📈", url_path="tiefenanalyse"),
-        st.Page(_tab_wissen, title="Wissen", icon="📚", url_path="wissen"),
+        st.Page(_tab_marktanalyse, title="Marktanalyse", icon="📈", url_path="analyse"),
+        st.Page(_tab_sektoranalyse, title="Sektoren", icon="🏭", url_path="sektoren"),
+        st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktie"),
+        st.Page(_tab_mein_depot, title="Mein Depot", icon="💼", url_path="depot"),
+        st.Page(_tab_workspace, title="Workspace", icon="⭐", url_path="workspace"),
+        st.Page(_tab_einstellungen, title="Einstellungen", icon="⚙️", url_path="einstellungen"),
     ]
     navigation = st.navigation(pages, position="top")
     navigation.run()
+
 
 if __name__ == "__main__":
     main()
