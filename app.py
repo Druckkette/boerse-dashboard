@@ -8732,7 +8732,7 @@ def _tab_marktanalyse(compact: bool = False):
 
 
 def _tab_dashboard():
-    “””Marktampel: Index-Auswahl, Hero-Card und Ampellogik.”””
+    """Marktampel: Index-Auswahl, Hero-Card und Ampellogik."""
     _tab_marktanalyse(compact=True)
 
 
