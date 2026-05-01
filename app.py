@@ -5207,17 +5207,17 @@ def detect_distribution_days(df):
 
 def compute_ampel(df):
     df=df.copy();n=len(df);phase="neutral"
-    anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None
-    phases=["neutral"]*n;anchor_dates=[None]*n;floor_marks=[None]*n;startschuss_lows=[None]*n
+    anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None;startschuss_bonus=None
+    phases=["neutral"]*n;anchor_dates=[None]*n;floor_marks=[None]*n;startschuss_lows=[None]*n;startschuss_bonuses=[None]*n
     c_=df["Close"].values;o_=df["Open"].values;h_=df["High"].values;l_=df["Low"].values
     v_=df["Volume"].values;pct_=df["Pct_Change"].values;cr_=df["Closing_Range"].values
     dc_=df["Dist_Count_25"].values;s50_=df["SMA50"].values;s200_=df["SMA200"].values;e21_=df["EMA21"].values
     def _clear():
-        nonlocal anchor_idx,floor_mark,startschuss_idx,startschuss_low,gruen_since
-        anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None
+        nonlocal anchor_idx,floor_mark,startschuss_idx,startschuss_low,gruen_since,startschuss_bonus
+        anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None;startschuss_bonus=None
     def _corr(i):
         lb=max(0,i-60);rh=np.nanmax(h_[lb:i+1]);dd=(c_[i]-rh)/rh*100 if rh>0 else 0
-        return dd<-8 or (not np.isnan(s50_[i]) and c_[i]<s50_[i] and dc_[i]>=4)
+        return dd<-10 or (not np.isnan(s50_[i]) and c_[i]<s50_[i] and dc_[i]>=4)
     for i in range(1,n):
         pi=pct_[i] if not np.isnan(pct_[i]) else 0.0;cri=cr_[i] if not np.isnan(cr_[i]) else 0.5
         if phase in ("neutral","aufwaertstrend"):
@@ -5228,7 +5228,7 @@ def compute_ampel(df):
             if anchor_idx is None:
                 if pi>0.0 or (c_[i]>o_[i] and cri>=0.5): anchor_idx=i;floor_mark=min(l_[i],l_[i-1])
             if anchor_idx is not None and i>=anchor_idx+5:
-                if pi>=1.0 and v_[i]>v_[i-1] and l_[i]>=floor_mark: phase="gelb";startschuss_idx=i;startschuss_low=l_[i]
+                if pi>=1.0 and v_[i]>v_[i-1] and l_[i]>=floor_mark: phase="gelb";startschuss_idx=i;startschuss_low=l_[i];startschuss_bonus=not np.isnan(e21_[i]) and c_[i]>e21_[i]
         elif phase=="gelb":
             if startschuss_low is not None and c_[i]<startschuss_low: phase="rot";_clear()
             elif startschuss_idx is not None and i>startschuss_idx+2: phase="gruen";gruen_since=i
@@ -5239,7 +5239,8 @@ def compute_ampel(df):
         if anchor_idx is not None: anchor_dates[i]=df.index[anchor_idx].strftime("%Y-%m-%d")
         if floor_mark is not None: floor_marks[i]=round(floor_mark,2)
         if startschuss_low is not None: startschuss_lows[i]=round(startschuss_low,2)
-    df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows
+        if startschuss_bonus is not None: startschuss_bonuses[i]=startschuss_bonus
+    df["Ampel_Phase"]=phases;df["Anchor_Date"]=anchor_dates;df["Floor_Mark"]=floor_marks;df["Startschuss_Low"]=startschuss_lows;df["Startschuss_Bonus"]=startschuss_bonuses
     return df
 
 def compute_breadth_mode(df_ew):
@@ -5541,7 +5542,7 @@ def render_ampel_section(L, history_df=None):
         "neutral": {
             "active": -1, "label": "NEUTRAL",
             "reason": "Keine substanzielle Korrektur erkannt. Trendwende-Ampel ist nicht aktiv.",
-            "action": "Normale Marktbeobachtung. Ampel greift erst bei Drawdown > 8%.",
+            "action": "Normale Marktbeobachtung. Ampel greift erst bei Drawdown > 10%.",
         },
     }
     info = phase_info.get(phase, phase_info["neutral"])
@@ -5551,7 +5552,7 @@ def render_ampel_section(L, history_df=None):
     labels = ["ROT", "GELB", "GRÜN"]
     glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440", "0 0 20px #f59e0b80, 0 0 40px #f59e0b40", "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
     phase_rules = {
-        "rot": "ROT wird aktiv, wenn eine substanzielle Korrektur erkannt wird. Aktuell heißt das im Code: Drawdown von mehr als 8% vom jüngsten Hoch oder Schlusskurs unter der 50-SMA bei mindestens 4 Distribution Days im 25-Tage-Fenster.",
+        "rot": "ROT wird aktiv, wenn eine substanzielle Korrektur erkannt wird. Aktuell heißt das im Code: Drawdown von mehr als 10% vom jüngsten Hoch (Buch: Korrekturschwelle) oder Schlusskurs unter der 50-SMA bei mindestens 4 Distribution Days im 25-Tage-Fenster.",
         "gelb": "GELB wird aktiv, wenn nach einem Ankertag frühestens ab Tag 5 ein Startschuss auftritt: mindestens +1,0% zum Vortag, Volumen über Vortag und kein Unterschreiten der Bodenmarke intraday.",
         "gruen": "GRÜN wird aktiv, wenn der Startschuss hält und nach GELB mehr als 2 weitere Handelstage vergehen, ohne dass das Startschuss-Tief per Schlusskurs gebrochen wird.",
         "aufwaertstrend": "AUFWÄRTSTREND wird aktiv, wenn die grüne Phase mindestens 10 Tage Bestand hatte, der Index über der 200-SMA liegt und die MA-Ordnung 21-EMA > 50-SMA > 200-SMA bestätigt ist.",
@@ -5593,10 +5594,17 @@ def render_ampel_section(L, history_df=None):
     anchor_valid = bool(anchor)
 
     if phase in ("gelb", "gruen") and ss_low_valid and anchor_valid:
+        bonus = L.get("Startschuss_Bonus")
+        if bonus is True:
+            bonus_html = '<span style="font-size:.65rem;color:#22c55e;margin-left:6px;">✓ Bonus: Schluss über 21-EMA</span>'
+        elif bonus is False:
+            bonus_html = '<span style="font-size:.65rem;color:#64748b;margin-left:6px;">Kein Bonus (unter 21-EMA)</span>'
+        else:
+            bonus_html = ""
         startschuss_html = (
             f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
             f'<span style="font-size:1.4rem;">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv{bonus_html}</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
         )
     else:
         if phase == "rot" and anchor:
@@ -8475,6 +8483,8 @@ def _tab_marktanalyse(compact: bool = False):
     warning_items.append(("Closing Range Häufung (5T)", lc < 3, f"{lc}/5 Tage Schluss im unteren 25%", w)); wc += int(w)
     st10 = int(df["Is_Stall"].tail(10).sum()); w = st10 >= 3
     warning_items.append(("Stau-Tage (10T)", st10 < 3, f"{st10} Stau-Tage", w)); wc += int(w)
+    dc = int(L["Dist_Count_25"]); w = dc >= 4
+    warning_items.append(("Distributionstage (25T)", dc < 4, f"{dc} Dist.-Tage (Schwelle: 4)", w)); wc += int(w)
     d21 = L["Dist_21EMA"]
     d50 = L["Dist_50SMA_pct"]; t50 = 7.0 if "Nasdaq" in selected else 5.0
     if not np.isnan(d50):
