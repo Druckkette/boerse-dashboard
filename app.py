@@ -2854,6 +2854,10 @@ def _init_price_cache_db(store):
     if _init_key in _db_initialized:
         return
     conn = _get_cache_conn(store)
+    # _get_cache_conn may silently fall back from Neon to SQLite when Neon is
+    # temporarily unreachable. Only mark initialized when we actually ran DDL
+    # against the intended backend — so the next call retries Neon once it's back.
+    actual_backend = "sqlite" if isinstance(conn, sqlite3.Connection) else "neon"
     try:
         cur = conn.cursor() if store["backend"] == "neon" else conn
         if store["backend"] == "neon":
@@ -3013,7 +3017,8 @@ def _init_price_cache_db(store):
         conn.commit()
     finally:
         conn.close()
-    _db_initialized.add(_init_key)
+    if actual_backend == store.get("backend"):
+        _db_initialized.add(_init_key)
 
 
 def _set_cache_metadata(store, key, value, *, conn=None):
