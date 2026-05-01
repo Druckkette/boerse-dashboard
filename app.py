@@ -5181,7 +5181,7 @@ def compute_ampel(df):
             elif startschuss_idx is not None and i>startschuss_idx+2: phase="gruen";gruen_since=i
         elif phase=="gruen":
             if startschuss_low is not None and c_[i]<startschuss_low: phase="rot";_clear()
-            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]>s50_[i] and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend";_clear()
+            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]>s50_[i] and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend"
         phases[i]=phase
         if anchor_idx is not None: anchor_dates[i]=df.index[anchor_idx].strftime("%Y-%m-%d")
         if floor_mark is not None: floor_marks[i]=round(floor_mark,2)
