@@ -490,7 +490,15 @@ def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, v
     breadth_mode = str(breadth_mode or "").lower()
     vol_regime = str(vol_regime or "").lower()
     if phase == "rot" or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
-        return "Defensiv", "bad", "Ampel rot. Risiko reduzieren, keine aggressiven Neueinstiege und bestehende Positionen kritisch prüfen."
+        if phase == "rot":
+            msg = "Ampel rot. Risiko reduzieren, keine aggressiven Neueinstiege und bestehende Positionen kritisch prüfen."
+        elif vol_regime == "stress":
+            msg = "Volatilität im Stress-Regime. Defensive Haltung — kein Neukauf trotz Ampelphase."
+        elif breadth_mode == "schutz":
+            msg = "Marktbreite im Schutzmodus. Risiko reduzieren — keine aggressiven Neueinstiege."
+        else:
+            msg = f"{warning_count} Warnzeichen aktiv. Defensive Haltung — Risiko reduzieren trotz laufender Ampelphase."
+        return "Defensiv", "bad", msg
     if phase == "gelb":
         if warning_count <= 2 and breadth_mode != "schutz" and vol_regime not in {"stress", "risk"}:
             return "Startschuss", "warn", "Startschuss aktiv. Erste Pilotpositionen sind erlaubt, aber nur selektiv und mit enger Risikokontrolle über das Startschuss-Tief."
@@ -8724,35 +8732,8 @@ def _tab_marktanalyse(compact: bool = False):
 
 
 def _tab_dashboard():
-    """Reduziertes Dashboard mit Fokus auf Zustand und nächste Aktion."""
-    _init_workspace_state()
-    with st.spinner("Lade Kernindikatoren …"):
-        data = load_market_data()
-    if not data or "S&P 500" not in data:
-        st.error("Für das Dashboard fehlen S&P-500-Daten.")
-        return
-
-    df = compute_ampel(detect_distribution_days(add_indicators(data["S&P 500"].copy())))
-    latest = df.iloc[-1]
-    warnings = int((latest.get("Dist_Count_25", 0) >= 4)) + int(bool(latest.get("Up_Vol_Declining", False)))
-    mode, tone, action = _market_action_and_tone(latest.get("Ampel_Phase", ""), warnings, "ausgewogen", "Neutral")
-    reasons = _build_market_reasons(latest, warnings, "ausgewogen", pd.Series(dtype=float))
-    freshness = _format_data_freshness("S&P 500", df, None)
-
-    _render_hero_card(mode, tone, reasons, action, freshness)
-
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        st.metric("S&P 500", f"{latest['Close']:,.2f}", f"{latest['Pct_Change']:+.2f}%", border=True)
-    with k2:
-        st.metric("Dist.-Tage", int(latest.get("Dist_Count_25", 0)), border=True)
-    with k3:
-        st.metric("21-EMA", f"{latest.get('Dist_21EMA', float('nan')):.1f} ATR" if pd.notna(latest.get("Dist_21EMA")) else "—", border=True)
-    with k4:
-        st.metric("Drawdown", f"{latest.get('Dist_52w_pct', float('nan')):.1f}%" if pd.notna(latest.get("Dist_52w_pct")) else "—", border=True)
-
-    st.plotly_chart(plot_price_with_volume(df, 90), use_container_width=True, config={"displayModeBar": False})
-    st.caption("Das Dashboard zeigt bewusst nur Kernsignale. Für Diagnose und Breadth verwende die Seite „Marktanalyse“.")
+    “””Marktampel: Index-Auswahl, Hero-Card und Ampellogik.”””
+    _tab_marktanalyse(compact=True)
 
 
 # ===== Main entry point =====
