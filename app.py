@@ -438,14 +438,18 @@ def _format_data_freshness(selected: str, df: pd.DataFrame, vol_dashboard: pd.Da
     latest_date = _format_market_date(df.index[-1]) if df is not None and len(df) else "—"
     vix_date = _format_market_date(vol_dashboard.index[-1]) if vol_dashboard is not None and len(vol_dashboard) else latest_date
     store = _get_price_store()
+    meta = _get_cache_metadata_many(store, [
+        "last_refresh_at", "cache_prices_last_write_at",
+        "last_refresh_loaded_universe", "last_refresh_requested_universe",
+    ])
     return {
         "index_name": selected,
         "index_date": latest_date,
         "vix_date": vix_date,
         "store_label": _get_store_label(store),
-        "nyse_refresh": _get_cache_metadata(store, "last_refresh_at", "") or _get_cache_metadata(store, "cache_prices_last_write_at", ""),
-        "coverage": _get_cache_metadata(store, "last_refresh_loaded_universe", ""),
-        "requested": _get_cache_metadata(store, "last_refresh_requested_universe", ""),
+        "nyse_refresh": meta.get("last_refresh_at", "") or meta.get("cache_prices_last_write_at", ""),
+        "coverage": meta.get("last_refresh_loaded_universe", ""),
+        "requested": meta.get("last_refresh_requested_universe", ""),
     }
 
 def _ampel_phase_label(phase: str) -> str:
@@ -1717,23 +1721,27 @@ def _render_workspace_sidebar():
         st.markdown("### Arbeitsbereich")
         st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
         if _private_area_enabled():
-            state_label = "entsperrt" if _is_private_unlocked() else "gesperrt"
+            state_label = "✓ entsperrt" if _is_private_unlocked() else "🔒 gesperrt"
             st.caption(f"Privater Bereich: {state_label}")
             if _is_private_unlocked():
                 if st.button("🔒 Sperren", use_container_width=True, key="sidebar_lock_private"):
                     _lock_private_area()
                     st.rerun()
         if not _is_private_unlocked():
-            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind aktuell ausgeblendet.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind gesperrt.</div>', unsafe_allow_html=True)
+            st.caption("→ Workspace öffnen zum Entsperren")
             return
         _init_workspace_state()
         watchlist = st.session_state.get("watchlist", [])
+        st.markdown("**Watchlist**")
         if watchlist:
             st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
         else:
-            st.markdown('<div class="workspace-note">Noch keine Watchlist gespeichert.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
         positions = st.session_state.get("positions", [])
         st.caption(f"{len(positions)} Positionen · {len(st.session_state.get('recent_tickers', []))} zuletzt genutzt")
+        st.divider()
+        st.caption("Seiten: Workspace ⭐ · Einstellungen ⚙️")
 
 # ===== From market_data.py =====
 logger = logging.getLogger(__name__)
@@ -2211,18 +2219,46 @@ def _dl(symbol, start, end):
         return None
 @st.cache_data(ttl=900, show_spinner=False)
 def load_market_data(lookback_days=400):
-    end = datetime.now(); start = end - timedelta(days=lookback_days)
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
     tickers = {
-        "S&P 500":"^GSPC","Nasdaq Composite":"^IXIC","Russell 2000":"^RUT",
-        "RSP (Equal-Weight S&P)":"RSP","QQEW (Equal-Weight Nasdaq)":"QQEW",
-        "VIX":"^VIX","VIXY":"VIXY",
-        "XLU (Utilities)":"XLU","XLP (Consumer Staples)":"XLP",
-        "XLK (Technology)":"XLK","XLY (Consumer Discr.)":"XLY",
+        "S&P 500": "^GSPC", "Nasdaq Composite": "^IXIC", "Russell 2000": "^RUT",
+        "RSP (Equal-Weight S&P)": "RSP", "QQEW (Equal-Weight Nasdaq)": "QQEW",
+        "VIX": "^VIX", "VIXY": "VIXY",
+        "XLU (Utilities)": "XLU", "XLP (Consumer Staples)": "XLP",
+        "XLK (Technology)": "XLK", "XLY (Consumer Discr.)": "XLY",
     }
+    sym_to_name = {sym: name for name, sym in tickers.items()}
+    symbols = list(sym_to_name.keys())
     data = {}
+
+    try:
+        raw = yf.download(
+            symbols, start=start, end=end,
+            progress=False, auto_adjust=True, group_by="ticker", threads=True,
+        )
+        if raw is not None and len(raw) > 0 and isinstance(raw.columns, pd.MultiIndex):
+            for sym in symbols:
+                frame = None
+                try:
+                    frame = raw[sym]
+                except Exception:
+                    try:
+                        frame = raw.xs(sym, axis=1, level=0)
+                    except Exception:
+                        pass
+                frame = _coerce_ohlc_frame(frame)
+                if frame is not None and not frame.empty and len(frame) > 20:
+                    data[sym_to_name[sym]] = frame
+    except Exception:
+        pass
+
+    # Fallback for any symbols missing from the batch result
     for name, sym in tickers.items():
-        df = _dl(sym, start, end)
-        if df is not None and len(df) > 20: data[name] = df
+        if name not in data:
+            df = _dl(sym, start, end)
+            if df is not None and len(df) > 20:
+                data[name] = df
 
     # Yahoo can intermittently return empty/failed results for ^GSPC.
     # Keep the S&P slot available by trying robust fallbacks.
@@ -2702,9 +2738,9 @@ except Exception:
     execute_values = None
 
 
-logger = logging.getLogger(__name__)
-
 CACHE_DB_NAME = "market_data_cache.sqlite"
+
+_db_initialized: set = set()
 
 CACHE_UNIVERSE_NAME = "us_common_stocks_v3"
 BREADTH_SNAPSHOT_KEY = f"{CACHE_UNIVERSE_NAME}_breadth_snapshot_v1"
@@ -2814,7 +2850,14 @@ def _get_cache_conn(store):
     return conn
 
 def _init_price_cache_db(store):
+    _init_key = f"{store.get('backend')}:{str(store.get('db_path', store.get('dsn', '')))[:40]}"
+    if _init_key in _db_initialized:
+        return
     conn = _get_cache_conn(store)
+    # _get_cache_conn may silently fall back from Neon to SQLite when Neon is
+    # temporarily unreachable. Only mark initialized when we actually ran DDL
+    # against the intended backend — so the next call retries Neon once it's back.
+    actual_backend = "sqlite" if isinstance(conn, sqlite3.Connection) else "neon"
     try:
         cur = conn.cursor() if store["backend"] == "neon" else conn
         if store["backend"] == "neon":
@@ -2974,6 +3017,8 @@ def _init_price_cache_db(store):
         conn.commit()
     finally:
         conn.close()
+    if actual_backend == store.get("backend"):
+        _db_initialized.add(_init_key)
 
 
 def _set_cache_metadata(store, key, value, *, conn=None):
@@ -8981,27 +9026,48 @@ def _tab_mein_bereich():
     elif area_view == "⚙️ Technisches Setup":
         _render_technical_setup_area()
 
-def _tab_watchlist():
-    """Render watchlist-focused page while preserving existing workspace controls."""
+def _tab_mein_depot():
+    """Depot: Nach-Kauf-Analyse und Portfolio-Kurve kombiniert."""
+    view = st.segmented_control(
+        "Depot-Bereich",
+        options=["📊 Nach-Kauf-Analyse", "📈 Portfolio-Kurve"],
+        default="📊 Nach-Kauf-Analyse",
+        key="mein_depot_view",
+        label_visibility="collapsed",
+    )
+    if view == "📈 Portfolio-Kurve":
+        if not _render_private_gate("🔐 Portfolio-Kurve"):
+            return
+        _init_workspace_state()
+        _render_portfolio_72_area()
+    else:
+        _tab_nach_kauf()
+
+
+def _tab_workspace():
+    """Persönlicher Arbeitsbereich: Watchlist, Notizen und Workspace-Einstellungen."""
     st.session_state.setdefault("mein_bereich_view", "📝 Arbeitsbereich")
     _tab_mein_bereich()
 
-def _tab_wissen():
-    """Show educational market context and keep advanced settings reachable."""
-    _tab_sektoranalyse()
+
+def _tab_einstellungen():
+    """Systemeinstellungen: Datenbankpflege, Worker-Status und technische Konfiguration."""
+    if not _render_private_gate("🔐 Einstellungen"):
+        return
+    _render_technical_setup_area()
+
 
 def _render_topbar() -> None:
-    """Render a compact app header above the Streamlit navigation pills."""
     st.markdown(
         """
         <div class="app-topbar">
-          <p class="app-topbar__eyebrow">Börse ohne Bauchgefühl</p>
+          <p class="app-topbar__eyebrow">regelbasiert investieren · v3.2</p>
           <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
-          <p class="app-topbar__subtitle">Regelbasiert investieren statt Bauchgefühl</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
 
 def main():
     configure_page()
@@ -9011,14 +9077,16 @@ def main():
 
     pages = [
         st.Page(_tab_dashboard, title="Marktampel", icon="🚦", url_path="marktampel", default=True),
-        st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktienbewertung"),
-        st.Page(_tab_watchlist, title="Watchlist", icon="⭐", url_path="watchlist"),
-        st.Page(_tab_nach_kauf, title="Depot", icon="💼", url_path="depot"),
-        st.Page(_tab_marktanalyse, title="Tiefenanalyse", icon="📈", url_path="tiefenanalyse"),
-        st.Page(_tab_wissen, title="Wissen", icon="📚", url_path="wissen"),
+        st.Page(_tab_marktanalyse, title="Marktanalyse", icon="📈", url_path="analyse"),
+        st.Page(_tab_sektoranalyse, title="Sektoren", icon="🏭", url_path="sektoren"),
+        st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktie"),
+        st.Page(_tab_mein_depot, title="Mein Depot", icon="💼", url_path="depot"),
+        st.Page(_tab_workspace, title="Workspace", icon="⭐", url_path="workspace"),
+        st.Page(_tab_einstellungen, title="Einstellungen", icon="⚙️", url_path="einstellungen"),
     ]
     navigation = st.navigation(pages, position="top")
     navigation.run()
+
 
 if __name__ == "__main__":
     main()

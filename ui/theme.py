@@ -35,22 +35,25 @@ html, body, [class*="css"]{font-family:'Inter',system-ui,sans-serif;}
 .stApp{background:radial-gradient(1100px 500px at 86% -10%, rgba(59,130,246,.10), transparent 56%), var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;}
 .main .block-container{max-width:1240px;padding-top:1.2rem;padding-bottom:2.2rem;}
 .app-topbar{
-  margin:0 0 .8rem 0;
-  padding:12px 14px 8px;
+  margin:0 0 .6rem 0;
+  padding:10px 16px;
   border:1px solid var(--border);
   border-radius:var(--radius-lg);
   background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.005)), var(--panel);
+  display:flex;
+  align-items:center;
+  gap:12px;
 }
 .app-topbar__eyebrow{
   margin:0;
   color:var(--muted);
-  font-size:.68rem;
+  font-size:.65rem;
   text-transform:uppercase;
   letter-spacing:.1em;
   font-weight:700;
+  white-space:nowrap;
 }
-.app-topbar__title{margin:.2rem 0 0;font-size:1.35rem!important;line-height:1.2;font-weight:800!important;}
-.app-topbar__subtitle{margin:.25rem 0 0;color:var(--muted);font-size:.9rem;line-height:1.45;}
+.app-topbar__title{margin:0;font-size:1.18rem!important;line-height:1.2;font-weight:800!important;}
 
 h1,h2,h3{font-family:'Inter',system-ui,sans-serif!important;letter-spacing:-0.02em;}
 h1{font-size:1.88rem!important;font-weight:800!important;line-height:1.14;}
@@ -63,10 +66,10 @@ hr{border:none;border-top:1px solid var(--border);margin:1rem 0;}
 
 /* Navigation pills */
 [data-testid="stNavigation"]{
-  margin-bottom:1rem;
+  margin-bottom:.9rem;
 }
 [data-testid="stNavigation"] [data-baseweb="tab-list"]{
-  gap:8px;
+  gap:6px;
   flex-wrap:wrap;
 }
 [data-testid="stNavigation"] [data-baseweb="tab"]{
@@ -74,14 +77,21 @@ hr{border:none;border-top:1px solid var(--border);margin:1rem 0;}
   border:1px solid var(--border);
   background:var(--panel-2);
   color:var(--muted);
-  padding:7px 12px;
-  min-height:36px;
+  padding:6px 11px;
+  min-height:34px;
+  font-size:.84rem;
   font-weight:600;
+  transition:border-color .15s, color .15s, background .15s;
+}
+[data-testid="stNavigation"] [data-baseweb="tab"]:hover{
+  border-color:#355071;
+  color:#c5d2e6;
 }
 [data-testid="stNavigation"] [aria-selected="true"]{
   background:linear-gradient(180deg, rgba(59,130,246,.34), rgba(59,130,246,.2));
   border-color:#4e8ff6;
   color:#eaf2ff;
+  box-shadow:0 0 0 1px rgba(78,143,246,.25) inset;
 }
 
 /* Core cards */
@@ -242,7 +252,8 @@ hr{border:none;border-top:1px solid var(--border);margin:1rem 0;}
   .app-topbar__subtitle{font-size:.82rem;}
   .stTabs [data-baseweb="tab-list"]{gap:6px;}
   .stTabs [data-baseweb="tab"]{flex:1 1 calc(50% - 6px);justify-content:center;text-align:center;padding:8px 10px;}
-  [data-testid="stNavigation"] [data-baseweb="tab"]{flex:1 1 calc(50% - 6px);justify-content:center;text-align:center;padding:7px 8px;}
+  [data-testid="stNavigation"] [data-baseweb="tab"]{flex:1 1 calc(33% - 6px);justify-content:center;text-align:center;padding:6px 6px;font-size:.78rem;}
+  .app-topbar{padding:8px 12px;}
   [data-testid="stMetric"]{border-radius:var(--radius-md);padding:12px 12px;}
   [data-testid="stMetricLabel"]{font-size:.67rem!important;}
   [data-testid="stMetricValue"]{font-size:1.18rem!important;}
