@@ -438,14 +438,18 @@ def _format_data_freshness(selected: str, df: pd.DataFrame, vol_dashboard: pd.Da
     latest_date = _format_market_date(df.index[-1]) if df is not None and len(df) else "—"
     vix_date = _format_market_date(vol_dashboard.index[-1]) if vol_dashboard is not None and len(vol_dashboard) else latest_date
     store = _get_price_store()
+    meta = _get_cache_metadata_many(store, [
+        "last_refresh_at", "cache_prices_last_write_at",
+        "last_refresh_loaded_universe", "last_refresh_requested_universe",
+    ])
     return {
         "index_name": selected,
         "index_date": latest_date,
         "vix_date": vix_date,
         "store_label": _get_store_label(store),
-        "nyse_refresh": _get_cache_metadata(store, "last_refresh_at", "") or _get_cache_metadata(store, "cache_prices_last_write_at", ""),
-        "coverage": _get_cache_metadata(store, "last_refresh_loaded_universe", ""),
-        "requested": _get_cache_metadata(store, "last_refresh_requested_universe", ""),
+        "nyse_refresh": meta.get("last_refresh_at", "") or meta.get("cache_prices_last_write_at", ""),
+        "coverage": meta.get("last_refresh_loaded_universe", ""),
+        "requested": meta.get("last_refresh_requested_universe", ""),
     }
 
 def _ampel_phase_label(phase: str) -> str:
@@ -2211,18 +2215,46 @@ def _dl(symbol, start, end):
         return None
 @st.cache_data(ttl=900, show_spinner=False)
 def load_market_data(lookback_days=400):
-    end = datetime.now(); start = end - timedelta(days=lookback_days)
+    end = datetime.now()
+    start = end - timedelta(days=lookback_days)
     tickers = {
-        "S&P 500":"^GSPC","Nasdaq Composite":"^IXIC","Russell 2000":"^RUT",
-        "RSP (Equal-Weight S&P)":"RSP","QQEW (Equal-Weight Nasdaq)":"QQEW",
-        "VIX":"^VIX","VIXY":"VIXY",
-        "XLU (Utilities)":"XLU","XLP (Consumer Staples)":"XLP",
-        "XLK (Technology)":"XLK","XLY (Consumer Discr.)":"XLY",
+        "S&P 500": "^GSPC", "Nasdaq Composite": "^IXIC", "Russell 2000": "^RUT",
+        "RSP (Equal-Weight S&P)": "RSP", "QQEW (Equal-Weight Nasdaq)": "QQEW",
+        "VIX": "^VIX", "VIXY": "VIXY",
+        "XLU (Utilities)": "XLU", "XLP (Consumer Staples)": "XLP",
+        "XLK (Technology)": "XLK", "XLY (Consumer Discr.)": "XLY",
     }
+    sym_to_name = {sym: name for name, sym in tickers.items()}
+    symbols = list(sym_to_name.keys())
     data = {}
+
+    try:
+        raw = yf.download(
+            symbols, start=start, end=end,
+            progress=False, auto_adjust=True, group_by="ticker", threads=True,
+        )
+        if raw is not None and len(raw) > 0 and isinstance(raw.columns, pd.MultiIndex):
+            for sym in symbols:
+                frame = None
+                try:
+                    frame = raw[sym]
+                except Exception:
+                    try:
+                        frame = raw.xs(sym, axis=1, level=0)
+                    except Exception:
+                        pass
+                frame = _coerce_ohlc_frame(frame)
+                if frame is not None and not frame.empty and len(frame) > 20:
+                    data[sym_to_name[sym]] = frame
+    except Exception:
+        pass
+
+    # Fallback for any symbols missing from the batch result
     for name, sym in tickers.items():
-        df = _dl(sym, start, end)
-        if df is not None and len(df) > 20: data[name] = df
+        if name not in data:
+            df = _dl(sym, start, end)
+            if df is not None and len(df) > 20:
+                data[name] = df
 
     # Yahoo can intermittently return empty/failed results for ^GSPC.
     # Keep the S&P slot available by trying robust fallbacks.
@@ -2702,9 +2734,9 @@ except Exception:
     execute_values = None
 
 
-logger = logging.getLogger(__name__)
-
 CACHE_DB_NAME = "market_data_cache.sqlite"
+
+_db_initialized: set = set()
 
 CACHE_UNIVERSE_NAME = "us_common_stocks_v3"
 BREADTH_SNAPSHOT_KEY = f"{CACHE_UNIVERSE_NAME}_breadth_snapshot_v1"
@@ -2814,6 +2846,9 @@ def _get_cache_conn(store):
     return conn
 
 def _init_price_cache_db(store):
+    _init_key = f"{store.get('backend')}:{str(store.get('db_path', store.get('dsn', '')))[:40]}"
+    if _init_key in _db_initialized:
+        return
     conn = _get_cache_conn(store)
     try:
         cur = conn.cursor() if store["backend"] == "neon" else conn
@@ -2974,6 +3009,7 @@ def _init_price_cache_db(store):
         conn.commit()
     finally:
         conn.close()
+    _db_initialized.add(_init_key)
 
 
 def _set_cache_metadata(store, key, value, *, conn=None):
