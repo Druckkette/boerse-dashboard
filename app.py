@@ -5189,19 +5189,17 @@ def add_indicators(df):
     df["Low_above_21"]=df["Low"]>df["EMA21"];df["Low_above_50"]=df["Low"]>df["SMA50"];df["Low_above_200"]=df["Low"]>df["SMA200"]
     df["Consec_Low_above_21"]=_consec(df["Low_above_21"]);df["Consec_Low_above_50"]=_consec(df["Low_above_50"]);df["Consec_Low_above_200"]=_consec(df["Low_above_200"])
     df["EMA21_held"]=df["Close"]>df["EMA21"];df["SMA50_held"]=df["Close"]>df["SMA50"];df["SMA200_held"]=df["Close"]>df["SMA200"]
-    df["Intraday_Reversal_Down"]=(df["Open"]>df["Close"].shift(1))&(df["Close"]<df["Open"])&(df["Closing_Range"]<0.35)
+    df["Intraday_Reversal_Down"]=(df["Open"]>df["Close"].shift(1))&(df["Close"]<df["Open"])
     df["Neg_Reversals_10d"]=df["Intraday_Reversal_Down"].rolling(10,min_periods=1).sum().astype(int)
-    df["Low_CR"]=df["Closing_Range"]<0.25;df["Low_CR_5d"]=df["Low_CR"].rolling(5,min_periods=1).sum().astype(int)
-    is_up=df["Close"]>df["Close"].shift(1);up_vol=df["Volume"].where(is_up)
-    df["Up_Vol_SMA5"]=up_vol.ffill().rolling(5,min_periods=2).mean()
-    df["Up_Vol_Declining"]=df["Up_Vol_SMA5"]<df["Up_Vol_SMA5"].shift(5)
+    df["Low_CR"]=df["Closing_Range"]<=0.30;df["Low_CR_5d"]=df["Low_CR"].rolling(5,min_periods=1).sum().astype(int)
+    df["Up_Vol_Declining"]=(df["Close"]>df["Close"].shift(5))&(df["Volume"].diff().rolling(5).max()<0)
     return df
 
 def detect_distribution_days(df):
     df=df.copy();pc=df["Close"].shift(1);pv=df["Volume"].shift(1)
-    is_down=df["Close"]<pc;high_vol=(df["Volume"]>pv)|(df["Volume"]>df["Vol_SMA50"])
+    is_down=(df["Close"]<pc)&(df["Pct_Change"]<=-0.2);high_vol=(df["Volume"]>pv)|(df["Volume"]>df["Vol_SMA50"])
     df["Is_Distribution"]=is_down&high_vol
-    df["Is_Stall"]=(~is_down)&(df["Pct_Change"]<0.5)&(df["Volume"]>=pv*0.95)&(df["Closing_Range"]<0.5)
+    df["Is_Stall"]=(df["Pct_Change"].abs()<0.5)&(df["Volume"]>=pv*0.95)
     df["Dist_Count_25"]=df["Is_Distribution"].rolling(25,min_periods=1).sum().astype(int)
     return df
 
@@ -5217,7 +5215,7 @@ def compute_ampel(df):
         anchor_idx=None;floor_mark=None;startschuss_idx=None;startschuss_low=None;gruen_since=None;startschuss_bonus=None
     def _corr(i):
         lb=max(0,i-60);rh=np.nanmax(h_[lb:i+1]);dd=(c_[i]-rh)/rh*100 if rh>0 else 0
-        return dd<-10 or (not np.isnan(s50_[i]) and c_[i]<s50_[i] and dc_[i]>=4)
+        return dd<-10 or (not np.isnan(s200_[i]) and c_[i]<s200_[i] and dc_[i]>=4)
     for i in range(1,n):
         pi=pct_[i] if not np.isnan(pct_[i]) else 0.0;cri=cr_[i] if not np.isnan(cr_[i]) else 0.5
         if phase in ("neutral","aufwaertstrend"):
@@ -5226,7 +5224,7 @@ def compute_ampel(df):
         elif phase=="rot":
             if anchor_idx is not None and i>anchor_idx and l_[i]<floor_mark: anchor_idx=None;floor_mark=None
             if anchor_idx is None:
-                if pi>0.0 or (c_[i]>o_[i] and cri>=0.5): anchor_idx=i;floor_mark=min(l_[i],l_[i-1])
+                if pi>0.0 or cri>=0.5: anchor_idx=i;floor_mark=min(l_[i],l_[i-1])
             if anchor_idx is not None and i>=anchor_idx+5:
                 if pi>=1.0 and v_[i]>v_[i-1] and l_[i]>=floor_mark: phase="gelb";startschuss_idx=i;startschuss_low=l_[i];startschuss_bonus=not np.isnan(e21_[i]) and c_[i]>e21_[i]
         elif phase=="gelb":
@@ -5234,7 +5232,7 @@ def compute_ampel(df):
             elif startschuss_idx is not None and i>startschuss_idx+2: phase="gruen";gruen_since=i
         elif phase=="gruen":
             if startschuss_low is not None and c_[i]<startschuss_low: phase="rot";_clear()
-            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]>s50_[i] and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend"
+            elif not np.isnan(s200_[i]) and c_[i]>s200_[i] and not np.isnan(e21_[i]) and not np.isnan(s50_[i]) and e21_[i]>s50_[i] and s50_[i]>s200_[i] and (gruen_since and i-gruen_since>=10): phase="aufwaertstrend"
         phases[i]=phase
         if anchor_idx is not None: anchor_dates[i]=df.index[anchor_idx].strftime("%Y-%m-%d")
         if floor_mark is not None: floor_marks[i]=round(floor_mark,2)
@@ -5244,7 +5242,7 @@ def compute_ampel(df):
     return df
 
 def compute_breadth_mode(df_ew):
-    df_ew=df_ew.copy();df_ew["High_52w"]=df_ew["High"].rolling(252,min_periods=1).max()
+    df_ew=df_ew.copy();df_ew["High_52w"]=df_ew["Close"].rolling(252,min_periods=1).max()
     df_ew["Dist_52w_pct"]=(df_ew["Close"]-df_ew["High_52w"])/df_ew["High_52w"]*100
     df_ew["Raw_Mode"]=df_ew["Dist_52w_pct"].apply(lambda d:"schutz" if d<-8 else "wachsam" if d<-4 else "rueckenwind")
     modes=df_ew["Raw_Mode"].values;stable=[modes[0]];pending=None;pc=0
@@ -5552,7 +5550,7 @@ def render_ampel_section(L, history_df=None):
     labels = ["ROT", "GELB", "GRÜN"]
     glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440", "0 0 20px #f59e0b80, 0 0 40px #f59e0b40", "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
     phase_rules = {
-        "rot": "ROT wird aktiv, wenn eine substanzielle Korrektur erkannt wird. Aktuell heißt das im Code: Drawdown von mehr als 10% vom jüngsten Hoch (Buch: Korrekturschwelle) oder Schlusskurs unter der 50-SMA bei mindestens 4 Distribution Days im 25-Tage-Fenster.",
+        "rot": "ROT wird aktiv, wenn eine substanzielle Korrektur erkannt wird. Aktuell heißt das im Code: Drawdown von mehr als 10% vom jüngsten Hoch (Buch: Korrekturschwelle) oder Schlusskurs unter der 200-SMA bei mindestens 4 Distribution Days im 25-Tage-Fenster.",
         "gelb": "GELB wird aktiv, wenn nach einem Ankertag frühestens ab Tag 5 ein Startschuss auftritt: mindestens +1,0% zum Vortag, Volumen über Vortag und kein Unterschreiten der Bodenmarke intraday.",
         "gruen": "GRÜN wird aktiv, wenn der Startschuss hält und nach GELB mehr als 2 weitere Handelstage vergehen, ohne dass das Startschuss-Tief per Schlusskurs gebrochen wird.",
         "aufwaertstrend": "AUFWÄRTSTREND wird aktiv, wenn die grüne Phase mindestens 10 Tage Bestand hatte, der Index über der 200-SMA liegt und die MA-Ordnung 21-EMA > 50-SMA > 200-SMA bestätigt ist.",
@@ -5753,11 +5751,11 @@ def _render_deep_analysis_content(component_bundle, sd, data):
             st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
         render_check("Keine Divergenz Index vs. A/D-Linie", not (spx_at_high and not ad_at_high), "A/D-Linie bestätigt" if ad_at_high else "Divergenz aktiv")
     render_check("McClellan > 0", mc > 0, f"McClellan: {mc:.1f}")
-    render_check("% über 50-SMA > 50%", p50 > 50, f"{p50:.0f}%")
+    render_check("% über 50-SMA > 70%", p50 > 70, f"{p50:.0f}%")
     render_check("NH/NL Ratio > 1", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
     if not np.isnan(dr):
         dr_status = "Sehr gut" if dr >= 1.97 else "Gut" if dr >= 1.50 else "Neutral" if dr >= 1.00 else "Schlecht"
-        render_check("Deemer Ratio", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
+        render_check("Deemer Ratio", dr >= 1.97, f"Ratio: {dr:.2f} · {dr_status}")
     else:
         render_check("Deemer Ratio", False, "Nicht verfügbar")
     st.markdown("</div>", unsafe_allow_html=True)
