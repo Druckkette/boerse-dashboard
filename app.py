@@ -539,7 +539,9 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
         arrow_color = "#22c55e" if price_delta >= 0 else "#ef4444"
         dd_val = latest.get("Dist_52w_pct", np.nan)
         dd_txt = f"52W-Hoch: {dd_val:.1f}%" if not np.isnan(dd_val) else ""
-        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Index Stand: {latest['Close']:,.2f}", "detail2": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
+        idx_date = pd.Timestamp(df.index[-1]).strftime("%d.%m.%Y") if len(df) > 0 else "—"
+        idx_stand = f"Index Stand: {idx_date}"
+        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "detail2": idx_stand, "detail3": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
     dist_prev = int(prev.get("Dist_Count_25", 0))
     dist_now = int(latest.get("Dist_Count_25", 0))
     delta = dist_now - dist_prev
@@ -565,8 +567,10 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
         regime_prev = vp.get("VIX_Regime", "n/a")
         change_detail = f"Regime {regime_prev} → {regime_now}" if regime_now != regime_prev else f"Regime stabil: {regime_now}"
         vix_close = vl.get("VIX_Close", np.nan)
-        val = f"VIX Stand: {vix_close:.1f}" if pd.notna(vix_close) else "VIX n/a"
-        changes.append({"title": "Volatilität", "value": val, "detail": change_detail})
+        val = f"VIX {vix_close:.1f}" if pd.notna(vix_close) else "VIX n/a"
+        vix_date = pd.Timestamp(vol_dashboard.index[-1]).strftime("%d.%m.%Y")
+        vix_stand = f"VIX Stand: {vix_date}" if pd.notna(vix_close) else ""
+        changes.append({"title": "Volatilität", "value": val, "detail": change_detail, "detail2": vix_stand})
     if breadth_label:
         changes.append({"title": "Breite", "value": breadth_label, "detail": "Equal-Weight als Bestätigung des Indextrends"})
     return changes[:4]
@@ -586,8 +590,11 @@ def _render_change_cards(changes):
             detail2_html = ""
             if item.get("detail2"):
                 detail2_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail2"]}</div>'
+            detail3_html = ""
+            if item.get("detail3"):
+                detail3_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail3"]}</div>'
             st.markdown(
-                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}</div>',
+                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}{detail3_html}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -596,7 +603,7 @@ def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, fre
     tone_color = {"good": "#22c55e", "warn": "#f59e0b", "bad": "#ef4444"}.get(tone, "#94a3b8")
     bullets = "".join(f"<li>{r}</li>" for r in reasons)
     st.markdown(
-        f'<div class="summary-hero"><div class="hero-title">Börse ohne Bauchgefühl</div><div class="hero-subtitle">Regelbasiertes Markt-Dashboard für Trend, Breite und Risiko</div><div style="font-size:2rem;font-weight:900;color:{tone_color};letter-spacing:.06em;margin:14px 0 10px 0;text-shadow:0 0 20px {tone_color}40;">{mode}</div><div class="pill-wrap"><span class="pill">Index-Stand: {freshness.get("index_date","—")}</span><span class="pill">VIX-Stand: {freshness.get("vix_date","—")}</span></div><ul style="margin:8px 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
+        f'<div class="summary-hero"><div class="hero-title">Börse ohne Bauchgefühl</div><div class="hero-subtitle">Regelbasiertes Markt-Dashboard für Trend, Breite und Risiko</div><div style="font-size:2rem;font-weight:900;color:{tone_color};letter-spacing:.06em;margin:14px 0 10px 0;text-shadow:0 0 20px {tone_color}40;">{mode}</div><ul style="margin:8px 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
         unsafe_allow_html=True,
     )
 
