@@ -539,7 +539,7 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
         arrow_color = "#22c55e" if price_delta >= 0 else "#ef4444"
         dd_val = latest.get("Dist_52w_pct", np.nan)
         dd_txt = f"52W-Hoch: {dd_val:.1f}%" if not np.isnan(dd_val) else ""
-        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "detail2": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
+        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Index Stand: {latest['Close']:,.2f}", "detail2": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
     dist_prev = int(prev.get("Dist_Count_25", 0))
     dist_now = int(latest.get("Dist_Count_25", 0))
     delta = dist_now - dist_prev
@@ -564,7 +564,8 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
         regime_now = vl.get("VIX_Regime", "n/a")
         regime_prev = vp.get("VIX_Regime", "n/a")
         change_detail = f"Regime {regime_prev} → {regime_now}" if regime_now != regime_prev else f"Regime stabil: {regime_now}"
-        val = f"VIX {vl.get('VIX_Close', np.nan):.1f}" if pd.notna(vl.get("VIX_Close", np.nan)) else "VIX n/a"
+        vix_close = vl.get("VIX_Close", np.nan)
+        val = f"VIX Stand: {vix_close:.1f}" if pd.notna(vix_close) else "VIX n/a"
         changes.append({"title": "Volatilität", "value": val, "detail": change_detail})
     if breadth_label:
         changes.append({"title": "Breite", "value": breadth_label, "detail": "Equal-Weight als Bestätigung des Indextrends"})
@@ -8620,7 +8621,8 @@ def _tab_marktanalyse(compact: bool = False):
 
     st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
 
-    with st.expander("Frühwarnzeichen und Warnzeichen", expanded=not compact):
+    if not compact:
+      with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
         st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
         for label, ok, detail, warn in warning_items:
             render_check(label, ok, detail, warn=warn)
@@ -8632,7 +8634,8 @@ def _tab_marktanalyse(compact: bool = False):
             st.markdown(f'<div style="text-align:center;padding:8px;color:#ef4444;">⚠ {wc} Warnzeichen — Risiko reduzieren</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with st.expander("Trendcheck, Ordnung und Sektorrotation", expanded=False):
+    if not compact:
+      with st.expander("Trendcheck, Ordnung und Sektorrotation", expanded=False):
         cl, cr_ = st.columns(2)
         with cl:
             st.markdown('<div class="info-card"><div class="card-label">Trendprüfung</div>', unsafe_allow_html=True)
@@ -8674,7 +8677,8 @@ def _tab_marktanalyse(compact: bool = False):
                     st.markdown(f'<div style="padding:4px 0;display:flex;justify-content:space-between;gap:12px;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span><span class="mini-help">{day_txt} · <span style="color:{dist_c};">{dist_txt}</span></span></div>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-    with st.expander("Marktbreite und Volatilität", expanded=True):
+    if not compact:
+      with st.expander("Marktbreite und Volatilität", expanded=True):
         st.markdown('<div class="card-label">Marktbreite — Equal-Weight</div>', unsafe_allow_html=True)
         bc1, bc2 = st.columns(2)
         for col, etf, dfe in [(bc1, ep, breadth_primary), (bc2, es, breadth_secondary)]:
@@ -8711,7 +8715,8 @@ def _tab_marktanalyse(compact: bool = False):
                 f"S&P 500 5T {vol_latest.get('SPX_Ret_5d', np.nan) * 100:+.1f}%"
             )
 
-    with st.expander("Tägliche Checkliste", expanded=False):
+    if not compact:
+      with st.expander("Tägliche Checkliste", expanded=False):
         st.markdown('<div class="info-card"><div class="card-label">Tägliche Checkliste</div>', unsafe_allow_html=True)
         ddv = float(L["Dist_52w_pct"]) if not np.isnan(L["Dist_52w_pct"]) else 0
         no_correction = ddv > -8
@@ -8724,75 +8729,76 @@ def _tab_marktanalyse(compact: bool = False):
         render_check("Warnzeichen ≤2?", wc <= 2, f"{wc} aktiv")
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("### 🔎 Tiefenanalyse")
-    load_clicked = st.button("Tiefenanalyse laden", type="primary", key="load_deep_analysis_btn")
-    if load_clicked:
-        st.session_state["show_deep_analysis"] = True
-    if not st.session_state.get("show_deep_analysis", False):
-        st.caption("Die Tiefenanalyse wird nur bei Bedarf geladen, damit die Startansicht schnell bleibt.")
-    else:
-        store = _get_price_store()
-        if store.get("backend") == "sqlite":
-            auto_refresh = _maybe_auto_refresh_sqlite_cache(store, reason="deep_analysis")
-            if auto_refresh.get("triggered"):
-                if auto_refresh.get("ok"):
-                    st.caption("SQLite-Auto-Refresh ausgeführt, lade aktuelle Tiefenanalyse …")
-                else:
-                    st.warning("SQLite-Auto-Refresh fehlgeschlagen. Es werden die zuletzt verfügbaren Daten verwendet.")
-        with st.spinner("Lese Tiefenanalyse-Daten aus dem persistenten Datenspeicher …"):
-            component_bundle = load_nyse_breadth_data()
-        benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
-        refresh_at_raw = _get_cache_metadata(store, "last_refresh_at", "")
-        refresh_date = None
-        if refresh_at_raw:
-            parsed = pd.to_datetime(refresh_at_raw, errors="coerce")
-            if pd.notna(parsed):
-                refresh_date = parsed.date()
-        if component_bundle is None:
-            benchmark_str = benchmark_last.strftime("%d.%m.%Y")
-            active_job = _get_active_refresh_job(store)
-            if active_job:
-                st.warning(
-                    f"Die Kursdaten werden aktualisiert (benötigter Stand: {benchmark_str}). "
-                    "Bitte komm in ca. 10 Minuten erneut auf die Seite."
-                )
-            else:
-                neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
-                if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
-                    neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
-                st.info(
-                    f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
-                    f"{neon_auto_text} "
-                    "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
-                )
+    if not compact:
+        st.markdown("### 🔎 Tiefenanalyse")
+        load_clicked = st.button("Tiefenanalyse laden", type="primary", key="load_deep_analysis_btn")
+        if load_clicked:
+            st.session_state["show_deep_analysis"] = True
+        if not st.session_state.get("show_deep_analysis", False):
+            st.caption("Die Tiefenanalyse wird nur bei Bedarf geladen, damit die Startansicht schnell bleibt.")
         else:
-            br = _render_deep_analysis_content(component_bundle, sd, data)
-            if br is not None and len(br):
-                breadth_last = pd.Timestamp(br.index[-1]).date()
-                refresh_matches_cache = refresh_date is not None and refresh_date >= breadth_last
-                if breadth_last < benchmark_last and not refresh_matches_cache:
-                    benchmark_str = benchmark_last.strftime("%d.%m.%Y")
-                    breadth_str = breadth_last.strftime("%d.%m.%Y")
-                    active_job = _get_active_refresh_job(store)
-                    if active_job:
-                        st.warning(
-                            f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
-                            "Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite."
-                        )
+            store = _get_price_store()
+            if store.get("backend") == "sqlite":
+                auto_refresh = _maybe_auto_refresh_sqlite_cache(store, reason="deep_analysis")
+                if auto_refresh.get("triggered"):
+                    if auto_refresh.get("ok"):
+                        st.caption("SQLite-Auto-Refresh ausgeführt, lade aktuelle Tiefenanalyse …")
                     else:
-                        neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
-                        if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
-                            neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
-                        st.info(
-                            f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
-                            f"{neon_auto_text} "
-                            "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
-                        )
-                elif breadth_last < benchmark_last and refresh_matches_cache:
-                    st.info(
-                        f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. "
-                        f"Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')})."
+                        st.warning("SQLite-Auto-Refresh fehlgeschlagen. Es werden die zuletzt verfügbaren Daten verwendet.")
+            with st.spinner("Lese Tiefenanalyse-Daten aus dem persistenten Datenspeicher …"):
+                component_bundle = load_nyse_breadth_data()
+            benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
+            refresh_at_raw = _get_cache_metadata(store, "last_refresh_at", "")
+            refresh_date = None
+            if refresh_at_raw:
+                parsed = pd.to_datetime(refresh_at_raw, errors="coerce")
+                if pd.notna(parsed):
+                    refresh_date = parsed.date()
+            if component_bundle is None:
+                benchmark_str = benchmark_last.strftime("%d.%m.%Y")
+                active_job = _get_active_refresh_job(store)
+                if active_job:
+                    st.warning(
+                        f"Die Kursdaten werden aktualisiert (benötigter Stand: {benchmark_str}). "
+                        "Bitte komm in ca. 10 Minuten erneut auf die Seite."
                     )
+                else:
+                    neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
+                    if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
+                        neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
+                    st.info(
+                        f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
+                        f"{neon_auto_text} "
+                        "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
+                    )
+            else:
+                br = _render_deep_analysis_content(component_bundle, sd, data)
+                if br is not None and len(br):
+                    breadth_last = pd.Timestamp(br.index[-1]).date()
+                    refresh_matches_cache = refresh_date is not None and refresh_date >= breadth_last
+                    if breadth_last < benchmark_last and not refresh_matches_cache:
+                        benchmark_str = benchmark_last.strftime("%d.%m.%Y")
+                        breadth_str = breadth_last.strftime("%d.%m.%Y")
+                        active_job = _get_active_refresh_job(store)
+                        if active_job:
+                            st.warning(
+                                f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                                "Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite."
+                            )
+                        else:
+                            neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
+                            if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
+                                neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
+                            st.info(
+                                f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                                f"{neon_auto_text} "
+                                "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
+                            )
+                    elif breadth_last < benchmark_last and refresh_matches_cache:
+                        st.info(
+                            f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. "
+                            f"Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')})."
+                        )
 
     st.caption(f"Börse ohne Bauchgefühl · v3.2 · Stand: {L.name.strftime('%d.%m.%Y')}")
 
