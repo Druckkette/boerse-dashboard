@@ -594,6 +594,21 @@ def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, fre
         unsafe_allow_html=True,
     )
 
+def _render_dist_tile(label: str, value: str, indicator: str, tone: str, caption_text: str = "") -> None:
+    """Render a MA-distance metric tile with tone-colored border (good=green, warn=yellow, bad=red)."""
+    color = {"good": "#22c55e", "warn": "#f59e0b", "bad": "#ef4444"}.get(tone, "#64748b")
+    st.markdown(
+        f'<div style="border:1px solid {color}40;border-radius:8px;padding:10px 14px;background:{color}0d;margin-bottom:2px;">'
+        f'<div style="font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px;">{label}</div>'
+        f'<div style="font-size:1.35rem;font-weight:700;color:#e2e8f0;">{value}</div>'
+        f'<div style="font-size:.72rem;color:{color};font-weight:600;margin-top:4px;">{indicator}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if caption_text:
+        st.caption(caption_text)
+
+
 def _render_market_glossary(keys):
     items = []
     for key in keys:
@@ -8559,28 +8574,52 @@ def _tab_marktanalyse(compact: bool = False):
 
     row_ma = st.columns(4)
     with row_ma[0]:
-        d21_lbl = "✓ OK" if (not np.isnan(d21) and 0 <= d21 <= 3.0) else ("⚠ Überdehnt" if (not np.isnan(d21) and d21 > 3.0) else ("✗ Darunter" if not np.isnan(d21) else "—"))
-        st.metric("21-EMA Abstand", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", d21_lbl, border=True)
-        st.caption("Kurzfristiger Abstand in ATR-Einheiten")
+        if np.isnan(d21):
+            d21_tone, d21_lbl = "neutral", "—"
+        elif d21 < 0:
+            d21_tone, d21_lbl = "bad", "✗ Darunter"
+        elif d21 > 3.0:
+            d21_tone, d21_lbl = "warn", "⚠ Überdehnt"
+        else:
+            d21_tone, d21_lbl = "good", "✓ OK"
+        _render_dist_tile("21-EMA Abstand", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", d21_lbl, d21_tone, "Kurzfristiger Abstand in ATR-Einheiten")
     with row_ma[1]:
-        d10_lbl = "✓ OK" if (not np.isnan(d10) and d10 >= 0) else ("✗ Darunter" if not np.isnan(d10) else "—")
-        st.metric("10-SMA", f"{d10:+.1f}%" if not np.isnan(d10) else "—", d10_lbl, border=True)
-        st.caption("Sehr kurzfristiger Trendabstand")
+        if np.isnan(d10):
+            d10_tone, d10_lbl = "neutral", "—"
+        elif d10 < 0:
+            d10_tone, d10_lbl = "bad", "✗ Darunter"
+        else:
+            d10_tone, d10_lbl = "good", "✓ OK"
+        _render_dist_tile("10-SMA", f"{d10:+.1f}%" if not np.isnan(d10) else "—", d10_lbl, d10_tone, "Sehr kurzfristiger Trendabstand")
     with row_ma[2]:
-        d50_lbl = "⚠ Überdehnt" if (not np.isnan(d50) and d50 > t50) else ("✗ Darunter" if (not np.isnan(d50) and d50 < 0) else ("✓ OK" if not np.isnan(d50) else "—"))
-        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", d50_lbl, border=True)
-        st.caption("Mittelfristiger Trendabstand")
+        if np.isnan(d50):
+            d50_tone, d50_lbl = "neutral", "—"
+        elif d50 < 0:
+            d50_tone, d50_lbl = "bad", "✗ Darunter"
+        elif d50 > t50:
+            d50_tone, d50_lbl = "warn", "⚠ Überdehnt"
+        else:
+            d50_tone, d50_lbl = "good", "✓ OK"
+        _render_dist_tile("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", d50_lbl, d50_tone, "Mittelfristiger Trendabstand")
     with row_ma[3]:
-        d200_lbl = "✓ OK" if (not np.isnan(d200) and d200 >= 0) else ("✗ Darunter" if not np.isnan(d200) else "—")
-        st.metric("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, border=True)
-        st.caption("Langfristiger Trendabstand")
+        if np.isnan(d200):
+            d200_tone, d200_lbl = "neutral", "—"
+        elif d200 < 0:
+            d200_tone, d200_lbl = "bad", "✗ Darunter"
+        else:
+            d200_tone, d200_lbl = "good", "✓ OK"
+        _render_dist_tile("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone, "Langfristiger Trendabstand")
 
     dd = L["Dist_52w_pct"]
     row_dd = st.columns([1, 1, 1])
     with row_dd[1]:
-        dd_lbl = "✓ OK" if (not np.isnan(dd) and dd > -8) else ("✗ Korrektur" if not np.isnan(dd) else "—")
-        st.metric("Drawdown vom Jahreshoch", f"{dd:.1f}%" if not np.isnan(dd) else "—", dd_lbl, border=True)
-        st.caption("Abstand zum 52-Wochen-Hoch")
+        if np.isnan(dd):
+            dd_tone, dd_lbl = "neutral", "—"
+        elif dd > -8:
+            dd_tone, dd_lbl = "good", "✓ OK"
+        else:
+            dd_tone, dd_lbl = "bad", "✗ Korrektur"
+        _render_dist_tile("Drawdown vom Jahreshoch", f"{dd:.1f}%" if not np.isnan(dd) else "—", dd_lbl, dd_tone, "Abstand zum 52-Wochen-Hoch")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["21-EMA", "50-SMA", "Drawdown"])
