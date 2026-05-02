@@ -537,7 +537,9 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
     if not np.isnan(price_delta):
         arrow = "▲" if price_delta >= 0 else "▼"
         arrow_color = "#22c55e" if price_delta >= 0 else "#ef4444"
-        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "arrow": arrow, "arrow_color": arrow_color})
+        dd_val = latest.get("Dist_52w_pct", np.nan)
+        dd_txt = f"52W-Hoch: {dd_val:.1f}%" if not np.isnan(dd_val) else ""
+        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "detail2": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
     dist_prev = int(prev.get("Dist_Count_25", 0))
     dist_now = int(latest.get("Dist_Count_25", 0))
     delta = dist_now - dist_prev
@@ -580,8 +582,11 @@ def _render_change_cards(changes):
             quality_html = ""
             if "quality" in item:
                 quality_html = f'<div style="font-size:.7rem;font-weight:700;color:{item["quality_color"]};margin-top:2px;">{item["quality"]}</div>'
+            detail2_html = ""
+            if item.get("detail2"):
+                detail2_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail2"]}</div>'
             st.markdown(
-                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div></div>',
+                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -8609,17 +8614,6 @@ def _tab_marktanalyse(compact: bool = False):
         else:
             d200_tone, d200_lbl = "good", "✓ OK"
         _render_dist_tile("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone, "Langfristiger Trendabstand")
-
-    dd = L["Dist_52w_pct"]
-    row_dd = st.columns([1, 1, 1])
-    with row_dd[1]:
-        if np.isnan(dd):
-            dd_tone, dd_lbl = "neutral", "—"
-        elif dd > -8:
-            dd_tone, dd_lbl = "good", "✓ OK"
-        else:
-            dd_tone, dd_lbl = "bad", "✗ Korrektur"
-        _render_dist_tile("Drawdown vom Jahreshoch", f"{dd:.1f}%" if not np.isnan(dd) else "—", dd_lbl, dd_tone, "Abstand zum 52-Wochen-Hoch")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["21-EMA", "50-SMA", "Drawdown"])
