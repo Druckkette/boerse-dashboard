@@ -62,7 +62,7 @@ METRIC_GLOSSARY = {
     "ATR (21T)": "Durchschnittliche Schwankungsbreite der letzten 21 Tage in Prozent. Hilft bei Risiko und Positionsgröße.",
     "DRR (Ø21T)": "Average Daily Range der letzten 21 Tage. Zeigt, wie nervös oder ruhig eine Aktie handelt.",
     "Beta": "Empfindlichkeit der Aktie gegenüber dem Gesamtmarkt. Werte über 1 bedeuten meist mehr Dynamik, aber auch mehr Schwankung.",
-    "McClellan Osc.": "Kurzfristiger Breadth-Oszillator auf Basis Advancers minus Decliners. Über 0 ist meist konstruktiv.",
+    "McClellan Osc.": "RANA-McClellan: EMA(19)−EMA(39) der ratio-adjustierten Net Advances (×1000). Zonen: 0 = Regimewechsel · ±30 = neutrales Rauschen · ±50 = ernstzunehmender Breiten-Impuls · ±80 = überdehnte Breite · ±125 = Extremzustand.",
     "NH/NL Ratio": "Verhältnis neuer 52-Wochen-Hochs zu neuen 52-Wochen-Tiefs. Über 1 zeigt breite Stärke.",
     "% > 50-SMA": "Anteil der Aktien oberhalb ihrer 50-Tage-Linie. Zeigt, wie breit kurzfristige Trends sind.",
     "% > 200-SMA": "Anteil der Aktien oberhalb ihrer 200-Tage-Linie. Zeigt die langfristige Marktverfassung.",
@@ -5716,7 +5716,8 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
     p50 = bL["Pct_Above_50SMA"]; p200 = bL["Pct_Above_200SMA"]; dr = bL["Deemer_Ratio"]
     with kb1:
-        st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—", "Überkauft" if mc > 70 else "Überverkauft" if mc < -70 else "Neutral" if not np.isnan(mc) else "")
+        _mc_lbl = ("Extrem ↑" if mc > 125 else "Überdehnt ↑" if mc > 80 else "Impuls ↑" if mc > 50 else "Konstruktiv" if mc > 0 else "Schwach" if mc > -50 else "Impuls ↓" if mc > -80 else "Überdehnt ↓" if mc > -125 else "Extrem ↓") if not np.isnan(mc) else ""
+        st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—", _mc_lbl)
     with kb2:
         st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}", f"{nh_val} Hochs / {nl_val} Tiefs")
     with kb3:
@@ -5849,8 +5850,9 @@ def plot_breadth_deep(br,sd=90):
     # McClellan
     mc_colors=[("#22c55e" if v>=0 else "#ef4444") for v in d["McClellan"].fillna(0)]
     fig.add_trace(go.Bar(x=x,y=_y(d["McClellan"]),name="McClellan",marker_color=mc_colors,opacity=0.8),row=2,col=1)
-    fig.add_hline(y=70,line_dash="dot",line_color="#f59e0b",line_width=0.5,row=2,col=1)
-    fig.add_hline(y=-70,line_dash="dot",line_color="#f59e0b",line_width=0.5,row=2,col=1)
+    for _lvl, _clr in [(30,"#475569"),(50,"#f59e0b"),(80,"#ef4444"),(125,"#7c3aed")]:
+        fig.add_hline(y=_lvl,line_dash="dot",line_color=_clr,line_width=0.5,row=2,col=1)
+        fig.add_hline(y=-_lvl,line_dash="dot",line_color=_clr,line_width=0.5,row=2,col=1)
     # NH / NL
     fig.add_trace(go.Bar(x=x,y=_y(d["New_Highs"]),name="Neue Hochs",marker_color="#22c55e",opacity=0.7),row=3,col=1)
     fig.add_trace(go.Bar(x=x,y=_y(-d["New_Lows"]),name="Neue Tiefs",marker_color="#ef4444",opacity=0.7),row=3,col=1)
