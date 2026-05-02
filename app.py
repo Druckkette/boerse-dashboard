@@ -489,7 +489,7 @@ def _market_action_and_tone(phase: str, warning_count: int, breadth_mode: str, v
     phase = str(phase or "").lower()
     breadth_mode = str(breadth_mode or "").lower()
     vol_regime = str(vol_regime or "").lower()
-    if phase == "rot" or warning_count >= 4 or breadth_mode == "schutz" or vol_regime == "stress":
+    if phase == "rot" or warning_count >= 3 or breadth_mode == "schutz" or vol_regime == "stress":
         if phase == "rot":
             msg = "Ampel rot. Risiko reduzieren, keine aggressiven Neueinstiege und bestehende Positionen kritisch prüfen."
         elif vol_regime == "stress":
@@ -5189,12 +5189,13 @@ def add_indicators(df):
     df["Low_above_21"]=df["Low"]>df["EMA21"];df["Low_above_50"]=df["Low"]>df["SMA50"];df["Low_above_200"]=df["Low"]>df["SMA200"]
     df["Consec_Low_above_21"]=_consec(df["Low_above_21"]);df["Consec_Low_above_50"]=_consec(df["Low_above_50"]);df["Consec_Low_above_200"]=_consec(df["Low_above_200"])
     df["EMA21_held"]=df["Close"]>df["EMA21"];df["SMA50_held"]=df["Close"]>df["SMA50"];df["SMA200_held"]=df["Close"]>df["SMA200"]
-    df["Intraday_Reversal_Down"]=(df["Open"]>df["Close"].shift(1))&(df["Close"]<df["Open"])&(df["Closing_Range"]<0.35)
+    _prev_close=df["Close"].shift(1)
+    df["Intraday_Reversal_Down"]=(df["Open"]>_prev_close)&(df["Close"]<df["Open"])
+    df["Intraday_Reversal_Up"]=(df["Open"]<_prev_close)&(df["Close"]>df["Open"])
     df["Neg_Reversals_10d"]=df["Intraday_Reversal_Down"].rolling(10,min_periods=1).sum().astype(int)
+    df["Pos_Reversals_10d"]=df["Intraday_Reversal_Up"].rolling(10,min_periods=1).sum().astype(int)
     df["Low_CR"]=df["Closing_Range"]<0.25;df["Low_CR_5d"]=df["Low_CR"].rolling(5,min_periods=1).sum().astype(int)
-    is_up=df["Close"]>df["Close"].shift(1);up_vol=df["Volume"].where(is_up)
-    df["Up_Vol_SMA5"]=up_vol.ffill().rolling(5,min_periods=2).mean()
-    df["Up_Vol_Declining"]=df["Up_Vol_SMA5"]<df["Up_Vol_SMA5"].shift(5)
+    df["Up_Vol_Declining"]=(df["Close"]>df["Close"].shift(5))&(df["Volume"].diff().rolling(5).max()<0)
     return df
 
 def detect_distribution_days(df):
@@ -5775,7 +5776,7 @@ def plot_price(df,sd=90):
     fig.add_trace(go.Scatter(x=x,y=_y(dv["SMA200"]),name="200-SMA",line=dict(color="#a855f7",width=1,dash="dash")))
     fl=dv["Floor_Mark"].dropna()
     if len(fl)>0: fig.add_hline(y=float(fl.iloc[-1]),line_dash="dash",line_color="#ef4444",line_width=1,annotation_text="Bodenmarke",annotation_font_color="#ef4444")
-    for col,nm,clr,sym,sz in [("Is_Distribution","Dist.","#ef4444","triangle-down",7),("Is_Stall","Stau","#f59e0b","diamond",6),("Intraday_Reversal_Down","Umkehr↓","#f97316","x",8)]:
+    for col,nm,clr,sym,sz in [("Is_Distribution","Dist.","#ef4444","triangle-down",7),("Is_Stall","Stau","#f59e0b","diamond",6),("Intraday_Reversal_Down","Umkehr↓","#f97316","x",8),("Intraday_Reversal_Up","Umkehr↑","#22c55e","x",8)]:
         m=dv[dv[col]==True]
         if len(m)>0: fig.add_trace(go.Scatter(x=_x(m.index),y=_y(m["Close"] if "Stall" not in nm else m["High"]),name=nm,mode="markers",marker=dict(color=clr,size=sz,symbol=sym)))
     fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=380,legend=dict(orientation="h",yanchor="top",y=1.12,font=dict(size=9,color="#94a3b8")),xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),hovermode="x unified")
@@ -5797,7 +5798,7 @@ def plot_price_with_volume(df, sd=90):
     fl = dv["Floor_Mark"].dropna()
     if len(fl) > 0:
         fig.add_hline(y=float(fl.iloc[-1]), line_dash="dash", line_color="#ef4444", line_width=1, annotation_text="Bodenmarke", annotation_font_color="#ef4444", row=1, col=1)
-    for col, nm, clr, sym, sz in [("Is_Distribution", "Dist.", "#ef4444", "triangle-down", 7), ("Is_Stall", "Stau", "#f59e0b", "diamond", 6), ("Intraday_Reversal_Down", "Umkehr↓", "#f97316", "x", 8)]:
+    for col, nm, clr, sym, sz in [("Is_Distribution", "Dist.", "#ef4444", "triangle-down", 7), ("Is_Stall", "Stau", "#f59e0b", "diamond", 6), ("Intraday_Reversal_Down", "Umkehr↓", "#f97316", "x", 8), ("Intraday_Reversal_Up", "Umkehr↑", "#22c55e", "x", 8)]:
         m = dv[dv[col] == True]
         if len(m) > 0:
             fig.add_trace(go.Scatter(x=_x(m.index), y=_y(m["Close"] if "Stall" not in nm else m["High"]), name=nm, mode="markers", marker=dict(color=clr, size=sz, symbol=sym)), row=1, col=1)
@@ -8478,7 +8479,8 @@ def _tab_marktanalyse(compact: bool = False):
     warning_items = []
     wc = 0
     nr = int(L.get("Neg_Reversals_10d", 0)); w = nr >= 3
-    warning_items.append(("Intraday-Umkehrungen (10T)", nr < 3, f"{nr} negative Umkehrungen", w)); wc += int(w)
+    pr = int(L.get("Pos_Reversals_10d", 0))
+    warning_items.append(("Bärische Intraday-Umkehrungen (10T)", nr < 3, f"{nr} neg. / {pr} pos. Umkehrungen", w)); wc += int(w)
     lc = int(L.get("Low_CR_5d", 0)); w = lc >= 3
     warning_items.append(("Closing Range Häufung (5T)", lc < 3, f"{lc}/5 Tage Schluss im unteren 25%", w)); wc += int(w)
     st10 = int(df["Is_Stall"].tail(10).sum()); w = st10 >= 3
@@ -8491,8 +8493,10 @@ def _tab_marktanalyse(compact: bool = False):
         w = d50 > t50 or d50 < 0
         warning_items.append(("50-SMA Abstand", not w, f"{d50:+.1f}% ({'über' if d50 > 0 else 'unter'} 50-SMA, Schwelle: {t50:.0f}%)", w)); wc += int(w)
     if not np.isnan(d21):
-        w = d21 > 3.0 or d21 < 0
-        warning_items.append(("21-EMA Abstand", not w, f"{d21:.1f} ATR ({'über' if d21 > 0 else 'unter'} 21-EMA, Schwelle: 3.0 ATR)", w)); wc += int(w)
+        w_under = d21 < 0
+        w_over = d21 > 3.0
+        warning_items.append(("Kurs unter 21-EMA", not w_under, f"{d21:.1f} ATR unter 21-EMA" if w_under else f"{d21:.1f} ATR über 21-EMA", w_under)); wc += int(w_under)
+        warning_items.append(("Überdehnt über 21-EMA (>3 ATR)", not w_over, f"{d21:.1f} ATR über 21-EMA", w_over)); wc += int(w_over)
     u200 = not np.isnan(L["SMA200"]) and L["Close"] < L["SMA200"]
     u50 = not np.isnan(L["SMA50"]) and L["Close"] < L["SMA50"]
     warning_items.append(("Kurs über 200-SMA", not u200, "Unter 200-SMA" if u200 else "OK", u200)); wc += int(u200)
