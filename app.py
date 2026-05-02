@@ -540,7 +540,7 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
         dd_val = latest.get("Dist_52w_pct", np.nan)
         dd_txt = f"52W-Hoch: {dd_val:.1f}%" if not np.isnan(dd_val) else ""
         idx_date = pd.Timestamp(df.index[-1]).strftime("%d.%m.%Y") if len(df) > 0 else "—"
-        idx_stand = f"Index Stand: {latest['Close']:,.2f} · {idx_date}"
+        idx_stand = f"Index Stand: {idx_date}"
         changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "detail2": idx_stand, "detail3": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
     dist_prev = int(prev.get("Dist_Count_25", 0))
     dist_now = int(latest.get("Dist_Count_25", 0))
@@ -569,7 +569,7 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
         vix_close = vl.get("VIX_Close", np.nan)
         val = f"VIX {vix_close:.1f}" if pd.notna(vix_close) else "VIX n/a"
         vix_date = pd.Timestamp(vol_dashboard.index[-1]).strftime("%d.%m.%Y")
-        vix_stand = f"VIX Stand: {vix_close:.1f} · {vix_date}" if pd.notna(vix_close) else ""
+        vix_stand = f"VIX Stand: {vix_date}" if pd.notna(vix_close) else ""
         changes.append({"title": "Volatilität", "value": val, "detail": change_detail, "detail2": vix_stand})
     if breadth_label:
         changes.append({"title": "Breite", "value": breadth_label, "detail": "Equal-Weight als Bestätigung des Indextrends"})
