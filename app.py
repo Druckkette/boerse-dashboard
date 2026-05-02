@@ -535,12 +535,16 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
     latest = df.iloc[-1]
     price_delta = latest.get("Pct_Change", np.nan)
     if not np.isnan(price_delta):
-        changes.append({"title": "Heute", "value": f"{selected}: {price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}"})
+        arrow = "▲" if price_delta >= 0 else "▼"
+        arrow_color = "#22c55e" if price_delta >= 0 else "#ef4444"
+        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "arrow": arrow, "arrow_color": arrow_color})
     dist_prev = int(prev.get("Dist_Count_25", 0))
     dist_now = int(latest.get("Dist_Count_25", 0))
     delta = dist_now - dist_prev
     delta_txt = f"{delta:+d}" if delta else "unverändert"
-    changes.append({"title": "Distribution", "value": f"{dist_now} aktive Dist.-Tage", "detail": f"Gegenüber gestern: {delta_txt}"})
+    dist_quality = "✓ Gut" if dist_now < 4 else ("⚠ Häufung" if dist_now < 6 else "✗ Kritisch")
+    dist_quality_color = "#22c55e" if dist_now < 4 else ("#f59e0b" if dist_now < 6 else "#ef4444")
+    changes.append({"title": "Distribution", "value": f"{dist_now} aktive Dist.-Tage", "detail": f"Gegenüber gestern: {delta_txt}", "quality": dist_quality, "quality_color": dist_quality_color})
     prev_phase = _ampel_phase_label(prev.get("Ampel_Phase", ""))
     phase = _ampel_phase_label(latest.get("Ampel_Phase", ""))
     if str(latest.get("Ampel_Phase", "")).lower() == "gelb":
@@ -570,22 +574,23 @@ def _render_change_cards(changes):
     cols = st.columns(len(changes))
     for col, item in zip(cols, changes):
         with col:
+            arrow_html = ""
+            if "arrow" in item:
+                arrow_html = f'<span style="color:{item["arrow_color"]};font-size:1.5rem;line-height:1;margin-right:4px;">{item["arrow"]}</span>'
+            quality_html = ""
+            if "quality" in item:
+                quality_html = f'<div style="font-size:.7rem;font-weight:700;color:{item["quality_color"]};margin-top:2px;">{item["quality"]}</div>'
             st.markdown(
-                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value">{item["value"]}</div><div class="change-detail">{item["detail"]}</div></div>',
+                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div></div>',
                 unsafe_allow_html=True,
             )
 
 def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, freshness: dict):
     tone_cls = {"good": "hero-good", "warn": "hero-warn", "bad": "hero-bad"}.get(tone, "hero-warn")
+    tone_color = {"good": "#22c55e", "warn": "#f59e0b", "bad": "#ef4444"}.get(tone, "#94a3b8")
     bullets = "".join(f"<li>{r}</li>" for r in reasons)
-    nyse_txt = ""
-    if freshness.get("coverage") and freshness.get("requested"):
-        nyse_txt = f" · NYSE/Nasdaq-Cache {freshness['coverage']}/{freshness['requested']}"
-    refresh_txt = ""
-    if freshness.get("nyse_refresh"):
-        refresh_txt = f" · Tiefenanalyse aktualisiert {_elapsed_text(freshness['nyse_refresh'])}"
     st.markdown(
-        f'<div class="summary-hero"><div class="hero-title">Börse ohne Bauchgefühl</div><div class="hero-subtitle">Regelbasiertes Markt-Dashboard für Trend, Breite und Risiko</div><div class="pill-wrap"><span class="pill">Marktmodus: {mode}</span><span class="pill">Index-Stand: {freshness.get("index_date","—")}</span><span class="pill">VIX-Stand: {freshness.get("vix_date","—")}</span></div><div class="mini-help" style="margin:10px 0 8px 0;">Speicher {freshness.get("store_label","—")}{nyse_txt}{refresh_txt}</div><ul style="margin:0 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
+        f'<div class="summary-hero"><div class="hero-title">Börse ohne Bauchgefühl</div><div class="hero-subtitle">Regelbasiertes Markt-Dashboard für Trend, Breite und Risiko</div><div style="font-size:2rem;font-weight:900;color:{tone_color};letter-spacing:.06em;margin:14px 0 10px 0;text-shadow:0 0 20px {tone_color}40;">{mode}</div><div class="pill-wrap"><span class="pill">Index-Stand: {freshness.get("index_date","—")}</span><span class="pill">VIX-Stand: {freshness.get("vix_date","—")}</span></div><ul style="margin:8px 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -5178,11 +5183,14 @@ def _consec(s):
 def add_indicators(df):
     df=df.copy()
     df["EMA21"]=_ema(df["Close"],21);df["SMA50"]=_sma(df["Close"],50);df["SMA200"]=_sma(df["Close"],200)
+    df["SMA10"]=_sma(df["Close"],10)
     df["ATR21"]=_atr(df,21);df["ATR_pct"]=df["ATR21"]/df["Close"]*100
     df["Vol_SMA50"]=_sma(df["Volume"],50);df["Pct_Change"]=df["Close"].pct_change()*100
     rng=df["High"]-df["Low"];df["Closing_Range"]=np.where(rng>0,(df["Close"]-df["Low"])/rng,0.5)
     df["Dist_21EMA"]=(df["Close"]-df["EMA21"])/df["ATR21"]
     df["Dist_50SMA_pct"]=(df["Close"]-df["SMA50"])/df["SMA50"]*100
+    df["Dist_200SMA_pct"]=(df["Close"]-df["SMA200"])/df["SMA200"]*100
+    df["Dist_10SMA_pct"]=(df["Close"]-df["SMA10"])/df["SMA10"]*100
     df["High_52w"]=df["High"].rolling(252,min_periods=1).max()
     df["Dist_52w_pct"]=(df["Close"]-df["High_52w"])/df["High_52w"]*100
     df["MA_Order"]=(df["EMA21"]>df["SMA50"])&(df["SMA50"]>df["SMA200"])
@@ -5645,16 +5653,24 @@ def render_ampel_section(L, history_df=None):
     _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
     _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
+    _close = float(L["Close"]) if not np.isnan(L["Close"]) else None
+    floor_pct = (_close - float(floor)) / float(floor) * 100 if floor_valid and _close and float(floor) > 0 else None
+    ss_low_pct = (_close - float(ss_low)) / float(ss_low) * 100 if ss_low_valid and _close and float(ss_low) > 0 else None
+    floor_pct_color = "#22c55e" if floor_pct is not None and floor_pct >= 0 else "#ef4444"
+    ss_low_pct_color = "#22c55e" if ss_low_pct is not None and ss_low_pct >= 0 else "#ef4444"
+    floor_val = f"{floor:,.2f}" + (f' <span style="font-size:.7rem;color:{floor_pct_color};">({floor_pct:+.1f}%)</span>' if floor_pct is not None else "") if floor_valid else "—"
+    ss_low_val = f"{ss_low:,.2f}" + (f' <span style="font-size:.7rem;color:{ss_low_pct_color};">({ss_low_pct:+.1f}%)</span>' if ss_low_pct is not None else "") if ss_low_valid else "—"
     details = {
-        "Ankertag": anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase == "neutral" else "Warte auf Ankertag",
-        "Bodenmarke": f"{floor:,.2f}" if floor_valid else "—",
-        "Startschuss-Tief": f"{ss_low:,.2f}" if ss_low_valid else "—",
-        "MA-Ordnung (21>50>200)": "Korrekt ✓" if _mao else "Gestört ✗",
+        "Ankertag": (anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase == "neutral" else "Warte auf Ankertag", None),
+        "Bodenmarke": (floor_val, None),
+        "Startschuss-Tief": (ss_low_val, None),
+        "MA-Ordnung (21>50>200)": ("Korrekt ✓" if _mao else "Gestört ✗", "#22c55e" if _mao else "#ef4444"),
     }
     cols = st.columns(4)
-    for i, (k, v) in enumerate(details.items()):
+    for i, (k, (v, vc)) in enumerate(details.items()):
         with cols[i]:
-            st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:#e2e8f0;font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
+            val_color = vc if vc else "#e2e8f0"
+            st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:{val_color};font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
 
     missing_reasons = []
     if not anchor_valid:
@@ -8532,29 +8548,42 @@ def _tab_marktanalyse(compact: bool = False):
     # Trendwende-Ampel wieder als zentrales Element sichtbar machen
     render_ampel_section(L, sd)
 
-    # Compact metric layout
-    row1 = st.columns(3)
-    with row1[0]:
-        st.metric(selected, f"{L['Close']:,.2f}", f"{pct:+.2f}%", border=True)
-        st.caption("Tagesveränderung des gewählten Index")
-    with row1[1]:
-        st.metric("Dist.-Tage", int(L["Dist_Count_25"]), "⚠ Häufung" if int(L["Dist_Count_25"]) >= 4 else "OK", border=True)
-        st.caption("Institutioneller Abgabedruck im 25-Tage-Fenster")
-    with row1[2]:
-        st.metric("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", border=True)
-        st.caption("Kurzfristige Überdehnung in ATR")
+    # MA-Abstand Kacheln (10-SMA, 21-EMA, 50-SMA, 200-SMA)
+    d10 = L.get("Dist_10SMA_pct", np.nan)
+    d200 = L.get("Dist_200SMA_pct", np.nan)
+    s10_val = L.get("SMA10", np.nan)
+    if np.isnan(d10) and not np.isnan(s10_val) and s10_val > 0:
+        d10 = (L["Close"] - s10_val) / s10_val * 100
+    if np.isnan(d200) and not np.isnan(L["SMA200"]) and L["SMA200"] > 0:
+        d200 = (L["Close"] - L["SMA200"]) / L["SMA200"] * 100
 
-    row2 = st.columns(2)
-    with row2[0]:
-        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", f"⚠>{t50:.0f}%" if (not np.isnan(d50) and d50 > t50) else "", border=True)
-        st.caption("Mittelfristige Überdehnung")
-    with row2[1]:
-        dd = L["Dist_52w_pct"]
-        st.metric("Drawdown", f"{dd:.1f}%" if not np.isnan(dd) else "—", border=True)
+    row_ma = st.columns(4)
+    with row_ma[0]:
+        d21_lbl = "✓ OK" if (not np.isnan(d21) and 0 <= d21 <= 3.0) else ("⚠ Überdehnt" if (not np.isnan(d21) and d21 > 3.0) else ("✗ Darunter" if not np.isnan(d21) else "—"))
+        st.metric("21-EMA Abstand", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", d21_lbl, border=True)
+        st.caption("Kurzfristiger Abstand in ATR-Einheiten")
+    with row_ma[1]:
+        d10_lbl = "✓ OK" if (not np.isnan(d10) and d10 >= 0) else ("✗ Darunter" if not np.isnan(d10) else "—")
+        st.metric("10-SMA", f"{d10:+.1f}%" if not np.isnan(d10) else "—", d10_lbl, border=True)
+        st.caption("Sehr kurzfristiger Trendabstand")
+    with row_ma[2]:
+        d50_lbl = "⚠ Überdehnt" if (not np.isnan(d50) and d50 > t50) else ("✗ Darunter" if (not np.isnan(d50) and d50 < 0) else ("✓ OK" if not np.isnan(d50) else "—"))
+        st.metric("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", d50_lbl, border=True)
+        st.caption("Mittelfristiger Trendabstand")
+    with row_ma[3]:
+        d200_lbl = "✓ OK" if (not np.isnan(d200) and d200 >= 0) else ("✗ Darunter" if not np.isnan(d200) else "—")
+        st.metric("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, border=True)
+        st.caption("Langfristiger Trendabstand")
+
+    dd = L["Dist_52w_pct"]
+    row_dd = st.columns([1, 1, 1])
+    with row_dd[1]:
+        dd_lbl = "✓ OK" if (not np.isnan(dd) and dd > -8) else ("✗ Korrektur" if not np.isnan(dd) else "—")
+        st.metric("Drawdown vom Jahreshoch", f"{dd:.1f}%" if not np.isnan(dd) else "—", dd_lbl, border=True)
         st.caption("Abstand zum 52-Wochen-Hoch")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["Dist.-Tage", "21-EMA", "50-SMA", "Drawdown"])
+        _render_market_glossary(["21-EMA", "50-SMA", "Drawdown"])
 
     st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
 
@@ -8569,25 +8598,6 @@ def _tab_marktanalyse(compact: bool = False):
         else:
             st.markdown(f'<div style="text-align:center;padding:8px;color:#ef4444;">⚠ {wc} Warnzeichen — Risiko reduzieren</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
-    if compact:
-        st.markdown("### 📌 Dashboard-Fokus")
-        focus_cols = st.columns(3)
-        top_warnings = [item for item in warning_items if item[3]]
-        with focus_cols[0]:
-            st.metric("Marktmodus", mode)
-            st.caption(f"Konsequenz: {action}")
-        with focus_cols[1]:
-            st.metric("Warnzeichen", wc, "stabil" if wc == 0 else "beobachten")
-            if top_warnings:
-                st.caption("Top-Risiko: " + top_warnings[0][0])
-        with focus_cols[2]:
-            st.metric("Marktbreite", breadth_label.capitalize())
-            st.caption(f"Volatilität: {vol_latest.get('VIX_Regime', 'n/a')}")
-
-        st.caption("Für die vollständige Diagnose nutze den Tab „📈 Marktanalyse“.")
-        st.caption(f"Börse ohne Bauchgefühl · Dashboard · Stand: {L.name.strftime('%d.%m.%Y')}")
-        return
 
     with st.expander("Trendcheck, Ordnung und Sektorrotation", expanded=False):
         cl, cr_ = st.columns(2)
