@@ -5753,12 +5753,16 @@ def _render_deep_analysis_content(component_bundle, sd, data):
         elif spx_at_high and ad_at_high:
             st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
         render_check("Keine Divergenz Index vs. A/D-Linie", not (spx_at_high and not ad_at_high), "A/D-Linie bestätigt" if ad_at_high else "Divergenz aktiv")
+        p50_divergence = spx_at_high and not np.isnan(p50) and p50 < 70
+        if p50_divergence:
+            st.warning("⚠ Divergenz: Index nahe 20T-Hoch, aber % über 50-SMA unter 70% — nachlassende Marktbreite")
+        render_check("Keine % > 50-SMA Divergenz", not p50_divergence, f"{'Divergenz: ' + str(round(p50)) + '% < 70%' if p50_divergence else str(round(p50)) + '% ≥ 70% — OK'}")
     render_check("McClellan > 0", mc > 0, f"McClellan: {mc:.1f}")
-    render_check("% über 50-SMA > 50%", p50 > 50, f"{p50:.0f}%")
+    render_check("% über 50-SMA > 70%", p50 > 70, f"{p50:.0f}%")
     render_check("NH/NL Ratio > 1", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
     if not np.isnan(dr):
         dr_status = "Sehr gut" if dr >= 1.97 else "Gut" if dr >= 1.50 else "Neutral" if dr >= 1.00 else "Schlecht"
-        render_check("Deemer Ratio", dr >= 1.50, f"Ratio: {dr:.2f} · {dr_status}")
+        render_check("Deemer Ratio ≥ 1.97 (Breakaway)", dr >= 1.97, f"Ratio: {dr:.2f} · {dr_status}")
     else:
         render_check("Deemer Ratio", False, "Nicht verfügbar")
     st.markdown("</div>", unsafe_allow_html=True)
@@ -5917,6 +5921,9 @@ def compute_breadth_from_components(components):
     results["AD_Ratio"] = results["Advancers"] / results["Decliners"].replace(0, np.nan)
     results["AD_Line"] = results["Net_Advances"].cumsum()
 
+    # RANA (Ratio-Adjusted Net Advances): Net Advances / Total × 1000.
+    # Normiert auf Universum (~500–1500 Aktien statt NYSE ~3000+), sodass
+    # die Buch-Schwellen ±70 direkt anwendbar bleiben.
     breadth_base = (results["Advancers"] + results["Decliners"]).replace(0, np.nan)
     results["RANA"] = (results["Net_Advances"] / breadth_base) * 1000.0
     results["McC_19"] = results["RANA"].ewm(span=19, adjust=False).mean()
