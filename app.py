@@ -7434,6 +7434,117 @@ def _scale_series_0_100(series: pd.Series, invert: bool = False) -> pd.Series:
     return scaled.clip(lower=0, upper=100).fillna(50.0)
 
 
+def _score_signs(pos: int, neg: int, neu: int) -> float:
+    total = pos + neg + neu
+    if total <= 0:
+        return 50.0
+    return round((pos + neu * 0.5) / total * 100.0, 1)
+
+
+def _rs_rating_to_score(rs_rating) -> float:
+    """Convert a single RS-Rating value (1-99) to a 0-100 score using banded linear scaling."""
+    if rs_rating is None or pd.isna(rs_rating):
+        return 0.0
+    r = float(rs_rating)
+    if r < 50:
+        return 0.0
+    if r < 60:
+        return (r - 50) / 10 * 30
+    if r < 70:
+        return 30 + (r - 60) / 10 * 10
+    if r < 80:
+        return 40 + (r - 70) / 10 * 10
+    return float(np.clip(60 + (r - 80) / 19 * 40, 60, 100))
+
+
+def _compute_single_stock_compare_scores(
+    df: pd.DataFrame,
+    info: dict | None,
+    rs_ctx: dict | None,
+    technical_checks: list | None,
+    fundamental_checks: list | None,
+    chart_signs: dict | None,
+) -> dict:
+    """Compute the same category scores used in the comparison ranking for a single stock.
+
+    Momentum and Risiko use absolute thresholds (not relative ranking) so they
+    remain meaningful without a peer group.
+    """
+    info = info or {}
+    trend_check_names = {
+        "Kurs über 10-SMA",
+        "Kurs über 21-EMA",
+        "Kurs über 50-SMA",
+        "Kurs über 200-SMA",
+        "MA-Ordnung (21>50>200)",
+    }
+    trend_checks = [(l, ok, d) for l, ok, d in (technical_checks or []) if l in trend_check_names]
+    tech_core = [(l, ok, d) for l, ok, d in (technical_checks or []) if l not in trend_check_names]
+
+    trend_pos = sum(1 for _, ok, _ in trend_checks if ok)
+    trend_neg = sum(1 for _, ok, _ in trend_checks if not ok)
+    tech_pos = sum(1 for _, ok, _ in tech_core if ok)
+    tech_neg = sum(1 for _, ok, _ in tech_core if not ok)
+    fund_pos = sum(1 for _, ok, _ in (fundamental_checks or []) if ok)
+    fund_neg = sum(1 for _, ok, _ in (fundamental_checks or []) if not ok)
+    chart_pos = len((chart_signs or {}).get("positiv", []))
+    chart_neg = len((chart_signs or {}).get("negativ", []))
+    chart_neu = len((chart_signs or {}).get("neutral", []))
+
+    score_trend = _score_signs(trend_pos, trend_neg, 0)
+    score_tech = _score_signs(tech_pos, tech_neg, 0)
+    score_fund = _score_signs(fund_pos, fund_neg, 0)
+    score_chart = _score_signs(chart_pos, chart_neg, chart_neu)
+
+    rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None
+    score_rs = round(_rs_rating_to_score(rs_rating), 1)
+
+    # Momentum: absolute thresholds (-30% → 0, 0% → 50, +30% → 100)
+    score_momentum = 50.0
+    if df is not None and len(df) > 22:
+        close = df["Close"]
+        ret_21 = (close.iloc[-1] / close.iloc[-22] - 1) * 100 if len(close) > 22 else np.nan
+        ret_63 = (close.iloc[-1] / close.iloc[-64] - 1) * 100 if len(close) > 64 else np.nan
+        ret_126 = (close.iloc[-1] / close.iloc[-127] - 1) * 100 if len(close) > 127 else np.nan
+        valid_rets = [r for r in [ret_21, ret_63, ret_126] if pd.notna(r)]
+        if valid_rets:
+            avg_ret = float(np.mean(valid_rets))
+            score_momentum = round(float(np.clip((avg_ret + 30) / 60 * 100, 0, 100)), 1)
+
+    # Risiko: ATR% (ATR ≤ 2% → 100, ATR ≥ 8% → 0) + drawdown (0% → 100, -50% → 0)
+    score_risiko = 50.0
+    if df is not None and len(df) > 25:
+        close = df["Close"]
+        latest = float(close.iloc[-1])
+        atr_val = _atr(df, 21).iloc[-1]
+        atr_pct = (atr_val / latest * 100) if pd.notna(atr_val) and latest else np.nan
+        dd_252 = ((close.iloc[-1] / close.tail(252).max()) - 1) * 100 if len(close) >= 252 else float((close.iloc[-1] / close.max() - 1) * 100)
+        atr_score = float(np.clip((8.0 - atr_pct) / 6.0 * 100, 0, 100)) if pd.notna(atr_pct) else 50.0
+        dd_score = float(np.clip((dd_252 + 50) / 50 * 100, 0, 100)) if pd.notna(dd_252) else 50.0
+        score_risiko = round(atr_score * 0.6 + dd_score * 0.4, 1)
+
+    gesamt = round(
+        score_momentum * 0.25
+        + score_rs * 0.25
+        + score_trend * 0.20
+        + score_fund * 0.15
+        + score_tech * 0.10
+        + score_chart * 0.05,
+        1,
+    )
+
+    return {
+        "Score Momentum": score_momentum,
+        "Score RS": score_rs,
+        "Score Trend": score_trend,
+        "Score Fundamental": score_fund,
+        "Score Technisch": score_tech,
+        "Score Chart": score_chart,
+        "Score Risiko": score_risiko,
+        "Gesamt-Score": gesamt,
+    }
+
+
 def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> pd.DataFrame:
     if not tickers:
         return pd.DataFrame()
@@ -7510,12 +7621,6 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             chart_neg = len(chart_signs.get("negativ", []))
             chart_neu = len(chart_signs.get("neutral", []))
 
-            def _score_signs(pos: int, neg: int, neu: int) -> float:
-                total = pos + neg + neu
-                if total <= 0:
-                    return 50.0
-                return round((pos + neu * 0.5) / total * 100.0, 1)
-
             rows.append({
                 "Ticker": ticker,
                 "Name": (info.get("shortName", ticker) if isinstance(info, dict) else ticker),
@@ -7555,18 +7660,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
     momentum_input = df[["Perf 1M %", "Perf 3M %", "Perf 6M %"]].mean(axis=1)
     df["Score Momentum"] = _scale_series_0_100(momentum_input)
     rs_numeric = pd.to_numeric(df["RS-Rating"], errors="coerce")
-    rs_score = pd.Series(0.0, index=df.index)
-    band_50_60 = (rs_numeric >= 50) & (rs_numeric < 60)
-    band_60_70 = (rs_numeric >= 60) & (rs_numeric < 70)
-    band_70_80 = (rs_numeric >= 70) & (rs_numeric < 80)
-    band_80p = rs_numeric >= 80
-    rs_score.loc[band_50_60] = ((rs_numeric.loc[band_50_60] - 50) / 10 * 30).clip(0, 30)
-    rs_score.loc[band_60_70] = 30 + ((rs_numeric.loc[band_60_70] - 60) / 10 * 10).clip(0, 10)
-    rs_score.loc[band_70_80] = 40 + ((rs_numeric.loc[band_70_80] - 70) / 10 * 10).clip(0, 10)
-    if band_80p.any():
-        high_scaled = _scale_series_0_100(rs_numeric.loc[band_80p]).fillna(0)
-        rs_score.loc[band_80p] = 60 + high_scaled * 0.40
-    df["Score RS"] = rs_score.round(1)
+    df["Score RS"] = rs_numeric.apply(_rs_rating_to_score).round(1)
     df["Score Risiko"] = _scale_series_0_100(df["ATR %"], invert=True) * 0.6 + _scale_series_0_100(df["Drawdown %"], invert=True) * 0.4
     df["Gesamt-Score"] = (
         df["Score Momentum"] * 0.25
@@ -7955,6 +8049,115 @@ def _tab_aktienbewertung():
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
+
+    # Ranking-kompatible Scores (gleiche Logik wie im Vergleichs-Ranking)
+    st.markdown("#### 📊 Ranking-Scores")
+    st.caption(
+        "Dieselben Scores, die im Vergleichs-Ranking (Modus ‚Vergleich & Ranking') berechnet werden. "
+        "Momentum und Risiko nutzen absolute Schwellen statt relativer Rangreihung."
+    )
+    _cmp_scores = _compute_single_stock_compare_scores(
+        df, info, rs_ctx, technical_checks, fundamentals_checks, signs
+    )
+
+    def _score_tone(v: float) -> str:
+        if v >= 70:
+            return "good"
+        if v >= 45:
+            return "warn"
+        return "bad"
+
+    _sc_row1 = st.columns(4)
+    with _sc_row1[0]:
+        _v = _cmp_scores["Gesamt-Score"]
+        render_kpi_card(
+            label="Gesamt-Score",
+            value=f"{_v:.0f} / 100",
+            interpretation="Gewichtete Kombination aller Kategorie-Scores",
+            tone=_score_tone(_v),
+            help_text="25 % Momentum + 25 % RS + 20 % Trend + 15 % Fundamental + 10 % Technisch + 5 % Chart.",
+            why_important="Ermöglicht den direkten Vergleich mit anderen Aktien im Vergleichs-Ranking.",
+            rule_note="≥70 konstruktiv · 45–69 gemischt · <45 schwach",
+        )
+    with _sc_row1[1]:
+        _v = _cmp_scores["Score Momentum"]
+        render_kpi_card(
+            label="Score Momentum",
+            value=f"{_v:.0f}",
+            interpretation="Ø Perf. 1M / 3M / 6M (abs.)",
+            tone=_score_tone(_v),
+            help_text="Durchschnitt der 1-, 3- und 6-Monats-Performance, skaliert von -30 % (→0) bis +30 % (→100).",
+            why_important="Zeigt, ob die Aktie preislich Fahrt hat.",
+            rule_note="Basiert auf absoluten Schwellen; unabhängig vom Peer-Vergleich.",
+        )
+    with _sc_row1[2]:
+        _v = _cmp_scores["Score RS"]
+        render_kpi_card(
+            label="Score RS",
+            value=f"{_v:.0f}",
+            interpretation=f"RS-Rating {rs_rating_val if rs_rating_val is not None else 'n/a'}",
+            tone=_score_tone(_v),
+            help_text="Banded-Skalierung: <50→0, 50–60→0–30, 60–70→30–40, 70–80→40–50, 80–99→60–100.",
+            why_important="Relatives Stärke-Rating fließt mit 25 % in den Gesamt-Score ein.",
+            rule_note="Score ≥60 entspricht RS-Rating ≥80 (Marktführer-Zone).",
+        )
+    with _sc_row1[3]:
+        _v = _cmp_scores["Score Trend"]
+        render_kpi_card(
+            label="Score Trend",
+            value=f"{_v:.0f}",
+            interpretation="MA-Checks (21-EMA, 50/200-SMA, Ordnung)",
+            tone=_score_tone(_v),
+            help_text="Anteil positiver MA-Checks (Kurs über 10-SMA, 21-EMA, 50-SMA, 200-SMA, MA-Ordnung).",
+            why_important="Strukturelle Trendlage fließt mit 20 % in den Gesamt-Score ein.",
+            rule_note="100 = alle 5 MA-Checks positiv · 50 = Hälfte positiv.",
+        )
+
+    _sc_row2 = st.columns(4)
+    with _sc_row2[0]:
+        _v = _cmp_scores["Score Fundamental"]
+        render_kpi_card(
+            label="Score Fundamental",
+            value=f"{_v:.0f}",
+            interpretation="Anteil positiver Fundamentalchecks",
+            tone=_score_tone(_v),
+            help_text="Positiv-Quote der Fundamentalprüfungen (ROE, Margen, Wachstum, Bilanz).",
+            why_important="Fundamentale Qualität fließt mit 15 % in den Gesamt-Score ein.",
+            rule_note="50 = neutrales Ausgangsniveau, je mehr Checks positiv, desto höher.",
+        )
+    with _sc_row2[1]:
+        _v = _cmp_scores["Score Technisch"]
+        render_kpi_card(
+            label="Score Technisch",
+            value=f"{_v:.0f}",
+            interpretation="Anteil positiver Technikalchecks",
+            tone=_score_tone(_v),
+            help_text="Positiv-Quote der technischen Prüfungen (Volumen, CMF, Abstandsregeln, RS-Linie).",
+            why_important="Technische Struktur fließt mit 10 % in den Gesamt-Score ein.",
+            rule_note="50 = neutrales Ausgangsniveau.",
+        )
+    with _sc_row2[2]:
+        _v = _cmp_scores["Score Chart"]
+        render_kpi_card(
+            label="Score Chart",
+            value=f"{_v:.0f}",
+            interpretation="Chartsignale (pos. / neg. / neutral)",
+            tone=_score_tone(_v),
+            help_text="Gewichtete Signalquote: positive Chartsignale + 50 % neutrale Signale.",
+            why_important="Chartbasierte Signale fließen mit 5 % in den Gesamt-Score ein.",
+            rule_note="50 = gleichgewichtetes Mix aus positiven und negativen Signalen.",
+        )
+    with _sc_row2[3]:
+        _v = _cmp_scores["Score Risiko"]
+        render_kpi_card(
+            label="Score Risiko",
+            value=f"{_v:.0f}",
+            interpretation="ATR% + Drawdown (abs. Schwellen)",
+            tone=_score_tone(_v),
+            help_text="60 % ATR-Score (ATR ≤2 % → 100, ≥8 % → 0) + 40 % Drawdown-Score (0 % → 100, -50 % → 0).",
+            why_important="Gibt Hinweis auf Risikoprofil; im Ranking informativ, nicht im Gesamt-Score gewichtet.",
+            rule_note="Informationsfeld ohne Gewichtung im Gesamt-Score.",
+        )
 
     # Geführte 4er-Analysekarte
     def _status_chip(score_value: int):
