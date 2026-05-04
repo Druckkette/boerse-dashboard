@@ -7800,17 +7800,6 @@ def _tab_aktienbewertung():
         else "Gewichtete RS" if isinstance(rs_ctx, dict) and rs_ctx.get("method") == "weighted_proxy"
         else "Vergleich zum S&P 500"
     )
-    change_cards = [
-        {"title": "Heute", "value": f"{chg:+.2f}%", "detail": f"Schlusskurs ${price:,.2f}"},
-        {"title": "Volumen", "value": f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—", "detail": "Werte >1 zeigen mehr Aktivität"},
-        {"title": "Volatilität", "value": f"{atr_pct:.1f}%" if not np.isnan(atr_pct) else "—", "detail": "ATR als Risikomaß"},
-    ]
-    if rs_rating_val is not None:
-        change_cards.append({"title": "RS-Rating", "value": f"{rs_rating_val}", "detail": rs_rating_detail})
-    elif rs_hint:
-        change_cards.append({"title": "Rel. Stärke", "value": rs_hint, "detail": "Vergleich zum S&P 500"})
-    _render_change_cards(change_cards[:4])
-
     # Schnellurteil
     _ema21 = df["Close"].ewm(span=21).mean()
     _sma50 = df["Close"].rolling(50).mean()
@@ -7867,12 +7856,13 @@ def _tab_aktienbewertung():
     q_earnings_growth = _q_eps_fb
     drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
 
+    _vol_str = f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—"
     st.markdown(
         f'<div class="info-card">'
         f'<div class="card-label">Schnellurteil</div>'
         f'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center;">'
         f'<div><div class="hero-title" style="font-size:1.05rem;">{name} ({ticker})</div>'
-        f'<div class="mini-help">Letzter Schluss {last_date} · Aktuell ${price:,.2f} · {chg:+.2f}%</div></div>'
+        f'<div class="mini-help">Letzter Schluss {last_date} · Schlusskurs ${price:,.2f} · {chg:+.2f}% · Volumen {_vol_str}</div></div>'
         f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         f'<span class="pill">Gesamtscore: {overall_score}/100</span>'
         f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
@@ -8018,23 +8008,6 @@ def _tab_aktienbewertung():
             why_important="Volatilität beeinflusst das kurzfristige Schwankungsrisiko und die sinnvolle Positionsgröße.",
             rule_note="Niedrigere ATR-Werte stabilisieren den Risikoscore; hohe Werte signalisieren mehr Bewegungsrisiko.",
         )
-
-    if isinstance(rs_source_note, dict) and rs_source_note.get("source") in {RS_SOURCE_CSV_LATEST, RS_SOURCE_FRED_CSV}:
-        if rs_source_note.get("matched"):
-            note_bits = [
-                f"RS-Quelle: {rs_source_note.get('source_label') or rs_source_note.get('file') or RS_OUTPUT_FILE_NAME}",
-                "CSV aktiv",
-            ]
-            if rs_source_note.get("as_of_date"):
-                note_bits.append(f"Stand {rs_source_note.get('as_of_date')}")
-            st.caption(" · ".join(note_bits))
-        elif rs_source_note.get("ok"):
-            st.caption(f"RS-Quelle: {rs_source_note.get('source_label') or rs_source_note.get('file') or RS_OUTPUT_FILE_NAME} · Kein Eintrag für {ticker}, nutze internen Fallback.")
-        elif rs_source_note.get("error"):
-            st.caption(f"RS-CSV derzeit nicht verfügbar ({rs_source_note.get('error')}). Nutze internen Fallback.")
-
-    if isinstance(rs_ctx, dict) and rs_ctx.get("distance_to_high_pct") is not None:
-        st.caption(f"RS-Linie aktuell {rs_ctx.get('distance_to_high_pct'):+.1f}% von ihrem 52-Wochen-Hoch entfernt.")
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
