@@ -2706,6 +2706,18 @@ def load_stock_full(ticker, lookback_days=500):
         qe = components.get("qe")
         ed = components.get("ed")
 
+        # Some Yahoo endpoints fail intermittently when fetched in parallel.
+        # Retry critical fields once sequentially so ROE/margins/institutional checks
+        # don't end up permanently "Nicht verfügbar".
+        if not info:
+            retry_info = _load_ticker_attr_value(ticker, "info") or {}
+            if retry_info:
+                info = retry_info
+        if ih is None:
+            retry_ih = _load_ticker_attr_value(ticker, "institutional_holders")
+            if retry_ih is not None:
+                ih = retry_ih
+
         qraw = None
         fmp_err = None
         fmp_result = components.get("fmp")
