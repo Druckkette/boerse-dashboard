@@ -65,8 +65,9 @@ html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; }
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   display: flex;
-  align-items: center;
-  gap: 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 .app-topbar__eyebrow {
   margin: 0;
