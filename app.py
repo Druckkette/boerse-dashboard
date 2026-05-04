@@ -613,7 +613,7 @@ def _render_dist_tile(label: str, value: str, indicator: str, tone: str, caption
     st.markdown(
         f'<div style="border:1px solid {color}40;border-radius:8px;padding:10px 14px;background:{color}0d;margin-bottom:2px;">'
         f'<div style="font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:6px;">{label}</div>'
-        f'<div style="font-size:1.35rem;font-weight:700;color:#e2e8f0;">{value}</div>'
+        f'<div style="font-size:1.35rem;font-weight:700;color:#0d1626;">{value}</div>'
         f'<div style="font-size:.72rem;color:{color};font-weight:600;margin-top:4px;">{indicator}</div>'
         f'</div>',
         unsafe_allow_html=True,
@@ -5606,8 +5606,8 @@ def render_ampel_section(L, history_df=None):
         else:
             bg = colors_on[i] if is_active else colors_off[i]
             glow = glow_on[i] if is_active else "none"
-        border = f"2px solid {colors_on[i]}40" if is_active else "2px solid #1e293b"
-        lbl_c = "#e2e8f0" if is_active else "#4a5568"
+        border = f"2px solid {colors_on[i]}60" if is_active else "2px solid #e3e8f0"
+        lbl_c = "#0d1626" if is_active else "#94a3b8"
         fw = "700" if is_active else "400"
         phase_for_light = key if not (phase == "aufwaertstrend" and key == "gruen") else "aufwaertstrend"
         rule_text = phase_rules.get(phase_for_light, phase_rules.get(key, ""))
@@ -5619,9 +5619,9 @@ def render_ampel_section(L, history_df=None):
             f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
             f'<div style="font-size:.55rem;color:#64748b;">Tippen für Regel</div>'
             f'</summary>'
-            f'<div style="margin-top:6px;padding:8px;border:1px solid #1e293b;border-radius:8px;background:#0b1220;">'
-            f'<div style="font-size:.62rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;">{title}</div>'
-            f'<div style="font-size:.68rem;color:#e2e8f0;line-height:1.45;margin-top:4px;">{rule_text}</div>'
+            f'<div style="margin-top:6px;padding:8px;border:1px solid #e3e8f0;border-radius:8px;background:#f7f9fc;">'
+            f'<div style="font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">{title}</div>'
+            f'<div style="font-size:.68rem;color:#0d1626;line-height:1.45;margin-top:4px;">{rule_text}</div>'
             f'</div>'
             f'</details>'
         )
@@ -5656,9 +5656,9 @@ def render_ampel_section(L, history_df=None):
         else:
             ss_detail = "Kein aktiver Ampel-Zyklus"
         startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#1e293b40;border:1px solid #1e293b;border-radius:8px;opacity:0.5;">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f0f2f740;border:1px solid #e3e8f0;border-radius:8px;opacity:0.6;">'
             f'<span style="font-size:1.4rem;filter:grayscale(1);">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#64748b;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#4a5568;">{ss_detail}</div></div></div>'
+            f'<div><div style="font-size:.8rem;font-weight:700;color:#94a3b8;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#94a3b8;">{ss_detail}</div></div></div>'
         )
 
     active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
@@ -5666,13 +5666,13 @@ def render_ampel_section(L, history_df=None):
         '<div class="info-card" style="padding:20px;">'
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
         '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#0d1117;padding:16px 20px;border-radius:12px;border:1px solid #1e293b;">'
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:16px 20px;border-radius:12px;border:1px solid #e3e8f0;">'
         f'<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;justify-content:center;">{lights_html}</div>'
         '</div>'
         '<div style="flex:1;min-width:220px;">'
         f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
-        f'<div style="font-size:.8rem;color:#e2e8f0;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
-        f'<div style="font-size:.75rem;color:#94a3b8;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
+        f'<div style="font-size:.8rem;color:#0d1626;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
+        f'<div style="font-size:.75rem;color:#5e6e89;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
         f'{startschuss_html}'
         '</div></div></div>'
     )
@@ -5697,8 +5697,8 @@ def render_ampel_section(L, history_df=None):
     cols = st.columns(4)
     for i, (k, (v, vc)) in enumerate(details.items()):
         with cols[i]:
-            val_color = vc if vc else "#e2e8f0"
-            st.markdown(f'<div style="background:#0d1117;border:1px solid #1e293b;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:{val_color};font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
+            val_color = vc if vc else "#0d1626"
+            st.markdown(f'<div style="background:#f7f9fc;border:1px solid #e3e8f0;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:{val_color};font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
 
     missing_reasons = []
     if not anchor_valid:
@@ -5712,7 +5712,7 @@ def render_ampel_section(L, history_df=None):
 
 def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
-    st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#e2e8f0;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#0d1626;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
 
 def render_breadth(mode,dist_pct):
     c={"rueckenwind":"#22c55e","wachsam":"#f59e0b","schutz":"#ef4444"}.get(mode,"#64748b")
@@ -5828,19 +5828,19 @@ def plot_price(df,sd=90):
     for col,nm,clr,sym,sz in [("Is_Distribution","Dist.","#ef4444","triangle-down",7),("Is_Stall","Stau","#f59e0b","diamond",6),("Intraday_Reversal_Down","Umkehr↓","#f97316","x",8),("Intraday_Reversal_Up","Umkehr↑","#22c55e","x",8)]:
         m=dv[dv[col]==True]
         if len(m)>0: fig.add_trace(go.Scatter(x=_x(m.index),y=_y(m["Close"] if "Stall" not in nm else m["High"]),name=nm,mode="markers",marker=dict(color=clr,size=sz,symbol=sym)))
-    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=30,b=0),height=380,legend=dict(orientation="h",yanchor="top",y=1.12,font=dict(size=9,color="#94a3b8")),xaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b")),hovermode="x unified")
+    fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(248,250,252,0)",margin=dict(l=0,r=0,t=30,b=0),height=380,legend=dict(orientation="h",yanchor="top",y=1.12,font=dict(size=9,color="#64748b")),xaxis=dict(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=9,color="#64748b")),hovermode="x unified")
     return fig
 
 def plot_volume(df,sd=90):
     dv=df.tail(sd);x=_x(dv.index);colors=["#22c55e" if p>=0 else "#ef4444" for p in dv["Pct_Change"].fillna(0)]
     fig=go.Figure();fig.add_trace(go.Bar(x=x,y=_y(dv["Volume"]),marker_color=colors,opacity=0.7));fig.add_trace(go.Scatter(x=x,y=_y(dv["Vol_SMA50"]),line=dict(color="#64748b",width=1,dash="dot")))
-    fig.update_layout(template="plotly_dark",paper_bgcolor="#111827",plot_bgcolor="#111827",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="#1e293b",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="#1e293b",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
+    fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(248,250,252,0)",margin=dict(l=0,r=0,t=10,b=0),height=120,showlegend=False,xaxis=dict(gridcolor="rgba(100,116,139,0.12)",showgrid=False,tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=9,color="#64748b"),tickformat=".2s"))
     return fig
 
 def plot_price_with_volume(df, sd=90):
     dv = df.tail(sd).copy(); x = _x(dv.index)
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.74, 0.26])
-    fig.add_trace(go.Scatter(x=x, y=_y(dv["Close"]), name="Kurs", line=dict(color="#e2e8f0", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=_y(dv["Close"]), name="Kurs", line=dict(color="#1d4ed8", width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=x, y=_y(dv["EMA21"]), name="21-EMA", line=dict(color="#06b6d4", width=1, dash="dot")), row=1, col=1)
     fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA50"]), name="50-SMA", line=dict(color="#f97316", width=1, dash="dot")), row=1, col=1)
     fig.add_trace(go.Scatter(x=x, y=_y(dv["SMA200"]), name="200-SMA", line=dict(color="#a855f7", width=1, dash="dash")), row=1, col=1)
@@ -5857,7 +5857,7 @@ def plot_price_with_volume(df, sd=90):
     apply_consistent_layout(fig, height=500)
     fig.update_layout(yaxis2=dict(gridcolor=CHART_COLORS["grid"], tickfont=dict(size=9, color="#64748b"), tickformat=".2s"))
     fig.update_xaxes(showgrid=False, row=1, col=1)
-    fig.update_xaxes(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"), row=2, col=1)
+    fig.update_xaxes(gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b"), row=2, col=1)
     return fig
 
 def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
@@ -5910,8 +5910,8 @@ def plot_breadth_deep(br,sd=90):
     fig.add_hline(y=1.0,line_dash="dot",line_color="#64748b",line_width=0.5,row=5,col=1)
 
     apply_consistent_layout(fig, height=750, show_legend=False)
-    for i in range(1,6): fig.update_xaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="#1e293b",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
-    for ann in fig.layout.annotations: ann.font.size=10;ann.font.color="#94a3b8"
+    for i in range(1,6): fig.update_xaxes(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=8,color="#64748b"),row=i,col=1);fig.update_yaxes(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=8,color="#64748b"),row=i,col=1)
+    for ann in fig.layout.annotations: ann.font.size=10;ann.font.color="#64748b"
     return fig
 
 def plot_fed_rate(fed_df,sd=200):
@@ -8051,11 +8051,11 @@ def _tab_aktienbewertung():
             fig_stock.add_trace(go.Scatter(x=rs_sma50.index, y=rs_sma50, name="RS 50-SMA", line=dict(color="#fb923c", width=1.0, dash="dash")), row=3, col=1)
     six_months_ago = df.index[-1] - pd.Timedelta(days=180)
     fig_stock.update_layout(
-        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        template="plotly_white", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(248,250,252,0)",
         height=560, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False,
-        xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="#1e293b"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10)),
-        yaxis=dict(title="", gridcolor="#1e293b"), yaxis2=dict(title="", gridcolor="#1e293b"), yaxis3=dict(title="", gridcolor="#1e293b"), xaxis2=dict(gridcolor="#1e293b"), xaxis3=dict(gridcolor="#1e293b"),
+        xaxis=dict(range=[six_months_ago, df.index[-1]], gridcolor="rgba(100,116,139,0.12)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10, color="#64748b")),
+        yaxis=dict(title="", gridcolor="rgba(100,116,139,0.12)"), yaxis2=dict(title="", gridcolor="rgba(100,116,139,0.12)"), yaxis3=dict(title="", gridcolor="rgba(100,116,139,0.12)"), xaxis2=dict(gridcolor="rgba(100,116,139,0.12)"), xaxis3=dict(gridcolor="rgba(100,116,139,0.12)"),
     )
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, use_container_width=True, key="stock_chart")
@@ -8086,7 +8086,7 @@ def _tab_aktienbewertung():
             st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
             if signs[key]:
                 for nm, dt in signs[key]:
-                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
             else:
                 st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
@@ -8330,7 +8330,7 @@ def _tab_nach_kauf():
         st.markdown('<div class="info-card" style="border-color:#22c55e30;"><div class="card-label" style="color:#22c55e;">Positive Zeichen</div>', unsafe_allow_html=True)
         if pos_signs:
             for nm, dt in pos_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:#22c55e;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:#22c55e;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -8339,7 +8339,7 @@ def _tab_nach_kauf():
         st.markdown('<div class="info-card" style="border-color:#ef444430;"><div class="card-label" style="color:#ef4444;">Warnzeichen</div>', unsafe_allow_html=True)
         if neg_signs:
             for nm, dt in neg_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #1e293b;"><div style="font-size:.84rem;color:#ef4444;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:#ef4444;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -8401,16 +8401,16 @@ def _tab_sektoranalyse():
         for i, (name, val) in enumerate(top3.items()):
             medal = ["🥇", "🥈", "🥉"][i]
             c = "#22c55e" if val > 0 else "#ef4444"
-            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e293b;">'
-                        f'<span style="font-size:.85rem;color:#e2e8f0;">{medal} {name}</span>'
+            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #e3e8f0;">'
+                        f'<span style="font-size:.85rem;color:#0d1626;">{medal} {name}</span>'
                         f'<span style="font-size:.85rem;font-weight:700;color:{c};">{val:+.2f}%</span></div>',
                         unsafe_allow_html=True)
     with tc2:
         st.markdown('<div class="card-label">📉 BOTTOM 3 SEKTOREN</div>', unsafe_allow_html=True)
         for name, val in bot3.items():
             c = "#22c55e" if val > 0 else "#ef4444"
-            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1e293b;">'
-                        f'<span style="font-size:.85rem;color:#e2e8f0;">{name}</span>'
+            st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #e3e8f0;">'
+                        f'<span style="font-size:.85rem;color:#0d1626;">{name}</span>'
                         f'<span style="font-size:.85rem;font-weight:700;color:{c};">{val:+.2f}%</span></div>',
                         unsafe_allow_html=True)
 
@@ -8462,13 +8462,13 @@ def _tab_sektoranalyse():
             mode="lines+markers", marker=dict(size=4),
         ))
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor=CHART_COLORS["bg"], plot_bgcolor=CHART_COLORS["bg"],
+        template="plotly_white", paper_bgcolor=CHART_COLORS["bg"], plot_bgcolor="rgba(248,250,252,0)",
         margin=dict(l=0, r=0, t=10, b=0), height=350,
-        yaxis=dict(autorange="reversed", gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b"),
+        yaxis=dict(autorange="reversed", gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b"),
                    title="Rang", title_font=dict(size=9, color="#64748b"), dtick=1),
-        xaxis=dict(gridcolor="#1e293b", tickfont=dict(size=9, color="#64748b")),
+        xaxis=dict(gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b")),
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
-                    font=dict(size=8, color="#94a3b8")),
+                    font=dict(size=8, color="#64748b")),
         hovermode="x unified",
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
