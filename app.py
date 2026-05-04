@@ -2625,30 +2625,31 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         return None, f"Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
-def _load_ticker_attr_value(ticker, attr_name):
+def _load_ticker_attr_value(ticker_obj, ticker_symbol, attr_name):
     try:
-        return getattr(yf.Ticker(ticker), attr_name)
+        return getattr(ticker_obj, attr_name)
     except Exception as exc:
-        logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker, exc)
+        logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker_symbol, exc)
         return None
 
 
-def _load_ticker_earnings_dates(ticker, limit=12):
+def _load_ticker_earnings_dates(ticker_obj, ticker_symbol, limit=12):
     try:
-        return yf.Ticker(ticker).get_earnings_dates(limit=limit)
+        return ticker_obj.get_earnings_dates(limit=limit)
     except Exception as exc:
-        logger.debug("earnings dates failed for %s: %s", ticker, exc)
+        logger.debug("earnings dates failed for %s: %s", ticker_symbol, exc)
         return None
 
 
-def _load_stock_reference_data_parallel(ticker, fmp_key):
+def _load_stock_reference_data_parallel(ticker, fmp_key, ticker_obj=None):
+    ticker_obj = ticker_obj or yf.Ticker(ticker)
     task_specs = {
-        "info": (_load_ticker_attr_value, ticker, "info"),
-        "qi": (_load_ticker_attr_value, ticker, "quarterly_income_stmt"),
-        "ai": (_load_ticker_attr_value, ticker, "income_stmt"),
-        "ih": (_load_ticker_attr_value, ticker, "institutional_holders"),
-        "qe": (_load_ticker_attr_value, ticker, "quarterly_earnings"),
-        "ed": (_load_ticker_earnings_dates, ticker, 12),
+        "info": (_load_ticker_attr_value, ticker_obj, ticker, "info"),
+        "qi": (_load_ticker_attr_value, ticker_obj, ticker, "quarterly_income_stmt"),
+        "ai": (_load_ticker_attr_value, ticker_obj, ticker, "income_stmt"),
+        "ih": (_load_ticker_attr_value, ticker_obj, ticker, "institutional_holders"),
+        "qe": (_load_ticker_attr_value, ticker_obj, ticker, "quarterly_earnings"),
+        "ed": (_load_ticker_earnings_dates, ticker_obj, ticker, 12),
         "sec": (_fetch_quarterly_sec_companyfacts, ticker),
     }
     if fmp_key:
@@ -2686,7 +2687,8 @@ def load_stock_full(ticker, lookback_days=500):
     start = end - timedelta(days=lookback_days)
     empty_result = (None, None, None, None, None, None, None, None, None)
     try:
-        df = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
+        ticker_obj = yf.Ticker(ticker)
+        df = ticker_obj.history(start=start, end=end, auto_adjust=True)
         if df is None or len(df) < 20:
             return empty_result
 
@@ -2697,7 +2699,7 @@ def load_stock_full(ticker, lookback_days=500):
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
         fmp_key = _read_secret_value("FMP_API_KEY")
-        components = _load_stock_reference_data_parallel(ticker, fmp_key)
+        components = _load_stock_reference_data_parallel(ticker, fmp_key, ticker_obj=ticker_obj)
 
         info = components.get("info") or {}
         qi = components.get("qi")
@@ -2710,11 +2712,11 @@ def load_stock_full(ticker, lookback_days=500):
         # Retry critical fields once sequentially so ROE/margins/institutional checks
         # don't end up permanently "Nicht verfügbar".
         if not info:
-            retry_info = _load_ticker_attr_value(ticker, "info") or {}
+            retry_info = _load_ticker_attr_value(ticker_obj, ticker, "info") or {}
             if retry_info:
                 info = retry_info
         if ih is None:
-            retry_ih = _load_ticker_attr_value(ticker, "institutional_holders")
+            retry_ih = _load_ticker_attr_value(ticker_obj, ticker, "institutional_holders")
             if retry_ih is not None:
                 ih = retry_ih
 
