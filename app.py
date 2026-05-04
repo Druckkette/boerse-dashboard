@@ -9127,8 +9127,8 @@ def _render_topbar() -> None:
     st.markdown(
         """
         <div class="app-topbar">
-          <p class="app-topbar__eyebrow">regelbasiert investieren · v3.2</p>
           <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
+          <p class="app-topbar__eyebrow">Regelbasiert investieren</p>
         </div>
         """,
         unsafe_allow_html=True,
