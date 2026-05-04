@@ -7819,9 +7819,28 @@ def _tab_aktienbewertung():
     fundamentals_checks = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
     technical_checks, _, _ = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
     signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
+
+    # Yahoo Finance sometimes omits quarterlyRevenueGrowth / quarterlyEarningsGrowth from
+    # the info dict. Fall back to the most recent quarter computed from detailed income data.
+    _q_rev_fb = info.get("quarterlyRevenueGrowth") if info else None
+    _q_eps_fb = info.get("quarterlyEarningsGrowth") if info else None
+    if _q_rev_fb is None:
+        _revg_fb = _quarterly_yoy_growth(qi, "revenue", qe=qe, ed=ed, qraw=qraw)
+        if _revg_fb and _revg_fb[0][1] is not None:
+            _q_rev_fb = _revg_fb[0][1] / 100
+    if _q_eps_fb is None:
+        _epsg_fb = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed, qraw=qraw)
+        if _epsg_fb and _epsg_fb[0][1] is not None:
+            _q_eps_fb = _epsg_fb[0][1] / 100
+    _info_for_assessment = dict(info or {})
+    if _q_rev_fb is not None:
+        _info_for_assessment["quarterlyRevenueGrowth"] = _q_rev_fb
+    if _q_eps_fb is not None:
+        _info_for_assessment["quarterlyEarningsGrowth"] = _q_eps_fb
+
     assessment = build_stock_assessment(
         df=df,
-        info=info,
+        info=_info_for_assessment,
         fundamentals_checks=fundamentals_checks,
         technical_checks=technical_checks,
         chart_signs=signs,
@@ -7844,8 +7863,8 @@ def _tab_aktienbewertung():
     debt_to_equity = info.get("debtToEquity") if info else None
     revenue_growth = info.get("revenueGrowth") if info else None
     earnings_growth = info.get("earningsGrowth") if info else None
-    q_revenue_growth = info.get("quarterlyRevenueGrowth") if info else None
-    q_earnings_growth = info.get("quarterlyEarningsGrowth") if info else None
+    q_revenue_growth = _q_rev_fb
+    q_earnings_growth = _q_eps_fb
     drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
 
     st.markdown(
