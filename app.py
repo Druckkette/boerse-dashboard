@@ -7871,18 +7871,20 @@ def _tab_aktienbewertung():
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
     dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
 
-    kpi_cols_a = st.columns(3)
-    with kpi_cols_a[0]:
-        render_kpi_card(
-            label="Gesamtscore",
-            value=f"{overall_score}/100",
-            interpretation=f"{verdict_label} · {name} ({ticker})",
-            tone=assessment["status_tone"],
-            help_text=assessment["summary"],
-            why_important="Der Gesamtscore bündelt Qualität, Wachstum, Trend und Risiko in einer konsistenten Gesamtperspektive.",
-            rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
-        )
-    with kpi_cols_a[1]:
+    # --- Gesamtscore prominent (volle Breite) ---
+    render_kpi_card(
+        label="Gesamtscore",
+        value=f"{overall_score}/100",
+        interpretation=f"{verdict_label} · {name} ({ticker})",
+        tone=assessment["status_tone"],
+        help_text=assessment["summary"],
+        why_important="Der Gesamtscore bündelt Qualität, Wachstum, Trend und Risiko in einer konsistenten Gesamtperspektive.",
+        rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
+    )
+
+    # --- 4 Einzelscores ---
+    kpi_sub = st.columns(4)
+    with kpi_sub[0]:
         render_kpi_card(
             label="Qualität",
             value=f'{assessment["quality_score"]}/100',
@@ -7895,7 +7897,7 @@ def _tab_aktienbewertung():
             why_important="Höhere Qualität kann die Robustheit des Geschäftsmodells in schwierigeren Marktphasen unterstützen.",
             rule_note="ROE, Margen und Debt/Equity werden zu einem Teilscore zusammengeführt; n/a bedeutet fehlende Provider-Daten.",
         )
-    with kpi_cols_a[2]:
+    with kpi_sub[1]:
         render_kpi_card(
             label="Wachstum",
             value=f'{assessment["growth_score"]}/100',
@@ -7908,24 +7910,21 @@ def _tab_aktienbewertung():
             why_important="Nachhaltiges Wachstum kann die Wahrscheinlichkeit steigender Gewinnerwartungen erhöhen.",
             rule_note="Jahres- und Quartalsraten werden kombiniert; n/a bedeutet, dass die Datenquelle keinen Wert geliefert hat.",
         )
-
-    kpi_cols_b = st.columns(3)
-    with kpi_cols_b[0]:
+    with kpi_sub[2]:
         render_kpi_card(
             label="Chart & Trend",
             value=f'{assessment["trend_score"]}/100',
             interpretation=(
                 f'Über 21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · '
                 f'Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · '
-                f'Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · '
-                f'RS-Rating: {rs_rating_val if rs_rating_val is not None else "n/a"}'
+                f'Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"}'
             ),
             tone="good" if assessment["trend_score"] >= 70 else "warn" if assessment["trend_score"] >= 45 else "bad",
             help_text="Trend und Marktführerschaft werden über gleitende Durchschnitte, RS-Rating und Chartsignale bewertet.",
             why_important="Ein stabiler Trend reduziert häufig die Zahl impulsiver Entscheidungen gegen den Marktfluss.",
             rule_note="Kurslage über EMA/SMA und relative Stärke bestimmen, ob das Setup konstruktiv oder anfällig wirkt.",
         )
-    with kpi_cols_b[1]:
+    with kpi_sub[3]:
         render_kpi_card(
             label="Risiko",
             value=f'{assessment["risk_score"]}/100',
@@ -7940,7 +7939,19 @@ def _tab_aktienbewertung():
             why_important="Risikokennzahlen helfen, Positionsgrößen und Erwartungshaltung realistisch zu kalibrieren.",
             rule_note="Niedrigere ATR/Beta-Werte sowie moderatere Abstände zu 50-SMA und 52W-Hoch verbessern die Einordnung; n/a bei fehlenden Daten.",
         )
-    with kpi_cols_b[2]:
+
+    # --- Trennlinie: Zusatzindikatoren (kein Bestandteil des Gesamtscores) ---
+    st.markdown(
+        '<div style="margin:1.6rem 0 0.6rem;border-top:1px solid rgba(255,255,255,0.10);padding-top:0.9rem;">'
+        '<span style="font-size:0.70rem;text-transform:uppercase;letter-spacing:0.08em;opacity:0.40;font-weight:600;">'
+        'Weitere Marktindikatoren &mdash; fließen nicht in den Gesamtscore ein'
+        '</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    # --- 4 Zusatzindikatoren ---
+    kpi_extra = st.columns(4)
+    with kpi_extra[0]:
         rs_tone = "neutral"
         rs_interp = "Kein RS-Rating verfügbar"
         if rs_rating_val is not None:
@@ -7955,9 +7966,7 @@ def _tab_aktienbewertung():
             why_important="Relative Stärke zeigt, ob eine Aktie im Vergleich zum Markt eher Kapital anzieht oder verliert.",
             rule_note="Werte ab 80 gelten im Regelset als klar konstruktiv, 65–79 als beobachtbar, darunter als schwächer.",
         )
-
-    kpi_cols_c = st.columns(3)
-    with kpi_cols_c[0]:
+    with kpi_extra[1]:
         dist50_tone = "neutral" if pd.isna(dist_50) else "good" if abs(dist_50) <= 6 else "warn" if abs(dist_50) <= 14 else "bad"
         render_kpi_card(
             label="Abstand 50-SMA",
@@ -7968,7 +7977,7 @@ def _tab_aktienbewertung():
             why_important="Große Abstände zur 50-SMA erhöhen oft Rücksetzer-Risiko oder zeigen fortgeschrittene Bewegungen.",
             rule_note="Im Regelset gilt ein Abstand bis ca. ±6% als stabil, darüber steigt der Beobachtungsbedarf.",
         )
-    with kpi_cols_c[1]:
+    with kpi_extra[2]:
         dist200_tone = "neutral" if pd.isna(dist_200) else "good" if dist_200 >= 0 else "warn" if dist_200 >= -8 else "bad"
         render_kpi_card(
             label="Abstand 200-SMA",
@@ -7979,7 +7988,7 @@ def _tab_aktienbewertung():
             why_important="Der langfristige Trend wirkt als struktureller Filter für Erwartungsmanagement und Risiko.",
             rule_note="Kurse über der 200-SMA gelten hier als konstruktiver Grundzustand, darunter vorsichtiger.",
         )
-    with kpi_cols_c[2]:
+    with kpi_extra[3]:
         atr_tone = "neutral" if pd.isna(atr_pct) else "good" if atr_pct <= 2.5 else "warn" if atr_pct <= 4.5 else "bad"
         render_kpi_card(
             label="ATR / Volatilität",
