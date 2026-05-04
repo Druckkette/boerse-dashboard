@@ -49,3 +49,113 @@ Die App ist live unter: `https://dein-name-boerse-dashboard.streamlit.app`
 - **Breitenschub-Erkennung** (Deemer Ratio > 1.97)
 - **Divergenz-Check** (Index vs. A/D-Linie)
 - **Federal Funds Rate** Trend (FRED API)
+
+## Aktienanalyse: Scoring-Kriterien, Gewichtung und Schwellenwerte
+
+Die Einzelaktien-Bewertung wird in vier Teilbereiche zerlegt und anschließend zu einem Gesamtscore (0–100) zusammengeführt.
+
+### 1) Gewichtung der Teilbereiche im Gesamtscore
+
+| Teilbereich | Gewicht im Gesamtscore |
+|---|---:|
+| Qualität | 25% |
+| Wachstum | 20% |
+| Trend | 35% |
+| Risiko | 20% |
+
+Formel: `Gesamtscore = 0.25*Qualität + 0.20*Wachstum + 0.35*Trend + 0.20*Risiko`.
+
+Fehlende Teilwerte werden neutral mit `50` ersetzt, damit der Score berechenbar bleibt.
+
+### 2) Scoring-Logik je Kriterium (100 / 60 / 25 Punkte)
+
+Jedes Kriterium wird über Schwellen eingestuft:
+
+- **100 Punkte**: guter Bereich
+- **60 Punkte**: mittlerer Bereich
+- **25 Punkte**: schwacher Bereich
+
+Die Teilbereich-Scores sind jeweils der Mittelwert ihrer enthaltenen Kriterien.
+
+### 3) Qualität
+
+| Kriterium | 100 Punkte | 60 Punkte | 25 Punkte |
+|---|---:|---:|---:|
+| ROE (%) | ≥ 17 | ≥ 10 | < 10 |
+| Bruttomarge (%) | ≥ 45 | ≥ 30 | < 30 |
+| Operative Marge (%) | ≥ 18 | ≥ 10 | < 10 |
+| Debt/Equity | ≤ 80 | ≤ 160 | > 160 |
+
+### 4) Wachstum
+
+| Kriterium | 100 Punkte | 60 Punkte | 25 Punkte |
+|---|---:|---:|---:|
+| Umsatzwachstum Jahr (%) | ≥ 15 | ≥ 5 | < 5 |
+| Gewinnwachstum Jahr (%) | ≥ 15 | ≥ 5 | < 5 |
+| Umsatzwachstum Quartal (%) | ≥ 10 | ≥ 3 | < 3 |
+| Gewinnwachstum Quartal (%) | ≥ 10 | ≥ 3 | < 3 |
+
+### 5) Trend
+
+| Kriterium | Punkte |
+|---|---:|
+| Kurs über EMA21 | 100 (sonst 25) |
+| Kurs über SMA50 | 100 (sonst 20) |
+| Kurs über SMA200 | 100 (sonst 15) |
+| RS-Rating | 100 bei ≥ 80, 60 bei ≥ 65, sonst 25 |
+| RS-Trend 5W | +80 bei positiv, +30 bei negativ |
+| Chartzeichen-Bonus/Malus | +75 auf Trend bei klar positiven Zeichen (Positiv > Negativ + 2) |
+
+### 6) Risiko
+
+| Kriterium | 100 Punkte | 60 Punkte | 25 Punkte |
+|---|---:|---:|---:|
+| ATR % | ≤ 2.5 | ≤ 4.5 | > 4.5 |
+| Beta | ≤ 1.0 | ≤ 1.6 | > 1.6 |
+| Drawdown vs. 52W-Hoch (%) absolut | ≤ 12 | ≤ 25 | > 25 |
+| Abstand zur SMA50 (%) absolut | ≤ 6 | ≤ 14 | > 14 |
+
+Zusatz-Malus: Bei klar negativen Chartzeichen (Negativ > Positiv + 2) werden dem Risiko 30 Punkte hinzugefügt.
+
+### 7) Status-Schwellen auf Gesamtebene
+
+| Status | Bedingung |
+|---|---|
+| Nicht bewertbar | zu wenig Daten (≤1 verfügbare Teilgruppen oder <120 Kursdatenpunkte) |
+| Zu erweitert | Trendscore ≥ 75 und gleichzeitig deutliche Überdehnung (Abstand SMA50 ≥ 18% oder ATR-Extension ≥ 4.5) |
+| Attraktiv | Gesamtscore ≥ 80 und Risikoscore ≥ 45 |
+| Beobachten | Gesamtscore 60–79 |
+| Zu schwach | Gesamtscore < 60 |
+
+## Aktienbewertung-Screen: Warum ähnliche Kästen doppelt erscheinen
+
+Im Screen gibt es **zwei Darstellungs-Ebenen** mit teilweise gleichen Begriffen:
+
+1. **KPI-Cockpit (oben)** mit Karten wie „Qualität“, „Wachstum“, „Trend“, „Risiko“.
+2. **Geführte 4er-Analysekarte (unten)** mit Karten wie „Qualität“, „Wachstum“, „Chart & Trend“, „Risiko“.
+
+### Qualität (oben) vs. Qualität (unten)
+
+- **Inhaltlich gleicher Teilscore**: Beide zeigen denselben `quality_score`.
+- **Oben**: komprimierte Management-Sicht (Score + kurze Interpretation + Ampelton).
+- **Unten**: detaillierte Aufschlüsselung der Treiber (ROE, Margen, Debt/Equity) inkl. Statuschip.
+
+### Wachstum (oben) vs. Wachstum (unten)
+
+- **Inhaltlich gleicher Teilscore**: Beide zeigen denselben `growth_score`.
+- **Oben**: kompakte Einordnung für schnelles Urteil.
+- **Unten**: Detailsicht mit Jahres- und Quartalsraten (Umsatz/Gewinn) und erklärendem Text.
+
+### Risiko (oben) vs. Risiko (unten)
+
+- **Inhaltlich gleicher Teilscore**: Beide zeigen denselben `risk_score`.
+- **Oben**: Kurzsicht mit ATR und Drawdown als schnelle Risikoproxies.
+- **Unten**: breitere Kontextsicht inkl. Beta, Drawdown, Volumenfaktor und Statuslabel.
+
+### Trend vs. „Chart & Trend“
+
+- **Kein separates Scoring-Modell**: „Trend“ (oben) und „Chart & Trend“ (unten) referenzieren denselben `trend_score`.
+- **Warum zwei Namen?**
+  - „Trend“ im KPI-Cockpit ist die Kurzbezeichnung.
+  - „Chart & Trend“ in der 4er-Karte betont, dass neben MAs/RS auch Chartsignale in die Einordnung einfließen.
+- **Praktische Lesart**: Oben = Überblick, unten = Erklärung desselben Scores.

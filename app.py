@@ -7847,29 +7847,40 @@ def _tab_aktienbewertung():
         render_kpi_card(
             label="Qualität",
             value=f'{assessment["quality_score"]}/100',
-            interpretation=f'ROE {_pct_or_na(roe)} · Operative Marge {_pct_or_na(op_margin)}',
+            interpretation=(
+                f'ROE {_pct_or_na(roe)} · Bruttomarge {_pct_or_na(gross_margin)} · '
+                f'Operative Marge {_pct_or_na(op_margin)} · Debt/Equity {_val_or_na(debt_to_equity, "{:.0f}")}'
+            ),
             tone="good" if assessment["quality_score"] >= 70 else "warn" if assessment["quality_score"] >= 45 else "bad",
             help_text="Misst Profitabilität und Bilanzstabilität auf Basis der verfügbaren Fundamentaldaten.",
             why_important="Höhere Qualität kann die Robustheit des Geschäftsmodells in schwierigeren Marktphasen unterstützen.",
-            rule_note="ROE, Margen und Debt/Equity werden zu einem Teilscore zusammengeführt; fehlende Daten werden neutral behandelt.",
+            rule_note="ROE, Margen und Debt/Equity werden zu einem Teilscore zusammengeführt; n/a bedeutet fehlende Provider-Daten.",
         )
     with kpi_cols_a[2]:
         render_kpi_card(
             label="Wachstum",
             value=f'{assessment["growth_score"]}/100',
-            interpretation=f'Umsatz {_pct_or_na(revenue_growth)} · Gewinn {_pct_or_na(earnings_growth)}',
+            interpretation=(
+                f'Umsatz Jahr {_pct_or_na(revenue_growth)} · Gewinn Jahr {_pct_or_na(earnings_growth)} · '
+                f'Umsatz Quartal {_pct_or_na(q_revenue_growth)} · Gewinn Quartal {_pct_or_na(q_earnings_growth)}'
+            ),
             tone="good" if assessment["growth_score"] >= 70 else "warn" if assessment["growth_score"] >= 45 else "bad",
             help_text="Bewertet die Dynamik von Umsatz und Gewinn auf Jahres- und Quartalsbasis.",
             why_important="Nachhaltiges Wachstum kann die Wahrscheinlichkeit steigender Gewinnerwartungen erhöhen.",
-            rule_note="Jahres- und Quartalsraten werden kombiniert; stabile positive Raten verbessern den Teilscore.",
+            rule_note="Jahres- und Quartalsraten werden kombiniert; n/a bedeutet, dass die Datenquelle keinen Wert geliefert hat.",
         )
 
     kpi_cols_b = st.columns(3)
     with kpi_cols_b[0]:
         render_kpi_card(
-            label="Trend",
+            label="Chart & Trend",
             value=f'{assessment["trend_score"]}/100',
-            interpretation=f'Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"}',
+            interpretation=(
+                f'Über 21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · '
+                f'Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · '
+                f'Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · '
+                f'RS-Rating: {rs_rating_val if rs_rating_val is not None else "n/a"}'
+            ),
             tone="good" if assessment["trend_score"] >= 70 else "warn" if assessment["trend_score"] >= 45 else "bad",
             help_text="Trend und Marktführerschaft werden über gleitende Durchschnitte, RS-Rating und Chartsignale bewertet.",
             why_important="Ein stabiler Trend reduziert häufig die Zahl impulsiver Entscheidungen gegen den Marktfluss.",
@@ -7879,11 +7890,16 @@ def _tab_aktienbewertung():
         render_kpi_card(
             label="Risiko",
             value=f'{assessment["risk_score"]}/100',
-            interpretation=f'ATR {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · Drawdown {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"}',
+            interpretation=(
+                f'ATR {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · '
+                f'Beta {f"{beta:.2f}" if beta and pd.notna(beta) else "n/a"} · '
+                f'Drawdown {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"} · '
+                f'Volumenfaktor {f"{vol_ratio:.2f}x" if pd.notna(vol_ratio) else "n/a"}'
+            ),
             tone="good" if assessment["risk_score"] >= 70 else "warn" if assessment["risk_score"] >= 45 else "bad",
             help_text="Kombiniert Schwankungsbreite, Marktsensitivität und Abstand zu zentralen Referenzniveaus.",
             why_important="Risikokennzahlen helfen, Positionsgrößen und Erwartungshaltung realistisch zu kalibrieren.",
-            rule_note="Niedrigere ATR/Beta-Werte sowie moderatere Abstände zu 50-SMA und 52W-Hoch verbessern die Einordnung.",
+            rule_note="Niedrigere ATR/Beta-Werte sowie moderatere Abstände zu 50-SMA und 52W-Hoch verbessern die Einordnung; n/a bei fehlenden Daten.",
         )
     with kpi_cols_b[2]:
         rs_tone = "neutral"
@@ -7955,56 +7971,6 @@ def _tab_aktienbewertung():
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
-
-    # Geführte 4er-Analysekarte
-    def _status_chip(score_value: int):
-        ratio = score_value / 100 if score_value is not None else 0
-        if ratio >= 0.7:
-            return "status-good", "konstruktiv"
-        if ratio >= 0.45:
-            return "status-warn", "gemischt"
-        return "status-bad", "angeschlagen"
-
-    q_cls, q_txt = _status_chip(assessment["quality_score"])
-    g_cls, g_txt = _status_chip(assessment["growth_score"])
-    t_cls, t_txt = _status_chip(assessment["trend_score"])
-    r_cls, r_txt = _status_chip(assessment["risk_score"])
-
-    area_cols = st.columns(2)
-    with area_cols[0]:
-        st.markdown(
-            f'<div class="info-card"><div class="card-label">Qualität</div>'
-            f'<div class="status-chip {q_cls}">Status: {q_txt}</div>'
-            f'<div class="mini-help">Teilscore: {assessment["quality_score"]}/100</div>'
-            f'<div class="mini-help">ROE: {_pct_or_na(roe)} · Bruttomarge: {_pct_or_na(gross_margin)} · Operative Marge: {_pct_or_na(op_margin)} · Debt/Equity: {_val_or_na(debt_to_equity, "{:.0f}")}</div>'
-            f'<div class="mini-help">Interpretation: Profitabilität und Bilanzqualität werden regelbasiert zusammengeführt. Fehlende Werte werden als n/a markiert.</div></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="info-card"><div class="card-label">Wachstum</div>'
-            f'<div class="status-chip {g_cls}">Status: {g_txt}</div>'
-            f'<div class="mini-help">Teilscore: {assessment["growth_score"]}/100</div>'
-            f'<div class="mini-help">Umsatzwachstum: {_pct_or_na(revenue_growth)} · Gewinnwachstum: {_pct_or_na(earnings_growth)} · Quartals-Umsatz: {_pct_or_na(q_revenue_growth)} · Quartals-Gewinn: {_pct_or_na(q_earnings_growth)}</div>'
-            f'<div class="mini-help">Interpretation: Wachstum wird auf Jahres- und Quartalsebene geprüft. n/a bedeutet: Datenquelle hat keinen Wert geliefert.</div></div>',
-            unsafe_allow_html=True,
-        )
-    with area_cols[1]:
-        st.markdown(
-            f'<div class="info-card"><div class="card-label">Chart & Trend</div>'
-            f'<div class="status-chip {t_cls}">Status: {t_txt}</div>'
-            f'<div class="mini-help">Teilscore: {assessment["trend_score"]}/100</div>'
-            f'<div class="mini-help">Über 21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · RS-Rating: {rs_rating_val if rs_rating_val is not None else "n/a"}</div>'
-            f'<div class="mini-help">Interpretation: Trendrichtung und relative Stärke zeigen, ob das Chartbild eher konstruktiv oder aktuell erweitert ist.</div></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            f'<div class="info-card"><div class="card-label">Risiko</div>'
-            f'<div class="status-chip {r_cls}">Status: {r_txt}</div>'
-            f'<div class="mini-help">Teilscore: {assessment["risk_score"]}/100</div>'
-            f'<div class="mini-help">ATR (21T): {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · Beta: {f"{beta:.2f}" if beta and pd.notna(beta) else "n/a"} · Drawdown 52W: {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"} · Volumenfaktor: {f"{vol_ratio:.2f}x" if pd.notna(vol_ratio) else "n/a"}</div>'
-            f'<div class="mini-help">Interpretation: Risikoprofil kombiniert Schwankung, Markt-Sensitivität und Rückschlagsanfälligkeit. n/a bedeutet fehlende Daten vom Provider.</div></div>',
-            unsafe_allow_html=True,
-        )
 
     bullet_cols = st.columns(2)
     with bullet_cols[0]:
