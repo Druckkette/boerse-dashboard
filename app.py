@@ -2630,6 +2630,21 @@ def _load_ticker_attr_value(ticker_obj, ticker_symbol, attr_name):
         return getattr(ticker_obj, attr_name)
     except Exception as exc:
         logger.debug("Ticker attribute %s failed for %s: %s", attr_name, ticker_symbol, exc)
+        # yfinance exposes some payloads both as properties and getter methods.
+        # Try method fallback so intermittent/property-specific failures don't
+        # blank out core fundamental checks.
+        method_fallbacks = {
+            "info": "get_info",
+            "institutional_holders": "get_institutional_holders",
+        }
+        method_name = method_fallbacks.get(attr_name)
+        if method_name:
+            try:
+                method = getattr(ticker_obj, method_name, None)
+                if callable(method):
+                    return method()
+            except Exception as method_exc:
+                logger.debug("Ticker method %s failed for %s: %s", method_name, ticker_symbol, method_exc)
         return None
 
 
@@ -6512,7 +6527,17 @@ def _atr_category(pct):
 def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err=None):
     checks = []
     def _g(k, d=None):
-        v = info.get(k, d) if info else d
+        if not info:
+            return d
+        aliases = {
+            "returnOnEquity": ("returnOnEquity", "return_on_equity"),
+            "heldPercentInstitutions": ("heldPercentInstitutions", "held_percent_institutions"),
+            "profitMargins": ("profitMargins", "profit_margins"),
+        }
+        for key in aliases.get(k, (k,)):
+            v = info.get(key, None)
+            if v is not None:
+                return v
         return v if v is not None else d
 
     # ── Debug: show data availability ──
