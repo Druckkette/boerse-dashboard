@@ -8236,16 +8236,33 @@ def _tab_aktienbewertung():
         + 20.0 * float(pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1])
     )
 
-    # --- Gesamtscore prominent (volle Breite) ---
-    render_kpi_card(
-        label="Gesamtscore",
-        value=f"{overall_score}/100",
-        interpretation=f"{verdict_label} · {name} ({ticker})",
-        tone=assessment["status_tone"],
-        help_text=assessment["summary"],
-        why_important="Der Gesamtscore bündelt Qualität, Wachstum, Trend und Risiko in einer konsistenten Gesamtperspektive.",
-        rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
+    # --- Gesamtscore + Technisch nebeneinander ---
+    technical_score_single = _technical_points_score(
+        technical_checks,
+        rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None,
+        cmf_val,
     )
+    score_cols = st.columns(2)
+    with score_cols[0]:
+        render_kpi_card(
+            label="Gesamtscore",
+            value=f"{overall_score}/100",
+            interpretation=f"{verdict_label} · {name} ({ticker})",
+            tone=assessment["status_tone"],
+            help_text=assessment["summary"],
+            why_important="Der Gesamtscore bündelt Qualität, Wachstum, Trend und Risiko in einer konsistenten Gesamtperspektive.",
+            rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
+        )
+    with score_cols[1]:
+        render_kpi_card(
+            label="Score Technisch",
+            value=f"{technical_score_single}/100",
+            interpretation="Regelbasiert nach Preis, Volumen, RS-Struktur und CMF.",
+            tone="good" if technical_score_single >= 70 else "warn" if technical_score_single >= 45 else "bad",
+            help_text="Technischer Teilscore nach deiner Punktelogik (inkl. RS-Staffelung und CMF-Bewertung).",
+            why_important="Zeigt die technische Qualität unabhängig von fundamentalen Teilaspekten.",
+            rule_note="Punktesystem gemäß definierter Kriterien, anschließend auf 0–100 skaliert.",
+        )
 
     # --- 5 Einzelscores ---
     kpi_sub = st.columns(5)
