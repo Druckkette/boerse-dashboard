@@ -7173,7 +7173,15 @@ def _technical_points_score(technical_checks, rs_rating, cmf_value):
     return round(float(np.clip(score / max_score * 100.0, 0, 100)), 1)
 
 
-def _fundamental_checklist_score_100(fundamentals_checks):
+def _fundamental_checklist_score_100(
+    fundamentals_checks,
+    q_earnings_growth,
+    q_revenue_growth,
+    earnings_growth,
+    revenue_growth,
+    roe,
+    profit_margin,
+):
     criteria_labels = [
         "EPS ≥20% YoY (3Q)",
         "EPS-Beschleunigung",
@@ -7186,10 +7194,36 @@ def _fundamental_checklist_score_100(fundamentals_checks):
         "Gewinnmarge positiv",
     ]
     check_map = {label: bool(ok) for label, ok, _ in (fundamentals_checks or [])}
+    unit = 100.0 / len(criteria_labels)
+
+    def _tiered_growth_points(value, minimum=0.20, stretch=0.60):
+        v = _safe_float(value, np.nan)
+        if pd.isna(v) or v < minimum:
+            return 0.0
+        return unit * min((v - minimum) / max(stretch - minimum, 1e-9), 1.0)
+
+    score = 0.0
+    # 1) EPS YoY (3Q): mehr Wachstum = mehr Punkte
+    score += _tiered_growth_points(q_earnings_growth, minimum=0.20, stretch=0.80)
+    # 2) EPS-Beschleunigung
+    score += unit if check_map.get("EPS-Beschleunigung", False) else 0.0
+    # 3) Jährl. EPS-Wachstum
+    score += _tiered_growth_points(earnings_growth, minimum=0.20, stretch=0.60)
+    # 4) Summe 4Q EPS > 0
+    score += unit if check_map.get("Summe letzte 4 Quartals-EPS > 0", False) else 0.0
+    # 5) Umsatz YoY (3Q)
+    score += _tiered_growth_points(q_revenue_growth, minimum=0.20, stretch=0.60)
+    # 6) Umsatz-Beschleunigung
+    score += unit if check_map.get("Umsatz-Beschleunigung (Bonus)", False) else 0.0
+    # 7) Jährl. Umsatz-Wachstum
+    score += _tiered_growth_points(revenue_growth, minimum=0.20, stretch=0.50)
+    # 8) ROE
+    score += _tiered_growth_points(roe, minimum=0.17, stretch=0.35)
+    # 9) Gewinnmarge
+    score += _tiered_growth_points(profit_margin, minimum=0.00, stretch=0.25) if _safe_float(profit_margin, np.nan) > 0 else 0.0
+
     met = sum(1 for label in criteria_labels if check_map.get(label, False))
-    total = len(criteria_labels)
-    score = (met / total) * 100 if total else 0.0
-    return round(float(score), 1), met, total
+    return round(float(np.clip(score, 0, 100)), 1), met, len(criteria_labels)
 
 
 def _weekly_ohlc(df):
@@ -8235,6 +8269,7 @@ def _tab_aktienbewertung():
     roe = info.get("returnOnEquity") if info else None
     gross_margin = info.get("grossMargins") if info else None
     op_margin = info.get("operatingMargins") if info else None
+    profit_margin = info.get("profitMargins") if info else None
     debt_to_equity = info.get("debtToEquity") if info else None
     revenue_growth = info.get("revenueGrowth") if info else None
     earnings_growth = info.get("earningsGrowth") if info else None
@@ -8293,7 +8328,15 @@ def _tab_aktienbewertung():
         rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None,
         cmf_val,
     )
-    fundamental_score_single, fundamental_met, fundamental_total = _fundamental_checklist_score_100(fundamentals_checks)
+    fundamental_score_single, fundamental_met, fundamental_total = _fundamental_checklist_score_100(
+        fundamentals_checks,
+        q_earnings_growth,
+        q_revenue_growth,
+        earnings_growth,
+        revenue_growth,
+        roe,
+        profit_margin,
+    )
     score_cols = st.columns(4)
     with score_cols[0]:
         render_kpi_card(
