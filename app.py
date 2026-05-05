@@ -2468,7 +2468,7 @@ def _merge_quarterly_raw(primary, secondary):
     if secondary is None:
         return primary
     out = dict(primary)
-    for key in ["DilutedEPS", "TotalRevenue"]:
+    for key in ["DilutedEPS", "TotalRevenue", "NetIncome"]:
         p = primary.get(key)
         s = secondary.get(key)
         if p is None and s is not None:
@@ -2556,14 +2556,23 @@ def _fetch_quarterly_sec_companyfacts(ticker):
             ser = pd.Series({k: v[1] for k, v in by_end.items()})
             return ser.sort_index(ascending=False)
 
+        ni_concepts = [
+            "NetIncomeLoss",
+            "ProfitLoss",
+            "NetIncomeLossAvailableToCommonStockholdersBasic",
+        ]
+
         eps_series = _extract_quarters(eps_concepts, ["USD/shares"])
         rev_series = _extract_quarters(rev_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
+        ni_series = _extract_quarters(ni_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
 
         out = {}
         if eps_series is not None and len(eps_series) > 0:
             out["DilutedEPS"] = eps_series
         if rev_series is not None and len(rev_series) > 0:
             out["TotalRevenue"] = rev_series
+        if ni_series is not None and len(ni_series) > 0:
+            out["NetIncome"] = ni_series
         if not out:
             return None, "Keine SEC-Quartalsdaten gefunden"
         return out, None
@@ -2628,6 +2637,7 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
             out = {}
             eps_vals = {}
             rev_vals = {}
+            ni_vals = {}
             for item in data:
                 date_str = item.get("date", "")
                 if not date_str:
@@ -2635,16 +2645,41 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
                 dt = pd.Timestamp(date_str)
                 eps = item.get("epsDiluted", item.get("epsdiluted", item.get("eps")))
                 rev = item.get("revenue")
+                ni = item.get("netIncome", item.get("netincome"))
                 if eps is not None:
                     eps_vals[dt] = float(eps)
                 if rev is not None:
                     rev_vals[dt] = float(rev)
+                if ni is not None:
+                    ni_vals[dt] = float(ni)
             if eps_vals:
                 out["DilutedEPS"] = pd.Series(eps_vals).sort_index(ascending=False)
             if rev_vals:
                 out["TotalRevenue"] = pd.Series(rev_vals).sort_index(ascending=False)
+            if ni_vals:
+                out["NetIncome"] = pd.Series(ni_vals).sort_index(ascending=False)
             if out:
                 endpoint_label = "FMP stable" if label == "stable" else "FMP legacy"
+                # Fetch TTM ratios for ROE and profit margin (lightweight call)
+                try:
+                    ratios_urls = [
+                        ("stable", f"https://financialmodelingprep.com/stable/ratios-ttm", {"symbol": str(ticker).upper(), "apikey": fmp_key}),
+                        ("legacy", f"https://financialmodelingprep.com/api/v3/ratios-ttm/{ticker}", {"apikey": fmp_key}),
+                    ]
+                    for _rlabel, _rurl, _rparams in ratios_urls:
+                        _rr = requests.get(_rurl, params=_rparams, timeout=10)
+                        if _rr.status_code == 200:
+                            _rdata = _rr.json()
+                            _ritem = _rdata[0] if isinstance(_rdata, list) and _rdata else (_rdata if isinstance(_rdata, dict) else {})
+                            roe_ttm = _ritem.get("returnOnEquityTTM")
+                            pm_ttm = _ritem.get("netProfitMarginTTM")
+                            if roe_ttm is not None:
+                                out["_roe_ttm"] = float(roe_ttm)
+                            if pm_ttm is not None:
+                                out["_pm_ttm"] = float(pm_ttm)
+                            break
+                except Exception:
+                    pass
                 return out, endpoint_label
             errors.append(f"{label}: Keine verwertbaren Quartalsdaten")
 
@@ -2766,6 +2801,39 @@ def _fetch_yahoo_institutional_holders_via_http(ticker_symbol: str) -> pd.DataFr
     return frame if len(frame) else None
 
 
+def _fetch_fmp_institutional_holders(ticker, fmp_key):
+    """Fetch institutional holders from FMP as fallback when Yahoo Finance fails."""
+    if not fmp_key:
+        return None
+    symbol = str(ticker or "").upper().strip()
+    if not symbol:
+        return None
+    attempts = [
+        f"https://financialmodelingprep.com/stable/institutional-ownership/list?symbol={symbol}&apikey={fmp_key}",
+        f"https://financialmodelingprep.com/api/v3/institutional-holder/{symbol}?apikey={fmp_key}",
+    ]
+    for url in attempts:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            items = data if isinstance(data, list) else (data.get("data", []) if isinstance(data, dict) else [])
+            if not items:
+                continue
+            parsed = []
+            for item in items:
+                holder = item.get("holder") or item.get("institutionName") or item.get("investor")
+                shares = item.get("shares") or item.get("totalShares")
+                val = item.get("value") or item.get("totalValue")
+                parsed.append({"Holder": holder, "Shares": shares, "Value": val})
+            if parsed:
+                return pd.DataFrame(parsed)
+        except Exception:
+            continue
+    return None
+
+
 def _load_ticker_earnings_dates(ticker_obj, ticker_symbol, limit=12):
     try:
         return ticker_obj.get_earnings_dates(limit=limit)
@@ -2813,7 +2881,7 @@ def _load_stock_reference_data_parallel(ticker, fmp_key, ticker_obj=None):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_stock_full(ticker, lookback_days=500):
+def load_stock_full(ticker, lookback_days=500, cache_buster=0):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -2873,6 +2941,11 @@ def load_stock_full(ticker, lookback_days=500):
                         needs_ih = False
                 if not needs_info and not needs_ih:
                     break
+        # Final FMP fallback for institutional holders (when Yahoo is completely blocked)
+        if needs_ih and fmp_key:
+            fmp_ih = _fetch_fmp_institutional_holders(ticker, fmp_key)
+            if fmp_ih is not None and not fmp_ih.empty:
+                ih = fmp_ih
 
         qraw = None
         fmp_err = None
@@ -2907,14 +2980,14 @@ def load_sp500_for_rs(lookback_days=400):
     return _dl("^GSPC", start, end)
 
 
-def _load_stock_analysis_context_parallel(ticker, rs_source_setting):
+def _load_stock_analysis_context_parallel(ticker, rs_source_setting, cache_buster=0):
     stock_result = (None, None, None, None, None, None, None, None, None)
     spx_df = None
     rs_universe_scores = None
     max_workers = 3 if rs_source_setting == RS_SOURCE_COMPUTED else 2
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        stock_future = executor.submit(load_stock_full, ticker)
+        stock_future = executor.submit(load_stock_full, ticker, 500, cache_buster)
         spx_future = executor.submit(load_sp500_for_rs)
         rs_future = (
             executor.submit(load_cached_universe_rs_scores)
@@ -6813,6 +6886,10 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
 
     # ── ROE ≥ 17% ──
     roe = _g("returnOnEquity")
+    # Fallback 1: FMP ratios-TTM (already fetched alongside income statement)
+    if roe is None and qraw is not None:
+        roe = qraw.get("_roe_ttm")
+    # Fallback 2: compute from annual income stmt + bookValue/sharesOutstanding
     if roe is None and ai is not None and not ai.empty and info:
         try:
             ni_row = _find_row(ai, ["Net Income", "NetIncome", "Net Income Common Stockholders"])
@@ -6854,6 +6931,22 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
 
     # ── Profit margin ──
     pm = _g("profitMargins")
+    # Fallback 1: FMP ratios-TTM
+    if pm is None and qraw is not None:
+        pm = qraw.get("_pm_ttm")
+    # Fallback 2: compute TTM from quarterly net income / revenue (FMP or SEC)
+    if pm is None and qraw is not None:
+        try:
+            ni_q = qraw.get("NetIncome")
+            rev_q = qraw.get("TotalRevenue")
+            if ni_q is not None and rev_q is not None and len(ni_q) >= 1 and len(rev_q) >= 1:
+                n = min(4, len(ni_q), len(rev_q))
+                ni_ttm = ni_q.head(n).sum()
+                rev_ttm = rev_q.head(n).sum()
+                if rev_ttm != 0:
+                    pm = ni_ttm / rev_ttm
+        except Exception:
+            pass
     if pm is not None:
         checks.append(("Gewinnmarge positiv", pm > 0, f"{pm*100:.1f}%"))
     else:
@@ -7891,6 +7984,8 @@ def _tab_aktienbewertung():
         return
 
     rs_source_setting = _get_rs_rating_source_setting()
+    _cache_v_key = f"_stock_cache_v_{ticker}"
+    cache_buster = st.session_state.get(_cache_v_key, 0)
     with st.spinner(f"Lade {ticker} …"):
         (
             df,
@@ -7904,7 +7999,7 @@ def _tab_aktienbewertung():
             fmp_err,
             spx_df,
             rs_universe_scores,
-        ) = _load_stock_analysis_context_parallel(ticker, rs_source_setting)
+        ) = _load_stock_analysis_context_parallel(ticker, rs_source_setting, cache_buster)
 
     if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
@@ -7918,7 +8013,7 @@ def _tab_aktienbewertung():
     chg = (price / prev - 1) * 100
     last_date = _format_market_date(df.index[-1])
 
-    act1, act2, act3 = st.columns([1, 1, 2])
+    act1, act2, act3, act4 = st.columns([1, 1, 1, 1])
     private_ok = _is_private_unlocked()
     with act1:
         if private_ok and st.button("➕ Zur Watchlist", width="stretch", key="add_watch_stock", type="secondary"):
@@ -7936,6 +8031,10 @@ def _tab_aktienbewertung():
             })
             st.success(f"{ticker} als Position vorgemerkt.")
     with act3:
+        if st.button("Daten neu laden", width="stretch", key="refresh_stock_data", type="secondary"):
+            st.session_state[_cache_v_key] = st.session_state.get(_cache_v_key, 0) + 1
+            st.rerun()
+    with act4:
         st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
