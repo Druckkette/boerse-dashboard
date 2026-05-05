@@ -390,7 +390,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
         st.session_state[input_key] = pending_ticker
     elif input_key not in st.session_state:
         st.session_state[input_key] = st.session_state.get(selected_key, "")
-    query = st.text_input(label, value=st.session_state.get(input_key, ""), placeholder=placeholder, key=input_key)
+    query = st.text_input(label, placeholder=placeholder, key=input_key)
     query = (query or "").strip()
     st.session_state[selected_key] = query
 
@@ -2735,7 +2735,15 @@ def load_stock_full(ticker, lookback_days=500):
     empty_result = (None, None, None, None, None, None, None, None, None)
     try:
         ticker_obj = yf.Ticker(ticker)
-        df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+        try:
+            df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+        except Exception:
+            df = None
+
+        if df is None or len(df) < 20:
+            # Fallback: use the shared downloader with symbol variants/retry path
+            fallback_map = _bulk_download_ohlc((str(ticker).upper(),), start, end)
+            df = fallback_map.get(str(ticker).upper()) if isinstance(fallback_map, dict) else None
         if df is None or len(df) < 20:
             return empty_result
 
@@ -2756,16 +2764,25 @@ def load_stock_full(ticker, lookback_days=500):
         ed = components.get("ed")
 
         # Some Yahoo endpoints fail intermittently when fetched in parallel.
-        # Retry critical fields once sequentially so ROE/margins/institutional checks
-        # don't end up permanently "Nicht verfügbar".
-        if not info:
-            retry_info = _load_ticker_attr_value(ticker_obj, ticker, "info") or {}
-            if retry_info:
-                info = retry_info
-        if ih is None:
-            retry_ih = _load_ticker_attr_value(ticker_obj, ticker, "institutional_holders")
-            if retry_ih is not None:
-                ih = retry_ih
+        # Retry critical fields sequentially (including a fresh Ticker object)
+        # so ROE/margins/institutional checks don't end up "Nicht verfügbar".
+        needs_info = (not info) or (isinstance(info, dict) and not info.get("returnOnEquity"))
+        needs_ih = ih is None
+        if needs_info or needs_ih:
+            for attempt in range(2):
+                source_obj = ticker_obj if attempt == 0 else yf.Ticker(ticker)
+                if needs_info:
+                    retry_info = _load_ticker_attr_value(source_obj, ticker, "info") or {}
+                    if isinstance(retry_info, dict) and retry_info:
+                        info = retry_info
+                        needs_info = not info.get("returnOnEquity")
+                if needs_ih:
+                    retry_ih = _load_ticker_attr_value(source_obj, ticker, "institutional_holders")
+                    if retry_ih is not None:
+                        ih = retry_ih
+                        needs_ih = False
+                if not needs_info and not needs_ih:
+                    break
 
         qraw = None
         fmp_err = None
@@ -7587,6 +7604,14 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                     return 50.0
                 return round((pos + neu * 0.5) / total * 100.0, 1)
 
+            ma_score = (
+                30.0 * float(above_200)
+                + 24.0 * float(above_50)
+                + 18.0 * float(above_21)
+                + 8.0 * float(pd.notna(sma10 := (close.rolling(10).mean().iloc[-1] if len(close) >= 10 else np.nan)) and latest > sma10)
+                + 20.0 * float(pd.notna(ema21) and pd.notna(sma50) and pd.notna(sma200) and ema21 > sma50 > sma200)
+            )
+
             rows.append({
                 "Ticker": ticker,
                 "Name": (info.get("shortName", ticker) if isinstance(info, dict) else ticker),
@@ -7598,9 +7623,12 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "ATR %": atr_pct,
                 "Beta": beta,
                 "RS-Rating": rs_rating,
+                "Über 10-SMA": bool(pd.notna(sma10) and latest > sma10),
                 "Über 21-EMA": above_21,
                 "Über 50-SMA": above_50,
                 "Über 200-SMA": above_200,
+                "MA-Ordnung": bool(pd.notna(ema21) and pd.notna(sma50) and pd.notna(sma200) and ema21 > sma50 > sma200),
+                "Score Gleitende Durchschnitte": round(ma_score, 1),
                 "Trend Positiv": trend_pos,
                 "Trend Negativ": trend_neg,
                 "Trend Neutral": trend_neu,
@@ -7642,8 +7670,9 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
     df["Gesamt-Score"] = (
         df["Score Momentum"] * 0.25
         + df["Score RS"] * 0.25
-        + df["Score Trend"] * 0.20
-        + df["Score Fundamental"] * 0.15
+        + df["Score Trend"] * 0.16
+        + df["Score Gleitende Durchschnitte"] * 0.10
+        + df["Score Fundamental"] * 0.14
         + df["Score Technisch"] * 0.10
         + df["Score Chart"] * 0.05
     ).round(1)
@@ -7682,7 +7711,7 @@ def _render_stock_compare_section() -> None:
 
     overview_cols = [
         "Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score RS", "Score Trend",
-        "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
+        "Score Gleitende Durchschnitte", "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
     ]
     st.markdown("##### 1) Gesamtranking")
     st.dataframe(compare_df[overview_cols].round(1), width="stretch", hide_index=True, column_config=rating_overview_column_config())
@@ -7693,9 +7722,13 @@ def _render_stock_compare_section() -> None:
         "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
         "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
         "Trend": [
-            "Rang", "Ticker", "Score Trend",
+            "Rang", "Ticker", "Score Trend", "Score Gleitende Durchschnitte",
             "Trend Positiv", "Trend Negativ", "Trend Neutral",
-            "Über 21-EMA", "Über 50-SMA", "Über 200-SMA",
+            "Über 10-SMA", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA", "MA-Ordnung",
+        ],
+        "Gleitende Durchschnitte": [
+            "Rang", "Ticker", "Score Gleitende Durchschnitte",
+            "Über 200-SMA", "Über 50-SMA", "Über 21-EMA", "Über 10-SMA", "MA-Ordnung",
         ],
         "Fundamental": ["Rang", "Ticker", "Score Fundamental", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral"],
         "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral"],
@@ -7721,13 +7754,13 @@ def _render_stock_compare_section() -> None:
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
             "Ticker", "Name", "Preis", "Perf 1M %", "Perf 3M %", "Perf 6M %", "Drawdown %", "ATR %", "Beta",
-            "RS-Rating", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA",
+            "RS-Rating", "Über 10-SMA", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA", "MA-Ordnung",
             "Trend Positiv", "Trend Negativ", "Trend Neutral",
             "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
             "Technisch Positiv", "Technisch Negativ", "Technisch Neutral",
             "Chart Positiv", "Chart Negativ", "Chart Neutral",
             "Score Fundamental", "Score Technisch", "Score Chart",
-            "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Gesamt-Score",
+            "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Score Gleitende Durchschnitte", "Gesamt-Score",
         ]
         st.dataframe(compare_df[raw_cols].round(2), width="stretch", hide_index=True)
 
@@ -7908,8 +7941,16 @@ def _tab_aktienbewertung():
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
+    _sma10 = df["Close"].rolling(10).mean()
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
     dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
+    ma_score_single = (
+        30.0 * float(pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1])
+        + 24.0 * float(pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1])
+        + 18.0 * float(pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1])
+        + 8.0 * float(pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1])
+        + 20.0 * float(pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1])
+    )
 
     # --- Gesamtscore prominent (volle Breite) ---
     render_kpi_card(
@@ -7922,8 +7963,8 @@ def _tab_aktienbewertung():
         rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
     )
 
-    # --- 4 Einzelscores ---
-    kpi_sub = st.columns(4)
+    # --- 5 Einzelscores ---
+    kpi_sub = st.columns(5)
     with kpi_sub[0]:
         render_kpi_card(
             label="Qualität",
@@ -7965,6 +8006,22 @@ def _tab_aktienbewertung():
             rule_note="Kurslage über EMA/SMA und relative Stärke bestimmen, ob das Setup konstruktiv oder anfällig wirkt.",
         )
     with kpi_sub[3]:
+        render_kpi_card(
+            label="Gleitende Durchschnitte",
+            value=f"{ma_score_single:.0f}/100",
+            interpretation=(
+                f'200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · '
+                f'50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · '
+                f'21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · '
+                f'10-SMA: {"ja" if pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1] else "nein"} · '
+                f'Ordnung 21>50>200: {"ja" if pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1] else "nein"}'
+            ),
+            tone="good" if ma_score_single >= 75 else "warn" if ma_score_single >= 45 else "bad",
+            help_text="Gewichteter MA-Teilscore mit Schwerpunkt auf 200-SMA, danach 50-SMA, 21-EMA, MA-Ordnung und 10-SMA.",
+            why_important="Der Score zeigt auf einen Blick, ob die Trendstruktur über mehrere Zeithorizonte konstruktiv ausgerichtet ist.",
+            rule_note="Gewichtung: 200-SMA 30, 50-SMA 24, 21-EMA 18, MA-Ordnung 20, 10-SMA 8 Punkte.",
+        )
+    with kpi_sub[4]:
         render_kpi_card(
             label="Risiko",
             value=f'{assessment["risk_score"]}/100',
