@@ -7776,8 +7776,9 @@ def build_stock_assessment(
 
     # Risiko
     beta = info.get("beta")
+    dist_21 = (price / ema21.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(ema21.iloc[-1]) and ema21.iloc[-1] else np.nan
     dist_50 = (price / sma50.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma50.iloc[-1]) and sma50.iloc[-1] else np.nan
-    atr_extension = dist_50 / atr_pct if pd.notna(dist_50) and pd.notna(atr_pct) and atr_pct > 0 else np.nan
+    dist_200 = (price / sma200.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma200.iloc[-1]) and sma200.iloc[-1] else np.nan
     _add_metric(risk_metrics, atr_pct, good=2.5, mid=4.5, invert=True)
     _add_metric(risk_metrics, beta, good=1.0, mid=1.6, invert=True)
     _add_metric(risk_metrics, abs(drawdown_52w) if pd.notna(drawdown_52w) else np.nan, good=12, mid=25, invert=True)
@@ -7821,8 +7822,12 @@ def build_stock_assessment(
     if available_groups <= 1 or len(df) < 120:
         status = "Nicht bewertbar"
         tone = "neutral"
-    elif trend_score >= 75 and ((pd.notna(dist_50) and dist_50 >= 18) or (pd.notna(atr_extension) and atr_extension >= 4.5)):
-        status = "Zu erweitert"
+    elif trend_score >= 75 and (
+        (pd.notna(dist_50) and dist_50 >= 18)
+        or (pd.notna(dist_21) and dist_21 >= 15)
+        or (pd.notna(dist_200) and dist_200 >= 50)
+    ):
+        status = "Überdehnt"
         tone = "warn"
     elif total_score >= 80 and _safe_score(risk_score) >= 45:
         status = "Attraktiv"
@@ -7839,8 +7844,8 @@ def build_stock_assessment(
 
     if available_groups <= 1:
         summary = "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar."
-    elif status == "Zu erweitert":
-        summary = "Die Aktie zeigt relative Stärke, ist kurzfristig jedoch deutlich erweitert."
+    elif status == "Überdehnt":
+        summary = "Die Aktie zeigt relative Stärke, ist jedoch deutlich von ihren gleitenden Durchschnitten entfernt."
     elif _safe_score(quality_score) >= 65 and _safe_score(trend_score) >= 65 and _safe_score(risk_score) < 50:
         summary = "Qualität und Trend sind konstruktiv, das Risiko ist aber erhöht."
     elif data_basis == "chart_only":
@@ -8330,7 +8335,7 @@ def _tab_aktienbewertung():
     chart_score_100_i = _round_half_up_int(chart_score_100)
 
     # Verdict basiert auf dem neuen Gesamtscore; Sonderfälle aus dem Assessment bleiben erhalten
-    if assessment["status"] in ("Nicht bewertbar", "Zu erweitert"):
+    if assessment["status"] in ("Nicht bewertbar", "Überdehnt"):
         verdict_label = assessment["status"]
         verdict_cls = f"status-{assessment['status_tone']}"
         verdict_text = assessment["summary"]
