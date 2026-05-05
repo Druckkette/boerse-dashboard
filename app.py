@@ -7823,9 +7823,9 @@ def build_stock_assessment(
         status = "Nicht bewertbar"
         tone = "neutral"
     elif trend_score >= 75 and (
-        (pd.notna(dist_50) and dist_50 >= 18)
-        or (pd.notna(dist_21) and dist_21 >= 15)
-        or (pd.notna(dist_200) and dist_200 >= 50)
+        (pd.notna(dist_50) and dist_50 >= 25)
+        or (pd.notna(dist_21) and dist_21 >= 14)
+        or (pd.notna(dist_200) and dist_200 >= 70)
     ):
         status = "Überdehnt"
         tone = "warn"
