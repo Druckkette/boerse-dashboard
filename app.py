@@ -2677,7 +2677,85 @@ def _load_ticker_attr_value(ticker_obj, ticker_symbol, attr_name):
                     return method()
             except Exception as method_exc:
                 logger.debug("Ticker method %s failed for %s: %s", method_name, ticker_symbol, method_exc)
+        # Network fallback for common crumb-related Yahoo failures.
+        if attr_name in {"info", "institutional_holders"}:
+            try:
+                if attr_name == "info":
+                    info = _fetch_yahoo_info_via_http(ticker_symbol)
+                    if info:
+                        return info
+                if attr_name == "institutional_holders":
+                    holders = _fetch_yahoo_institutional_holders_via_http(ticker_symbol)
+                    if holders is not None and len(holders):
+                        return holders
+            except Exception as http_exc:
+                logger.debug("HTTP fallback for %s failed for %s: %s", attr_name, ticker_symbol, http_exc)
         return None
+
+
+def _fetch_yahoo_info_via_http(ticker_symbol: str) -> dict:
+    symbol = str(ticker_symbol or "").strip().upper()
+    if not symbol:
+        return {}
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+    modules = ",".join(["price", "summaryProfile", "defaultKeyStatistics", "financialData"])
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, params={"modules": modules}, headers=headers, timeout=12)
+    resp.raise_for_status()
+    payload = (resp.json() or {}).get("quoteSummary", {}).get("result", [])
+    if not payload:
+        return {}
+    block = payload[0]
+    out: dict[str, object] = {}
+    price = block.get("price", {}) if isinstance(block, dict) else {}
+    stats = block.get("defaultKeyStatistics", {}) if isinstance(block, dict) else {}
+    fin = block.get("financialData", {}) if isinstance(block, dict) else {}
+    profile = block.get("summaryProfile", {}) if isinstance(block, dict) else {}
+
+    def _raw(d, key):
+        v = d.get(key) if isinstance(d, dict) else None
+        if isinstance(v, dict):
+            return v.get("raw", v.get("fmt"))
+        return v
+
+    out["shortName"] = _raw(price, "shortName") or _raw(price, "longName")
+    out["returnOnEquity"] = _raw(fin, "returnOnEquity")
+    out["grossMargins"] = _raw(fin, "grossMargins")
+    out["operatingMargins"] = _raw(fin, "operatingMargins")
+    out["debtToEquity"] = _raw(fin, "debtToEquity")
+    out["revenueGrowth"] = _raw(fin, "revenueGrowth")
+    out["earningsGrowth"] = _raw(fin, "earningsGrowth")
+    out["beta"] = _raw(stats, "beta")
+    out["sector"] = _raw(profile, "sector")
+    out["industry"] = _raw(profile, "industry")
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _fetch_yahoo_institutional_holders_via_http(ticker_symbol: str) -> pd.DataFrame | None:
+    symbol = str(ticker_symbol or "").strip().upper()
+    if not symbol:
+        return None
+    url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, params={"modules": "institutionOwnership"}, headers=headers, timeout=12)
+    resp.raise_for_status()
+    payload = (resp.json() or {}).get("quoteSummary", {}).get("result", [])
+    if not payload:
+        return None
+    ownership = payload[0].get("institutionOwnership", {}) if isinstance(payload[0], dict) else {}
+    rows = ownership.get("ownershipList", []) if isinstance(ownership, dict) else []
+    if not rows:
+        return None
+    parsed = []
+    for item in rows:
+        org = item.get("organization")
+        pct = item.get("pctHeld")
+        pct_val = pct.get("raw") if isinstance(pct, dict) else pct
+        val = item.get("value")
+        val_num = val.get("raw") if isinstance(val, dict) else val
+        parsed.append({"Holder": org, "pctHeld": pct_val, "Value": val_num})
+    frame = pd.DataFrame(parsed)
+    return frame if len(frame) else None
 
 
 def _load_ticker_earnings_dates(ticker_obj, ticker_symbol, limit=12):
