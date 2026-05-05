@@ -7766,11 +7766,11 @@ def _tab_aktienbewertung():
     act1, act2, act3 = st.columns([1, 1, 2])
     private_ok = _is_private_unlocked()
     with act1:
-        if st.button("➕ Zur Watchlist", use_container_width=True, key="add_watch_stock", disabled=not private_ok):
+        if private_ok and st.button("➕ Zur Watchlist", use_container_width=True, key="add_watch_stock", type="secondary"):
             _add_watchlist_ticker(ticker)
             st.success(f"{ticker} zur Watchlist hinzugefügt.")
     with act2:
-        if st.button("💼 Als Position merken", use_container_width=True, key="add_pos_stock", disabled=not private_ok):
+        if private_ok and st.button("💼 Als Position merken", use_container_width=True, key="add_pos_stock", type="secondary"):
             _upsert_position({
                 "ticker": ticker,
                 "buy_price": round(price, 2),
