@@ -375,15 +375,25 @@ def search_symbol_candidates(query: str):
 def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia", show_quick: bool = True):
     _init_workspace_state()
     if show_quick:
-        quick = []
-        for source in [st.session_state.get("recent_tickers", []), st.session_state.get("watchlist", []), DEFAULT_FAVORITES]:
+        recents = list(dict.fromkeys(st.session_state.get("recent_tickers", [])))[:6]
+        others: list[str] = []
+        for source in [st.session_state.get("watchlist", []), DEFAULT_FAVORITES]:
             for ticker in source:
-                if ticker not in quick:
-                    quick.append(ticker)
-        quick = quick[:8]
-        if quick:
-            cols = st.columns(min(4, len(quick)))
-            for i, ticker in enumerate(quick):
+                if ticker not in recents and ticker not in others:
+                    others.append(ticker)
+        others = others[: max(0, 8 - len(recents))]
+
+        if recents:
+            st.markdown('<div class="card-label">🕐 Zuletzt geprüft</div>', unsafe_allow_html=True)
+            cols = st.columns(min(6, len(recents)))
+            for i, ticker in enumerate(recents):
+                with cols[i % len(cols)]:
+                    if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True, type="secondary"):
+                        st.session_state[f"{key_prefix}_query"] = ticker
+
+        if others:
+            cols = st.columns(min(4, len(others)))
+            for i, ticker in enumerate(others):
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
                         st.session_state[f"{key_prefix}_query"] = ticker
