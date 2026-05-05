@@ -383,7 +383,12 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
     _init_workspace_state()
     input_key = f"{key_prefix}_query_input"
     selected_key = f"{key_prefix}_query"
-    if input_key not in st.session_state:
+    pending_key = f"{key_prefix}_pending_ticker"
+    pending_ticker = st.session_state.pop(pending_key, None)
+    if pending_ticker:
+        st.session_state[selected_key] = pending_ticker
+        st.session_state[input_key] = pending_ticker
+    elif input_key not in st.session_state:
         st.session_state[input_key] = st.session_state.get(selected_key, "")
     query = st.text_input(label, value=st.session_state.get(input_key, ""), placeholder=placeholder, key=input_key)
     query = (query or "").strip()
@@ -406,8 +411,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
             for i, ticker in enumerate(recents):
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True, type="secondary"):
-                        st.session_state[input_key] = ticker
-                        st.session_state[selected_key] = ticker
+                        st.session_state[pending_key] = ticker
                         st.rerun()
 
         if others:
@@ -415,8 +419,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
             for i, ticker in enumerate(others):
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
-                        st.session_state[input_key] = ticker
-                        st.session_state[selected_key] = ticker
+                        st.session_state[pending_key] = ticker
                         st.rerun()
     if not query:
         return ""
