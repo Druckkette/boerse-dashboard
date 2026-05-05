@@ -8155,7 +8155,7 @@ def _tab_aktienbewertung():
     _sma200 = df["Close"].rolling(200).mean()
 
     fundamentals_checks = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
-    technical_checks, _, _ = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
+    technical_checks, cmf_val, _ = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
     signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
 
     # Yahoo Finance sometimes omits quarterlyRevenueGrowth / quarterlyEarningsGrowth from
