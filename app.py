@@ -8334,12 +8334,13 @@ def _tab_aktienbewertung():
     chart_score_100_i = _round_half_up_int(chart_score_100)
 
     _vol_str = f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—"
+    rs_quick = f"{int(rs_rating_val)}" if rs_rating_val is not None and pd.notna(rs_rating_val) else "n/a"
     st.markdown(
         f'<div class="info-card">'
         f'<div class="card-label">Schnellurteil</div>'
         f'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center;">'
         f'<div><div class="hero-title" style="font-size:1.05rem;">{name} ({ticker})</div>'
-        f'<div class="mini-help">Letzter Schluss {last_date} · Schlusskurs ${price:,.2f} · {chg:+.2f}% · Volumen {_vol_str}</div></div>'
+        f'<div class="mini-help">Letzter Schluss {last_date} · Schlusskurs ${price:,.2f} · {chg:+.2f}% · Volumen {_vol_str} · RS-Rating {rs_quick}</div></div>'
         f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         f'<span class="pill">Gesamtscore: {overall_score}/100</span>'
         f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
@@ -8515,9 +8516,6 @@ def _tab_aktienbewertung():
             rule_note="Positiv = über dem bisherigen 52W-Hoch.",
             compact=True,
         )
-
-    with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["Closing Range", "ATR (21T)", "21-EMA", "50-SMA", "Drawdown"])
 
     bullet_cols = st.columns(2)
     with bullet_cols[0]:
@@ -9125,9 +9123,6 @@ def _tab_marktanalyse(compact: bool = False):
         else:
             d200_tone, d200_lbl = "good", "✓ OK"
         _render_dist_tile("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone, "Langfristiger Trendabstand")
-
-    with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["21-EMA", "50-SMA", "Drawdown"])
 
     st.plotly_chart(plot_price_with_volume(df, sd), width="stretch", config={"displayModeBar": False})
 
