@@ -2695,7 +2695,6 @@ def _load_stock_reference_data_parallel(ticker, fmp_key, ticker_obj=None):
         "qi": (_load_ticker_attr_value, ticker_obj, ticker, "quarterly_income_stmt"),
         "ai": (_load_ticker_attr_value, ticker_obj, ticker, "income_stmt"),
         "ih": (_load_ticker_attr_value, ticker_obj, ticker, "institutional_holders"),
-        "qe": (_load_ticker_attr_value, ticker_obj, ticker, "quarterly_earnings"),
         "ed": (_load_ticker_earnings_dates, ticker_obj, ticker, 12),
         "sec": (_fetch_quarterly_sec_companyfacts, ticker),
     }
@@ -6091,7 +6090,6 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
     1. qraw (direct Yahoo API, may have 8+ quarters for EPS and Revenue)
     2. earnings_dates (epsActual, up to 12 quarters, EPS only)
     3. quarterly_income_stmt (usually 5 quarters max)
-    4. quarterly_earnings (deprecated, sometimes still works)
     Returns list of (label, growth%, flag, cur, prev) newest first."""
 
     def _fmt_qlabel(idx):
@@ -6217,16 +6215,6 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
     if row is not None:
         vals = row.dropna().sort_index(ascending=False)
         if len(vals) >= 5:
-            res = _extract_yoy(vals)
-            if _is_same_quarter_chain(res):
-                return res
-
-    # ── 3. quarterly_earnings (deprecated fallback) ──
-    if qe is not None and not qe.empty:
-        col_map = {"eps": "Earnings", "revenue": "Revenue"}
-        col = col_map.get(field)
-        if col and col in qe.columns:
-            vals = qe[col].dropna().sort_index(ascending=False)
             res = _extract_yoy(vals)
             if _is_same_quarter_chain(res):
                 return res
@@ -6563,7 +6551,7 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
             return d
         aliases = {
             "returnOnEquity": ("returnOnEquity", "return_on_equity"),
-            "heldPercentInstitutions": ("heldPercentInstitutions", "held_percent_institutions"),
+            "heldPercentInstitutions": ("heldPercentInstitutions", "held_percent_institutions", "heldByInstitutions", "institutionPercentHeld"),
             "profitMargins": ("profitMargins", "profit_margins"),
         }
         for key in aliases.get(k, (k,)):
@@ -6717,6 +6705,19 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
 
     # ── ROE ≥ 17% ──
     roe = _g("returnOnEquity")
+    if roe is None and ai is not None and not ai.empty and info:
+        try:
+            ni_row = _find_row(ai, ["Net Income", "NetIncome", "Net Income Common Stockholders"])
+            ni_series = ni_row.dropna().sort_index(ascending=False) if ni_row is not None else None
+            net_income = float(ni_series.iloc[0]) if ni_series is not None and len(ni_series) else np.nan
+            book_value = info.get("bookValue")
+            shares_out = info.get("sharesOutstanding")
+            if book_value is not None and shares_out is not None:
+                equity = float(book_value) * float(shares_out)
+                if pd.notna(net_income) and equity > 0:
+                    roe = net_income / equity
+        except Exception:
+            pass
     if roe is not None:
         checks.append(("ROE ≥17%", roe*100 >= 17, f"{roe*100:.1f}%"))
     else:
@@ -6734,7 +6735,14 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
         checks.append(("Institutionelle Beteiligung", inst_pct * 100 > 20,
                        f"{inst_pct*100:.0f}% inst. gehalten (Detailliste nicht verfügbar)"))
     else:
-        checks.append(("Institutionelle Unterstützung", False, "Nicht verfügbar"))
+        float_shares = _g("floatShares")
+        shares_out = _g("sharesOutstanding")
+        if float_shares is not None and shares_out is not None and float(shares_out) > 0:
+            free_float = float(float_shares) / float(shares_out)
+            checks.append(("Institutionelle Unterstützung", free_float < 0.9,
+                           f"Proxy Free-Float: {free_float*100:.0f}% (Institutionen-Datenfeed fehlt)"))
+        else:
+            checks.append(("Institutionelle Unterstützung", False, "Nicht verfügbar"))
 
     # ── Profit margin ──
     pm = _g("profitMargins")
