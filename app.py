@@ -390,7 +390,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
         st.session_state[input_key] = pending_ticker
     elif input_key not in st.session_state:
         st.session_state[input_key] = st.session_state.get(selected_key, "")
-    query = st.text_input(label, value=st.session_state.get(input_key, ""), placeholder=placeholder, key=input_key)
+    query = st.text_input(label, placeholder=placeholder, key=input_key)
     query = (query or "").strip()
     st.session_state[selected_key] = query
 
