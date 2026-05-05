@@ -8459,6 +8459,17 @@ def _tab_aktienbewertung():
     # --- Zusatzindikatoren ---
     extra_row_1 = st.columns(3)
     with extra_row_1[0]:
+        dist10_tone = "neutral" if pd.isna(dist_10) else "good" if abs(dist_10) < 10 else "warn" if abs(dist_10) < 16 else "bad"
+        render_kpi_card(
+            label="Abstand 10-SMA",
+            value=f"{dist_10:+.1f}%" if pd.notna(dist_10) else "n/a",
+            interpretation="nah am Kurzfristtrend" if pd.notna(dist_10) and abs(dist_10) < 10 else "moderat entfernt" if pd.notna(dist_10) and abs(dist_10) < 16 else "stark erweitert",
+            tone=dist10_tone,
+            why_important="Der 10-SMA-Abstand zeigt, wie stark der Kurs vom sehr kurzfristigen Trend abweicht.",
+            rule_note="Unter 10% Abstand ist gut.",
+            compact=True,
+        )
+    with extra_row_1[1]:
         dist21_tone = "neutral" if pd.isna(dist_21) else "good" if abs(dist_21) < 14 else "warn" if abs(dist_21) < 20 else "bad"
         render_kpi_card(
             label="Abstand 21-EMA",
@@ -8468,17 +8479,6 @@ def _tab_aktienbewertung():
             glossary_key="21-EMA",
             why_important="Je weiter der Kurs von der 21-EMA entfernt ist, desto höher ist oft das kurzfristige Rücksetzerrisiko.",
             rule_note="Unter 14% Abstand ist gut.",
-            compact=True,
-        )
-    with extra_row_1[1]:
-        dist10_tone = "neutral" if pd.isna(dist_10) else "good" if abs(dist_10) < 10 else "warn" if abs(dist_10) < 16 else "bad"
-        render_kpi_card(
-            label="Abstand 10-SMA",
-            value=f"{dist_10:+.1f}%" if pd.notna(dist_10) else "n/a",
-            interpretation="nah am Kurzfristtrend" if pd.notna(dist_10) and abs(dist_10) < 10 else "moderat entfernt" if pd.notna(dist_10) and abs(dist_10) < 16 else "stark erweitert",
-            tone=dist10_tone,
-            why_important="Der 10-SMA-Abstand zeigt, wie stark der Kurs vom sehr kurzfristigen Trend abweicht.",
-            rule_note="Unter 10% Abstand ist gut.",
             compact=True,
         )
     with extra_row_1[2]:
