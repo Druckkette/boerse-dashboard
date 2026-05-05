@@ -2734,7 +2734,15 @@ def load_stock_full(ticker, lookback_days=500):
     empty_result = (None, None, None, None, None, None, None, None, None)
     try:
         ticker_obj = yf.Ticker(ticker)
-        df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+        try:
+            df = ticker_obj.history(start=start, end=end, auto_adjust=True)
+        except Exception:
+            df = None
+
+        if df is None or len(df) < 20:
+            # Fallback: use the shared downloader with symbol variants/retry path
+            fallback_map = _bulk_download_ohlc((str(ticker).upper(),), start, end)
+            df = fallback_map.get(str(ticker).upper()) if isinstance(fallback_map, dict) else None
         if df is None or len(df) < 20:
             return empty_result
 
@@ -7932,8 +7940,16 @@ def _tab_aktienbewertung():
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
+    _sma10 = df["Close"].rolling(10).mean()
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
     dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
+    ma_score_single = (
+        30.0 * float(pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1])
+        + 24.0 * float(pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1])
+        + 18.0 * float(pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1])
+        + 8.0 * float(pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1])
+        + 20.0 * float(pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1])
+    )
 
     # --- Gesamtscore prominent (volle Breite) ---
     render_kpi_card(
@@ -7946,8 +7962,8 @@ def _tab_aktienbewertung():
         rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
     )
 
-    # --- 4 Einzelscores ---
-    kpi_sub = st.columns(4)
+    # --- 5 Einzelscores ---
+    kpi_sub = st.columns(5)
     with kpi_sub[0]:
         render_kpi_card(
             label="Qualität",
@@ -7989,6 +8005,22 @@ def _tab_aktienbewertung():
             rule_note="Kurslage über EMA/SMA und relative Stärke bestimmen, ob das Setup konstruktiv oder anfällig wirkt.",
         )
     with kpi_sub[3]:
+        render_kpi_card(
+            label="Gleitende Durchschnitte",
+            value=f"{ma_score_single:.0f}/100",
+            interpretation=(
+                f'200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · '
+                f'50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · '
+                f'21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · '
+                f'10-SMA: {"ja" if pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1] else "nein"} · '
+                f'Ordnung 21>50>200: {"ja" if pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1] else "nein"}'
+            ),
+            tone="good" if ma_score_single >= 75 else "warn" if ma_score_single >= 45 else "bad",
+            help_text="Gewichteter MA-Teilscore mit Schwerpunkt auf 200-SMA, danach 50-SMA, 21-EMA, MA-Ordnung und 10-SMA.",
+            why_important="Der Score zeigt auf einen Blick, ob die Trendstruktur über mehrere Zeithorizonte konstruktiv ausgerichtet ist.",
+            rule_note="Gewichtung: 200-SMA 30, 50-SMA 24, 21-EMA 18, MA-Ordnung 20, 10-SMA 8 Punkte.",
+        )
+    with kpi_sub[4]:
         render_kpi_card(
             label="Risiko",
             value=f'{assessment["risk_score"]}/100',
