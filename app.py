@@ -276,7 +276,7 @@ def _render_private_gate(title: str = "🔐 Privater Bereich") -> bool:
     st.info("Dieser Bereich ist geschützt. Gib dein Passwort ein, um dein persönliches Depot, Watchlist und To-dos zu laden.")
     with st.form("private_area_login"):
         password = st.text_input("Passwort", type="password", key="private_area_password_input")
-        submitted = st.form_submit_button("Entsperren", use_container_width=True)
+        submitted = st.form_submit_button("Entsperren", width="stretch")
     if submitted:
         if _unlock_private_area(password):
             st.success("Privater Bereich entsperrt.")
@@ -410,7 +410,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
             cols = st.columns(min(recent_cols_count, len(recents)))
             for i, ticker in enumerate(recents):
                 with cols[i % len(cols)]:
-                    if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True, type="secondary"):
+                    if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", width="stretch", type="secondary"):
                         st.session_state[pending_key] = ticker
                         st.rerun()
 
@@ -418,7 +418,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
             cols = st.columns(min(4, len(others)))
             for i, ticker in enumerate(others):
                 with cols[i % len(cols)]:
-                    if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
+                    if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", width="stretch"):
                         st.session_state[pending_key] = ticker
                         st.rerun()
     if not query:
@@ -1485,7 +1485,7 @@ def _render_portfolio_72_area():
         max_loss_low = st.number_input("Untergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0, value=float(settings.get("max_depot_loss_low", 8.0)), step=0.5, key="pf_max_loss_low")
     with set_cols[4]:
         max_loss_high = st.number_input("Obergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0, value=float(settings.get("max_depot_loss_high", 12.0)), step=0.5, key="pf_max_loss_high")
-    if st.button("Portfolio-Regler speichern", use_container_width=True, key="pf_save_settings"):
+    if st.button("Portfolio-Regler speichern", width="stretch", key="pf_save_settings"):
         _save_portfolio_settings({
             "cash_balance": float(cash_balance),
             "risk_per_position_pct": float(risk_per_position_pct),
@@ -1527,7 +1527,7 @@ def _render_portfolio_72_area():
         stop_price_preview = float(buy_price) * (1 - float(stop_pct) / 100)
         st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
 
-        if st.button("Depotposition speichern", use_container_width=True, key="pf_save_position", disabled=not bool(pos_ticker)):
+        if st.button("Depotposition speichern", width="stretch", key="pf_save_position", disabled=not bool(pos_ticker)):
             buy_price_usd, eur_usd_rate = _price_to_usd(float(buy_price), currency, buy_date)
             previous_shares = _safe_float((selected_pos or {}).get("shares"), 0.0) if selected_pos else 0.0
             delta_shares = max(float(shares) - previous_shares, 0.0)
@@ -1596,7 +1596,7 @@ def _render_portfolio_72_area():
         with sell_col3:
             sell_currency = st.selectbox("Währung Verkauf", ["USD", "EUR"], index=0, key="pf_sell_currency")
         sell_date = st.date_input("Verkaufsdatum", value=datetime.now(timezone.utc).date(), key="pf_sell_date")
-        if st.button("Verkauf buchen", use_container_width=True, key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
+        if st.button("Verkauf buchen", width="stretch", key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
             if not selected_sell:
                 st.warning("Bitte zuerst eine Position wählen.")
             elif sell_shares > max_sell_shares:
@@ -1622,13 +1622,13 @@ def _render_portfolio_72_area():
         flow_note = st.text_input("Cash-Flow Notiz", value="", key="pf_flow_note")
         flow_act1, flow_act2 = st.columns(2)
         with flow_act1:
-            if st.button("Einzahlung buchen", use_container_width=True, key="pf_flow_deposit", disabled=flow_amount <= 0):
+            if st.button("Einzahlung buchen", width="stretch", key="pf_flow_deposit", disabled=flow_amount <= 0):
                 _append_cash_flow_entry(flow_date, "deposit", flow_amount, flow_note)
                 _adjust_cash_balance(float(flow_amount))
                 st.success("Einzahlung erfasst.")
                 st.rerun()
         with flow_act2:
-            if st.button("Auszahlung buchen", use_container_width=True, key="pf_flow_withdrawal", disabled=flow_amount <= 0):
+            if st.button("Auszahlung buchen", width="stretch", key="pf_flow_withdrawal", disabled=flow_amount <= 0):
                 _append_cash_flow_entry(flow_date, "withdrawal", flow_amount, flow_note)
                 _adjust_cash_balance(-float(flow_amount))
                 st.success("Auszahlung erfasst.")
@@ -1681,7 +1681,7 @@ def _render_portfolio_72_area():
             "note": "Notiz",
         })
         st.markdown("#### Einzelperformance und Risiko-Ranking")
-        st.dataframe(display_df.round(2), use_container_width=True, hide_index=True)
+        st.dataframe(display_df.round(2), width="stretch", hide_index=True)
 
         worst_source = snapshot_df[snapshot_df["is_cash"] == False] if "is_cash" in snapshot_df else snapshot_df
         worst = worst_source.sort_values("pnl_pct", ascending=True, na_position="last").head(3)[["ticker", "pnl_pct", "risk_contribution"]].copy()
@@ -1689,7 +1689,7 @@ def _render_portfolio_72_area():
             worst["pnl_pct"] = worst["pnl_pct"].round(2)
             worst["risk_contribution"] = worst["risk_contribution"].round(3)
             st.markdown("#### Verkaufskandidaten nach relativer Schwäche")
-            st.dataframe(worst.rename(columns={"ticker": "Ticker", "pnl_pct": "P&L %", "risk_contribution": "Risikobeitrag"}), use_container_width=True, hide_index=True, column_config=performance_column_config())
+            st.dataframe(worst.rename(columns={"ticker": "Ticker", "pnl_pct": "P&L %", "risk_contribution": "Risikobeitrag"}), width="stretch", hide_index=True, column_config=performance_column_config())
     else:
         st.info("Für das Depotcockpit werden nur Positionen mit Stückzahl größer 0 berücksichtigt.")
 
@@ -1715,14 +1715,14 @@ def _render_portfolio_72_area():
     auto_col1, auto_col2 = st.columns([1, 1.2])
     with auto_col1:
         if saved_curve_start is None:
-            if st.button("Kurve starten", use_container_width=True, key="pf_auto_curve_start_today"):
+            if st.button("Kurve starten", width="stretch", key="pf_auto_curve_start_today"):
                 st.session_state["pf_auto_curve_start_force_today"] = True
                 st.rerun()
         else:
             st.success(f"Kurve aktiv seit {saved_curve_start.strftime('%Y-%m-%d')}")
     with auto_col2:
         if saved_curve_start is not None:
-            if st.button("Kurve neu starten (Heute)", use_container_width=True, key="pf_auto_curve_restart_today"):
+            if st.button("Kurve neu starten (Heute)", width="stretch", key="pf_auto_curve_restart_today"):
                 st.session_state["pf_auto_curve_start_force_today"] = True
                 st.rerun()
 
@@ -1748,7 +1748,7 @@ def _render_portfolio_72_area():
             yaxis=dict(title="Index (Start = 100)", gridcolor=CHART_COLORS["grid"]),
             xaxis=dict(title="", gridcolor=CHART_COLORS["grid"]),
         )
-        st.plotly_chart(fig_auto, use_container_width=True, key="pf_curve_chart_auto")
+        st.plotly_chart(fig_auto, width="stretch", key="pf_curve_chart_auto")
         auto_display = auto_curve[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]].copy()
         auto_display["date"] = auto_display["date"].dt.strftime("%Y-%m-%d")
         auto_display = auto_display.rename(columns={
@@ -1761,7 +1761,7 @@ def _render_portfolio_72_area():
             "portfolio_index_sma21": "SMA 21",
             "sp500_index": "S&P 500",
         })
-        st.dataframe(auto_display.round(2), use_container_width=True, hide_index=True, column_config={"Datum": st.column_config.TextColumn("Datum", width="small"), "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"), "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f"), "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f"), "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f")})
+        st.dataframe(auto_display.round(2), width="stretch", hide_index=True, column_config={"Datum": st.column_config.TextColumn("Datum", width="small"), "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"), "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f"), "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f"), "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f")})
     else:
         st.info("Für die Depotkurve fehlen aktuell verwertbare Kursdaten oder Positionen mit Stückzahl.")
 
@@ -1775,9 +1775,9 @@ def _render_portfolio_72_area():
         flow_df["Betrag"] = pd.to_numeric(flow_df.get("amount", 0), errors="coerce").fillna(0.0)
         flow_df["Notiz"] = flow_df.get("note", "").astype(str)
         st.markdown("##### Erfasste Ein- und Auszahlungen")
-        st.dataframe(flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2), use_container_width=True, hide_index=True, column_config=flow_column_config())
+        st.dataframe(flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2), width="stretch", hide_index=True, column_config=flow_column_config())
         delete_idx = st.selectbox("Cash-Flow löschen", options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f}" for i, row in flow_df.iterrows()], key="pf_flow_delete_sel")
-        if delete_idx and st.button("Cash-Flow löschen", use_container_width=True, key="pf_flow_delete_btn"):
+        if delete_idx and st.button("Cash-Flow löschen", width="stretch", key="pf_flow_delete_btn"):
             idx = int(str(delete_idx).split(":", 1)[0])
             row = flow_df.iloc[idx]
             if str(row.get("Typ")) == "Einzahlung":
@@ -1797,7 +1797,7 @@ def _render_workspace_sidebar():
             state_label = "✓ entsperrt" if _is_private_unlocked() else "🔒 gesperrt"
             st.caption(f"Privater Bereich: {state_label}")
             if _is_private_unlocked():
-                if st.button("🔒 Sperren", use_container_width=True, key="sidebar_lock_private"):
+                if st.button("🔒 Sperren", width="stretch", key="sidebar_lock_private"):
                     _lock_private_area()
                     st.rerun()
         if not _is_private_unlocked():
@@ -5804,7 +5804,7 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     st.success(f"✓ {loaded} Titel aus dem NYSE/Nasdaq-Aktienuniversum geladen{ratio_txt}, {len(br)} Handelstage · Stand: {last_trading_date}")
     if requested and loaded < requested * 0.8:
         st.warning(f"Hinweis: Es wurden nicht alle Titel des NYSE/Nasdaq-Aktienuniversums geladen. Die Tiefenanalyse läuft trotzdem mit {loaded} erfolgreich geladenen Aktien ({coverage:.0%} Abdeckung des gefundenen Universums).")
-    st.plotly_chart(plot_breadth_deep(br, sd), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(plot_breadth_deep(br, sd), width="stretch", config={"displayModeBar": False})
 
     br_valid = br.dropna(subset=["McClellan", "New_Highs"], how="all")
     if len(br_valid) == 0:
@@ -7685,7 +7685,7 @@ def _render_stock_compare_section() -> None:
         "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
     ]
     st.markdown("##### 1) Gesamtranking")
-    st.dataframe(compare_df[overview_cols].round(1), use_container_width=True, hide_index=True, column_config=rating_overview_column_config())
+    st.dataframe(compare_df[overview_cols].round(1), width="stretch", hide_index=True, column_config=rating_overview_column_config())
 
     st.markdown("##### 2) Kategorien")
     category_map = {
@@ -7706,7 +7706,7 @@ def _render_stock_compare_section() -> None:
 
     button_cols = st.columns(len(category_map))
     for idx, category in enumerate(category_map.keys()):
-        if button_cols[idx].button(category, use_container_width=True, key=f"cmp_cat_{idx}"):
+        if button_cols[idx].button(category, width="stretch", key=f"cmp_cat_{idx}"):
             st.session_state["compare_selected_category"] = category
 
     selected = st.session_state.get("compare_selected_category", "Momentum")
@@ -7716,7 +7716,7 @@ def _render_stock_compare_section() -> None:
     detail_df["Rang"] = np.arange(1, len(detail_df) + 1)
 
     st.markdown(f"##### 3) Detailvergleich · {selected}")
-    st.dataframe(detail_df[selected_cols].round(2), use_container_width=True, hide_index=True)
+    st.dataframe(detail_df[selected_cols].round(2), width="stretch", hide_index=True)
 
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
@@ -7729,7 +7729,7 @@ def _render_stock_compare_section() -> None:
             "Score Fundamental", "Score Technisch", "Score Chart",
             "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Gesamt-Score",
         ]
-        st.dataframe(compare_df[raw_cols].round(2), use_container_width=True, hide_index=True)
+        st.dataframe(compare_df[raw_cols].round(2), width="stretch", hide_index=True)
 
 
 def _tab_aktienbewertung():
@@ -7789,11 +7789,11 @@ def _tab_aktienbewertung():
     act1, act2, act3 = st.columns([1, 1, 2])
     private_ok = _is_private_unlocked()
     with act1:
-        if private_ok and st.button("➕ Zur Watchlist", use_container_width=True, key="add_watch_stock", type="secondary"):
+        if private_ok and st.button("➕ Zur Watchlist", width="stretch", key="add_watch_stock", type="secondary"):
             _add_watchlist_ticker(ticker)
             st.success(f"{ticker} zur Watchlist hinzugefügt.")
     with act2:
-        if private_ok and st.button("💼 Als Position merken", use_container_width=True, key="add_pos_stock", type="secondary"):
+        if private_ok and st.button("💼 Als Position merken", width="stretch", key="add_pos_stock", type="secondary"):
             _upsert_position({
                 "ticker": ticker,
                 "buy_price": round(price, 2),
@@ -8095,7 +8095,7 @@ def _tab_aktienbewertung():
         yaxis=dict(title="", gridcolor="rgba(100,116,139,0.12)"), yaxis2=dict(title="", gridcolor="rgba(100,116,139,0.12)"), yaxis3=dict(title="", gridcolor="rgba(100,116,139,0.12)"), xaxis2=dict(gridcolor="rgba(100,116,139,0.12)"), xaxis3=dict(gridcolor="rgba(100,116,139,0.12)"),
     )
     fig_stock.update_xaxes(showgrid=False)
-    st.plotly_chart(fig_stock, use_container_width=True, key="stock_chart")
+    st.plotly_chart(fig_stock, width="stretch", key="stock_chart")
 
     col_f, col_t = st.columns(2)
     with col_f:
@@ -8195,7 +8195,7 @@ def _tab_nach_kauf():
         note_default = saved.get("note", "") if saved else ""
         note = st.text_input("Notiz", value=note_default, key="nk_note")
 
-    if st.button("💾 Position speichern / aktualisieren", use_container_width=True, disabled=not private_ok):
+    if st.button("💾 Position speichern / aktualisieren", width="stretch", disabled=not private_ok):
         buy_price_usd = float(buy_price_input)
         eur_usd_rate = None
         if currency == "EUR":
@@ -8467,7 +8467,7 @@ def _tab_sektoranalyse():
 
     styled = table.style.map(_color_cell).format("{:+.2f}%", na_rep="—")
 
-    st.dataframe(styled, use_container_width=True, height=min(500, 40 + len(table) * 38))
+    st.dataframe(styled, width="stretch", height=min(500, 40 + len(table) * 38))
 
     # ── RANKING POSITION HISTORY ──
     st.markdown("")
@@ -8508,7 +8508,7 @@ def _tab_sektoranalyse():
                     font=dict(size=8, color="#64748b")),
         hovermode="x unified",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 
@@ -8663,7 +8663,7 @@ def _tab_marktanalyse(compact: bool = False):
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
         _render_market_glossary(["21-EMA", "50-SMA", "Drawdown"])
 
-    st.plotly_chart(plot_price_with_volume(df, sd), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(plot_price_with_volume(df, sd), width="stretch", config={"displayModeBar": False})
 
     if not compact:
       with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
@@ -8743,12 +8743,12 @@ def _tab_marktanalyse(compact: bool = False):
         vc1, vc2 = st.columns(2)
         with vc1:
             if vix_df is not None:
-                st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color=CHART_COLORS["negative"]), use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color=CHART_COLORS["negative"]), width="stretch", config={"displayModeBar": False})
             else:
                 st.info("Keine VIX-Daten verfügbar")
         with vc2:
             if vixy_df is not None:
-                st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color=CHART_COLORS["warning"]), use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color=CHART_COLORS["warning"]), width="stretch", config={"displayModeBar": False})
             else:
                 st.info("Keine VIXY-Daten verfügbar")
 
@@ -8889,7 +8889,7 @@ def _render_technical_setup_area():
         with st.container(border=True):
             st.markdown(f"**Letzter Job:** {_job_type_label(latest_job.get('job_type'))} · **Status:** {_job_status_badge(latest_job.get('status'))}")
             st.caption(f"Job-ID: {latest_job.get('job_id', '—')} · Schritt: {latest_job.get('current_step') or '—'}")
-            if st.button("Status neu laden", use_container_width=True, key="tech_status_reload"):
+            if st.button("Status neu laden", width="stretch", key="tech_status_reload"):
                 st.rerun()
 
     settings = _get_portfolio_settings()
@@ -8931,7 +8931,7 @@ def _render_technical_setup_area():
         key="tech_rs_source_select",
         help="Du kannst zwischen deiner eigenen Repo-CSV, Freds RS-CSV und der DB-/Live-Berechnung umschalten. Die Auswahl wird dauerhaft gespeichert.",
     )
-    if st.button("RS-Quelle speichern", use_container_width=False, key="tech_rs_source_save"):
+    if st.button("RS-Quelle speichern", width="content", key="tech_rs_source_save"):
         settings["rs_rating_source"] = rs_source_choice if rs_source_choice in RS_SOURCE_LABELS else RS_SOURCE_CSV_LATEST
         _save_portfolio_settings(settings)
         st.success("RS-Quelle gespeichert. Die Auswahl bleibt auch nach Neustart erhalten.")
@@ -8952,7 +8952,7 @@ def _render_technical_setup_area():
         key="tech_db_backend_select",
         help="SQLite ist der Standard. Neon wird nur genutzt, wenn konfiguriert und erreichbar.",
     )
-    if st.button("Backend speichern", use_container_width=False, key="tech_db_backend_save"):
+    if st.button("Backend speichern", width="content", key="tech_db_backend_save"):
         settings["db_backend_preference"] = backend_choice if backend_choice in backend_options else "sqlite"
         _save_portfolio_settings(settings)
         st.rerun()
@@ -8976,15 +8976,15 @@ def _render_technical_setup_area():
 
     btn_refresh, btn_rescue, btn_remap, btn_export, btn_diag = st.columns(5)
     with btn_refresh:
-        refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True, disabled=bool(active_job), key="tech_refresh_universe")
+        refresh_clicked = st.button("Aktienuniversum aktualisieren", width="stretch", disabled=bool(active_job), key="tech_refresh_universe")
     with btn_rescue:
-        rescue_clicked = st.button("Fehlende nachladen", use_container_width=True, disabled=bool(active_job), key="tech_rescue_missing")
+        rescue_clicked = st.button("Fehlende nachladen", width="stretch", disabled=bool(active_job), key="tech_rescue_missing")
     with btn_remap:
-        remap_clicked = st.button("Automatisch remappen", use_container_width=True, disabled=bool(active_job), key="tech_auto_remap")
+        remap_clicked = st.button("Automatisch remappen", width="stretch", disabled=bool(active_job), key="tech_auto_remap")
     with btn_export:
-        export_clicked = st.button("RS-CSV erzeugen", use_container_width=True, disabled=bool(active_job), key="tech_export_rs_csv")
+        export_clicked = st.button("RS-CSV erzeugen", width="stretch", disabled=bool(active_job), key="tech_export_rs_csv")
     with btn_diag:
-        diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True, key="tech_yahoo_diag")
+        diagnose_clicked = st.button("Yahoo-Diagnose", width="stretch", key="tech_yahoo_diag")
 
     if refresh_clicked:
         result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit_private_tech"})
@@ -9018,7 +9018,7 @@ def _render_technical_setup_area():
             st.success(diag_stats.get("message", "Yahoo-Diagnose abgeschlossen."))
             results_df = diag_stats.get("results_df")
             if results_df is not None and not results_df.empty:
-                st.dataframe(results_df, use_container_width=True, hide_index=True)
+                st.dataframe(results_df, width="stretch", hide_index=True)
         else:
             st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
 
@@ -9037,7 +9037,7 @@ def _tab_mein_bereich():
         if updated_at:
             st.caption(f"Letzte Speicherung: {updated_at} UTC")
     with top_right:
-        if _private_area_enabled() and st.button("🔒 Bereich sperren", use_container_width=True, key="private_lock_btn"):
+        if _private_area_enabled() and st.button("🔒 Bereich sperren", width="stretch", key="private_lock_btn"):
             _lock_private_area()
             st.rerun()
 
@@ -9062,20 +9062,20 @@ def _tab_mein_bereich():
             add_watch = st.text_input("Ticker zur Watchlist hinzufügen", value="", placeholder="NVDA", key="watch_add_input").upper().strip()
             col_add, col_remove = st.columns(2)
             with col_add:
-                if st.button("Hinzufügen", use_container_width=True, key="watch_add_btn") and add_watch:
+                if st.button("Hinzufügen", width="stretch", key="watch_add_btn") and add_watch:
                     _add_watchlist_ticker(add_watch)
                     st.rerun()
             with col_remove:
                 if watchlist:
                     rem = st.selectbox("Entfernen", options=watchlist, key="watch_remove_sel")
-                    if st.button("Entfernen", use_container_width=True, key="watch_remove_btn"):
+                    if st.button("Entfernen", width="stretch", key="watch_remove_btn"):
                         _remove_watchlist_ticker(rem)
                         st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 
             st.markdown('<div class="workspace-card"><div class="card-label">Heutige To-dos</div>', unsafe_allow_html=True)
             todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=220, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
-            if st.button("To-dos speichern", use_container_width=True, key="save_todos"):
+            if st.button("To-dos speichern", width="stretch", key="save_todos"):
                 st.session_state["todos"] = todos
                 _sync_workspace()
                 st.success("To-dos gespeichert.")
@@ -9108,9 +9108,9 @@ def _tab_mein_bereich():
                         "P&L %": round(float(health["pnl"]), 2) if health and health.get("pnl") is not None and not np.isnan(health.get("pnl")) else np.nan,
                         "Notiz": pos.get("note", ""),
                     })
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config={"Ticker": st.column_config.TextColumn("Ticker", width="small"), "Stück": st.column_config.NumberColumn("Stück", format="%.2f"), "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f"), "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f%%")})
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, column_config={"Ticker": st.column_config.TextColumn("Ticker", width="small"), "Stück": st.column_config.NumberColumn("Stück", format="%.2f"), "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f"), "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f%%")})
                 remove_pos = st.selectbox("Position entfernen", options=[""] + [p.get("ticker", "") for p in positions], key="pos_remove_sel")
-                if remove_pos and st.button("Position löschen", use_container_width=True, key="pos_remove_btn"):
+                if remove_pos and st.button("Position löschen", width="stretch", key="pos_remove_btn"):
                     _remove_position(remove_pos)
                     st.rerun()
             else:
