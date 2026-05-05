@@ -8438,6 +8438,20 @@ def _tab_aktienbewertung():
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, width="stretch", key="stock_chart")
 
+    rs_rating_value = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
+    technical_score_value = _technical_points_score(technical_checks, rs_rating_value, cmf_val)
+    score_color = "#22c55e" if technical_score_value >= 75 else "#f59e0b" if technical_score_value >= 50 else "#ef4444"
+    st.markdown(
+        (
+            '<div class="info-card" style="margin-bottom:12px;">'
+            '<div class="card-label">Technisch Scorecard</div>'
+            '<div class="mini-help">Regelbasiert nach Preis, RS, Volumen, RS-Linie und CMF</div>'
+            f'<div style="font-size:1.5rem;font-weight:800;color:{score_color};margin-top:6px;">{technical_score_value:.1f}/100</div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
     col_f, col_t = st.columns(2)
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
