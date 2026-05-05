@@ -2881,7 +2881,7 @@ def _load_stock_reference_data_parallel(ticker, fmp_key, ticker_obj=None):
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_stock_full(ticker, lookback_days=500):
+def load_stock_full(ticker, lookback_days=500, cache_buster=0):
     """Load price history plus the most important fundamental datasets for one ticker."""
     end = datetime.now()
     start = end - timedelta(days=lookback_days)
@@ -2980,14 +2980,14 @@ def load_sp500_for_rs(lookback_days=400):
     return _dl("^GSPC", start, end)
 
 
-def _load_stock_analysis_context_parallel(ticker, rs_source_setting):
+def _load_stock_analysis_context_parallel(ticker, rs_source_setting, cache_buster=0):
     stock_result = (None, None, None, None, None, None, None, None, None)
     spx_df = None
     rs_universe_scores = None
     max_workers = 3 if rs_source_setting == RS_SOURCE_COMPUTED else 2
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        stock_future = executor.submit(load_stock_full, ticker)
+        stock_future = executor.submit(load_stock_full, ticker, 500, cache_buster)
         spx_future = executor.submit(load_sp500_for_rs)
         rs_future = (
             executor.submit(load_cached_universe_rs_scores)
@@ -7984,6 +7984,8 @@ def _tab_aktienbewertung():
         return
 
     rs_source_setting = _get_rs_rating_source_setting()
+    _cache_v_key = f"_stock_cache_v_{ticker}"
+    cache_buster = st.session_state.get(_cache_v_key, 0)
     with st.spinner(f"Lade {ticker} …"):
         (
             df,
@@ -7997,7 +7999,7 @@ def _tab_aktienbewertung():
             fmp_err,
             spx_df,
             rs_universe_scores,
-        ) = _load_stock_analysis_context_parallel(ticker, rs_source_setting)
+        ) = _load_stock_analysis_context_parallel(ticker, rs_source_setting, cache_buster)
 
     if df is None or len(df) < 20:
         st.error(f"Keine Daten für '{ticker}'.")
@@ -8011,7 +8013,7 @@ def _tab_aktienbewertung():
     chg = (price / prev - 1) * 100
     last_date = _format_market_date(df.index[-1])
 
-    act1, act2, act3 = st.columns([1, 1, 2])
+    act1, act2, act3, act4 = st.columns([1, 1, 1, 1])
     private_ok = _is_private_unlocked()
     with act1:
         if private_ok and st.button("➕ Zur Watchlist", width="stretch", key="add_watch_stock", type="secondary"):
@@ -8029,6 +8031,10 @@ def _tab_aktienbewertung():
             })
             st.success(f"{ticker} als Position vorgemerkt.")
     with act3:
+        if st.button("Daten neu laden", width="stretch", key="refresh_stock_data", type="secondary"):
+            st.session_state[_cache_v_key] = st.session_state.get(_cache_v_key, 0) + 1
+            st.rerun()
+    with act4:
         st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
