@@ -2763,16 +2763,25 @@ def load_stock_full(ticker, lookback_days=500):
         ed = components.get("ed")
 
         # Some Yahoo endpoints fail intermittently when fetched in parallel.
-        # Retry critical fields once sequentially so ROE/margins/institutional checks
-        # don't end up permanently "Nicht verfügbar".
-        if not info:
-            retry_info = _load_ticker_attr_value(ticker_obj, ticker, "info") or {}
-            if retry_info:
-                info = retry_info
-        if ih is None:
-            retry_ih = _load_ticker_attr_value(ticker_obj, ticker, "institutional_holders")
-            if retry_ih is not None:
-                ih = retry_ih
+        # Retry critical fields sequentially (including a fresh Ticker object)
+        # so ROE/margins/institutional checks don't end up "Nicht verfügbar".
+        needs_info = (not info) or (isinstance(info, dict) and not info.get("returnOnEquity"))
+        needs_ih = ih is None
+        if needs_info or needs_ih:
+            for attempt in range(2):
+                source_obj = ticker_obj if attempt == 0 else yf.Ticker(ticker)
+                if needs_info:
+                    retry_info = _load_ticker_attr_value(source_obj, ticker, "info") or {}
+                    if isinstance(retry_info, dict) and retry_info:
+                        info = retry_info
+                        needs_info = not info.get("returnOnEquity")
+                if needs_ih:
+                    retry_ih = _load_ticker_attr_value(source_obj, ticker, "institutional_holders")
+                    if retry_ih is not None:
+                        ih = retry_ih
+                        needs_ih = False
+                if not needs_info and not needs_ih:
+                    break
 
         qraw = None
         fmp_err = None
