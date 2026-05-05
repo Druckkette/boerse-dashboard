@@ -371,10 +371,23 @@ def search_symbol_candidates(query: str):
     fallback = query.upper().replace(" ", "")
     return [{"symbol": fallback, "name": "", "exchange": "", "type": "MANUAL"}] if fallback else []
 
+def _is_mobile_client() -> bool:
+    try:
+        headers = getattr(st.context, "headers", {}) or {}
+        ua = str(headers.get("user-agent", "")).lower()
+    except Exception:
+        ua = ""
+    return any(token in ua for token in ["iphone", "android", "mobile", "ipad"])
+
 def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia", show_quick: bool = True):
     _init_workspace_state()
+    query = st.text_input(label, value=st.session_state.get(f"{key_prefix}_query", ""), placeholder=placeholder, key=f"{key_prefix}_query")
+    query = (query or "").strip()
+
     if show_quick:
-        recents = list(dict.fromkeys(st.session_state.get("recent_tickers", [])))[:6]
+        max_recent = 4 if _is_mobile_client() else 8
+        recent_cols_count = 2 if _is_mobile_client() else 8
+        recents = list(dict.fromkeys(st.session_state.get("recent_tickers", [])))[:max_recent]
         others: list[str] = []
         for source in [st.session_state.get("watchlist", []), DEFAULT_FAVORITES]:
             for ticker in source:
@@ -384,7 +397,7 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
 
         if recents:
             st.markdown('<div class="card-label">🕐 Zuletzt geprüft</div>', unsafe_allow_html=True)
-            cols = st.columns(min(6, len(recents)))
+            cols = st.columns(min(recent_cols_count, len(recents)))
             for i, ticker in enumerate(recents):
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True, type="secondary"):
@@ -396,8 +409,6 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
                         st.session_state[f"{key_prefix}_query"] = ticker
-    query = st.text_input(label, value=st.session_state.get(f"{key_prefix}_query", ""), placeholder=placeholder, key=f"{key_prefix}_query")
-    query = (query or "").strip()
     if not query:
         return ""
     candidates = search_symbol_candidates(query)
@@ -7731,7 +7742,7 @@ def _tab_aktienbewertung():
         _render_stock_compare_section()
         st.divider()
 
-    ticker = _render_ticker_picker("stock", "Große Suche", "Ticker eingeben, z. B. NVDA, MSFT, PLTR", show_quick=True)
+    ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "Ticker eingeben, z. B. NVDA, MSFT, PLTR", show_quick=True)
     if not ticker:
         return
 
