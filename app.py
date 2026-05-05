@@ -7173,6 +7173,25 @@ def _technical_points_score(technical_checks, rs_rating, cmf_value):
     return round(float(np.clip(score / max_score * 100.0, 0, 100)), 1)
 
 
+def _fundamental_checklist_score_100(fundamentals_checks):
+    criteria_labels = [
+        "EPS ≥20% YoY (3Q)",
+        "EPS-Beschleunigung",
+        "Jährl. EPS ≥20% (3 Jahre)",
+        "Summe letzte 4 Quartals-EPS > 0",
+        "Umsatz ≥20% YoY (3Q)",
+        "Umsatz-Beschleunigung (Bonus)",
+        "Jährl. Umsatz ≥20% (3J)",
+        "ROE ≥17%",
+        "Gewinnmarge positiv",
+    ]
+    check_map = {label: bool(ok) for label, ok, _ in (fundamentals_checks or [])}
+    met = sum(1 for label in criteria_labels if check_map.get(label, False))
+    total = len(criteria_labels)
+    score = (met / total) * 100 if total else 0.0
+    return round(float(score), 1), met, total
+
+
 def _weekly_ohlc(df):
     if df is None or df.empty:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
@@ -7580,6 +7599,24 @@ def evaluate_chart_signs(df, rs_ctx=None):
     if not np.isnan(e21) and abs(l.iloc[-1] - e21) / e21 < 0.005: signs["neutral"].append(("Test der 21-EMA", ""))
     if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-SMA", ""))
     return signs
+
+
+def _chart_behavior_score_100(positive_count: int, negative_count: int) -> int:
+    """Skaliert Chartverhalten auf 0–100 anhand Maximalsignalen und Pos/Neg-Verhältnis."""
+    max_positive = 17
+    max_negative = 17
+    total_max_signals = max_positive + max_negative
+    total_active = positive_count + negative_count
+
+    # Anteil positiver Signale unter allen aktiven Pos/Neg-Signalen.
+    ratio_component = (positive_count / total_active) if total_active > 0 else 0.5  # 0..1
+
+    # Breiten-Komponente relativ zum maximal möglichen Signalumfang.
+    net_component = ((positive_count - negative_count) + max_negative) / total_max_signals  # 0..1
+
+    # Verhältnis hat den größeren Einfluss, Netto-Signalbreite stabilisiert.
+    score = int(round((ratio_component * 0.65 + net_component * 0.35) * 100))
+    return max(0, min(100, score))
 
 
 def build_stock_assessment(
@@ -8236,13 +8273,28 @@ def _tab_aktienbewertung():
         + 20.0 * float(pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1])
     )
 
-    # --- Gesamtscore + Technisch nebeneinander ---
+    np_ = len(signs["positiv"])
+    nn = len(signs["negativ"])
+    nu = len(signs["neutral"])
+    chart_score = np_ - nn
+    chart_score_100 = _chart_behavior_score_100(np_, nn)
+    if chart_score >= 3:
+        chart_verdict, chart_color = "Starkes Chartbild", "#22c55e"
+    elif chart_score >= 1:
+        chart_verdict, chart_color = "Leicht positiv", "#22c55e"
+    elif chart_score >= -1:
+        chart_verdict, chart_color = "Gemischt", "#f59e0b"
+    else:
+        chart_verdict, chart_color = "Schwaches Chartbild", "#ef4444"
+
+    # --- Gesamtscore + Technisch + Chartverhalten nebeneinander ---
     technical_score_single = _technical_points_score(
         technical_checks,
         rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None,
         cmf_val,
     )
-    score_cols = st.columns(2)
+    fundamental_score_single, fundamental_met, fundamental_total = _fundamental_checklist_score_100(fundamentals_checks)
+    score_cols = st.columns(4)
     with score_cols[0]:
         render_kpi_card(
             label="Gesamtscore",
@@ -8262,6 +8314,26 @@ def _tab_aktienbewertung():
             help_text="Technischer Teilscore nach deiner Punktelogik (inkl. RS-Staffelung und CMF-Bewertung).",
             why_important="Zeigt die technische Qualität unabhängig von fundamentalen Teilaspekten.",
             rule_note="Punktesystem gemäß definierter Kriterien, anschließend auf 0–100 skaliert.",
+        )
+    with score_cols[2]:
+        render_kpi_card(
+            label="Fundamental",
+            value=f"{fundamental_score_single}/100",
+            interpretation=f"{fundamental_met}/{fundamental_total} Kriterien erfüllt",
+            tone="good" if fundamental_score_single >= 70 else "warn" if fundamental_score_single >= 45 else "bad",
+            help_text="Gleichgewichtete 9er-Checkliste: EPS/Umsatz-Wachstum, Beschleunigung, ROE und Gewinnmarge.",
+            why_important="Zeigt, wie viele Kernkriterien der fundamentalen Checkliste aktuell erfüllt sind.",
+            rule_note="Jedes der 9 Kriterien zählt gleich viel (1/9); Score = erfüllte Kriterien / 9 × 100.",
+        )
+    with score_cols[3]:
+        render_kpi_card(
+            label="Chartverhalten",
+            value=f"{chart_score_100}/100",
+            interpretation=chart_verdict,
+            tone="good" if chart_score >= 1 else "warn" if chart_score >= -1 else "bad",
+            help_text=f"{np_} Positiv · {nn} Negativ · {nu} Neutral · Netto {chart_score:+d}",
+            why_important="Verdichtet die Chartsignale zu einer schnellen Einordnung des aktuellen Chartbilds.",
+            rule_note="0–100 aus Maximalsignalen (17/17) und Pos/Neg-Verhältnis; die verbale Einordnung folgt dem Netto-Score.",
         )
 
     # --- 5 Einzelscores ---
@@ -8455,20 +8527,6 @@ def _tab_aktienbewertung():
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, width="stretch", key="stock_chart")
 
-    rs_rating_value = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
-    technical_score_value = _technical_points_score(technical_checks, rs_rating_value, cmf_val)
-    score_color = "#22c55e" if technical_score_value >= 75 else "#f59e0b" if technical_score_value >= 50 else "#ef4444"
-    st.markdown(
-        (
-            '<div class="info-card" style="margin-bottom:12px;">'
-            '<div class="card-label">Technisch Scorecard</div>'
-            '<div class="mini-help">Regelbasiert nach Preis, RS, Volumen, RS-Linie und CMF</div>'
-            f'<div style="font-size:1.5rem;font-weight:800;color:{score_color};margin-top:6px;">{technical_score_value:.1f}/100</div>'
-            '</div>'
-        ),
-        unsafe_allow_html=True,
-    )
-
     col_f, col_t = st.columns(2)
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
@@ -8500,18 +8558,8 @@ def _tab_aktienbewertung():
                 st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    np_ = len(signs["positiv"]); nn = len(signs["negativ"]); nu = len(signs["neutral"])
-    score = np_ - nn
-    if score >= 3:
-        verd, vc = "Starkes Chartbild", "#22c55e"
-    elif score >= 1:
-        verd, vc = "Leicht positiv", "#22c55e"
-    elif score >= -1:
-        verd, vc = "Gemischt", "#f59e0b"
-    else:
-        verd, vc = "Schwaches Chartbild", "#ef4444"
     st.markdown(
-        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{vc};">{verd}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {score:+d}</div></div>',
+        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{chart_color};">{chart_verdict}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}</div></div>',
         unsafe_allow_html=True,
     )
 
