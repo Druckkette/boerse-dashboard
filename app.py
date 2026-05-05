@@ -381,8 +381,13 @@ def _is_mobile_client() -> bool:
 
 def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia", show_quick: bool = True):
     _init_workspace_state()
-    query = st.text_input(label, value=st.session_state.get(f"{key_prefix}_query", ""), placeholder=placeholder, key=f"{key_prefix}_query")
+    input_key = f"{key_prefix}_query_input"
+    selected_key = f"{key_prefix}_query"
+    if input_key not in st.session_state:
+        st.session_state[input_key] = st.session_state.get(selected_key, "")
+    query = st.text_input(label, value=st.session_state.get(input_key, ""), placeholder=placeholder, key=input_key)
     query = (query or "").strip()
+    st.session_state[selected_key] = query
 
     if show_quick:
         max_recent = 4 if _is_mobile_client() else 8
@@ -401,14 +406,18 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
             for i, ticker in enumerate(recents):
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True, type="secondary"):
-                        st.session_state[f"{key_prefix}_query"] = ticker
+                        st.session_state[input_key] = ticker
+                        st.session_state[selected_key] = ticker
+                        st.rerun()
 
         if others:
             cols = st.columns(min(4, len(others)))
             for i, ticker in enumerate(others):
                 with cols[i % len(cols)]:
                     if st.button(ticker, key=f"{key_prefix}_quick_{ticker}", use_container_width=True):
-                        st.session_state[f"{key_prefix}_query"] = ticker
+                        st.session_state[input_key] = ticker
+                        st.session_state[selected_key] = ticker
+                        st.rerun()
     if not query:
         return ""
     candidates = search_symbol_candidates(query)

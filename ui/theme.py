@@ -334,12 +334,14 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 .stButton > button:hover { background: var(--accent-hover) !important; }
 
 /* Secondary buttons – Verlauf / zuletzt geprüft */
+.stButton > button[kind="secondary"],
 .stButton > [data-testid="baseButton-secondary"] {
   background: var(--panel-2) !important;
   color: var(--text) !important;
   border: 1px solid var(--border) !important;
   box-shadow: none !important;
 }
+.stButton > button[kind="secondary"]:hover,
 .stButton > [data-testid="baseButton-secondary"]:hover {
   background: var(--panel) !important;
   color: var(--text) !important;
