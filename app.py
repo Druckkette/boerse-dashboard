@@ -8343,6 +8343,8 @@ def _tab_aktienbewertung():
         f'<div class="mini-help">Letzter Schluss {last_date} · Schlusskurs ${price:,.2f} · {chg:+.2f}% · Volumen {_vol_str} · RS-Rating {rs_quick}</div></div>'
         f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         f'<span class="pill">Gesamtscore: {overall_score}/100</span>'
+        f'<div style="width:52px;height:52px;border-radius:50%;border:2px solid rgba(59,130,246,0.35);display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(59,130,246,0.08);">'
+        f'<div style="font-size:.58rem;color:#64748b;line-height:1;">RS</div><div style="font-size:1rem;font-weight:700;color:#1d4ed8;line-height:1.05;">{rs_quick}</div></div>'
         f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
         f'<div class="mini-help">{verdict_text}</div>'
         f'<div class="mini-help">Bewertungsbasis: {"Chartbasierte Einordnung" if assessment.get("data_basis") == "chart_only" else "Fundamental + Chart"}</div></div>',
@@ -8571,9 +8573,8 @@ def _tab_aktienbewertung():
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, width="stretch", key="stock_chart")
 
-    col_f, col_t = st.columns(2)
-    with col_f:
-        st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
+    with st.expander("Fundamentale Checkliste", expanded=False):
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
         fok = sum(1 for _, ok, _ in fundamentals_checks if ok)
         for label, ok, detail in fundamentals_checks:
             render_check(label, ok, detail)
@@ -8581,8 +8582,8 @@ def _tab_aktienbewertung():
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fundamentals_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with col_t:
-        st.markdown('<div class="info-card"><div class="card-label">Technische Checkliste</div>', unsafe_allow_html=True)
+    with st.expander("Technische Checkliste", expanded=False):
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
         tok = sum(1 for _, ok, _ in technical_checks if ok)
         for label, ok, detail in technical_checks:
             render_check(label, ok, detail)
@@ -8590,22 +8591,22 @@ def _tab_aktienbewertung():
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(technical_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card-label">Chartverhalten</div>', unsafe_allow_html=True)
-    sc1, sc2, sc3 = st.columns(3)
-    for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
-        with col:
-            st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
-            if signs[key]:
-                for nm, dt in signs[key]:
-                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+    with st.expander("Chartverhalten", expanded=False):
+        sc1, sc2, sc3 = st.columns(3)
+        for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
+            with col:
+                st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
+                if signs[key]:
+                    for nm, dt in signs[key]:
+                        st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{chart_color};">{chart_verdict}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}</div></div>',
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{chart_color};">{chart_verdict}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}</div></div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ═══════════════════════════════════════════════════════
