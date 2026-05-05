@@ -7141,6 +7141,37 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
 
     return checks, cmf_val, rs_ctx
 
+def _technical_points_score(technical_checks, rs_rating, cmf_value):
+    check_map = {label: bool(ok) for label, ok, _ in technical_checks}
+    score = 0.0
+    max_score = 100.0
+
+    score += 5 if check_map.get("Preis ≥ $15", False) else 0
+    score += 5 if check_map.get("Nahe am 52W-Hoch", False) else 0
+    score += 5 if check_map.get("Dollar-Volumen ≥ $30 Mio.", False) else 0
+    score += 10 if check_map.get("Up/Down Vol. Ratio ≥1.0", False) else 0
+
+    rs_val = _safe_float(rs_rating, np.nan)
+    if pd.notna(rs_val):
+        if 80 <= rs_val < 90:
+            score += float(np.clip(np.floor(rs_val) - 79, 1, 5))
+        elif rs_val >= 90:
+            score += float(np.clip(10 + (np.floor(rs_val) - 90), 10, 15))
+
+    score += 10 if check_map.get("RS-Linie über 21-EMA", False) else 0
+    score += 10 if check_map.get("RS-Linie über 50-SMA", False) else 0
+    score += 5 if check_map.get("RS-Linie steigt über 5 Wochen", False) else 0
+    score += 10 if check_map.get("RS-Linie steigt über 13 Wochen", False) else 0
+    score += 5 if check_map.get("RS-Linie nahe 52W-Hoch", False) else 0
+
+    rat, _, _ = _cmf_rating(cmf_value)
+    if rat == "A":
+        score += 10
+    elif rat == "B":
+        score += 15
+
+    return round(float(np.clip(score / max_score * 100.0, 0, 100)), 1)
+
 
 def _weekly_ohlc(df):
     if df is None or df.empty:
@@ -7843,6 +7874,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             chart_pos = len(chart_signs.get("positiv", []))
             chart_neg = len(chart_signs.get("negativ", []))
             chart_neu = len(chart_signs.get("neutral", []))
+            technical_points_score = _technical_points_score(technical_checks, rs_rating, cmf_val)
 
             def _score_signs(pos: int, neg: int, neu: int) -> float:
                 total = pos + neg + neu
@@ -7889,7 +7921,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "Chart Neutral": chart_neu,
                 "Score Trend": _score_signs(trend_pos, trend_neg, trend_neu),
                 "Score Fundamental": _score_signs(fund_pos, fund_neg, fund_neu),
-                "Score Technisch": _score_signs(tech_pos, tech_neg, tech_neu),
+                "Score Technisch": technical_points_score,
                 "Score Chart": _score_signs(chart_pos, chart_neg, chart_neu),
             })
 
