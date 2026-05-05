@@ -60,7 +60,6 @@ METRIC_GLOSSARY = {
     "Drawdown": "Abstand zum 52-Wochen-Hoch. Große negative Werte zeigen eine laufende Korrektur oder Schwächephase.",
     "Closing Range": "Wo der Schluss im Tagesbereich liegt. Hohe Werte bedeuten einen starken Schluss nahe Tageshoch.",
     "ATR (21T)": "Durchschnittliche Schwankungsbreite der letzten 21 Tage in Prozent. Hilft bei Risiko und Positionsgröße.",
-    "DRR (Ø21T)": "Average Daily Range der letzten 21 Tage. Zeigt, wie nervös oder ruhig eine Aktie handelt.",
     "Beta": "Empfindlichkeit der Aktie gegenüber dem Gesamtmarkt. Werte über 1 bedeuten meist mehr Dynamik, aber auch mehr Schwankung.",
     "McClellan Osc.": "RANA-McClellan: EMA(19)−EMA(39) der ratio-adjustierten Net Advances (×1000). Zonen: 0 = Regimewechsel · ±30 = neutrales Rauschen · ±50 = ernstzunehmender Breiten-Impuls · ±80 = überdehnte Breite · ±125 = Extremzustand.",
     "NH/NL Ratio": "Verhältnis neuer 52-Wochen-Hochs zu neuen 52-Wochen-Tiefs. Über 1 zeigt breite Stärke.",
@@ -7884,7 +7883,6 @@ def _tab_aktienbewertung():
     # KPI-Cockpit mit Einordnung
     rng_hl = L["High"] - L["Low"]
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
-    drr = ((df["High"] - df["Low"]) / df["Close"] * 100).tail(21).mean()
     beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
@@ -8012,7 +8010,7 @@ def _tab_aktienbewertung():
         render_kpi_card(
             label="ATR / Volatilität",
             value=f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a",
-            interpretation=f"{cat_lbl or 'ohne Kategorie'} · DRR {drr:.2f}%",
+            interpretation=f"{cat_lbl or 'ohne Kategorie'}",
             tone=atr_tone,
             glossary_key="ATR (21T)",
             why_important="Volatilität beeinflusst das kurzfristige Schwankungsrisiko und die sinnvolle Positionsgröße.",
@@ -8020,7 +8018,7 @@ def _tab_aktienbewertung():
         )
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["Closing Range", "ATR (21T)", "DRR (Ø21T)", "Beta", "RS-Linie", "RS-Rating"])
+        _render_market_glossary(["Closing Range", "ATR (21T)", "Beta", "RS-Linie", "RS-Rating"])
 
     bullet_cols = st.columns(2)
     with bullet_cols[0]:
