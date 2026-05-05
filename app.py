@@ -8407,9 +8407,9 @@ def _tab_aktienbewertung():
         unsafe_allow_html=True,
     )
 
-    # --- 4 Zusatzindikatoren ---
-    kpi_extra = st.columns(4)
-    with kpi_extra[0]:
+    # --- Zusatzindikatoren ---
+    extra_row_1 = st.columns(3)
+    with extra_row_1[0]:
         dist21_tone = "neutral" if pd.isna(dist_21) else "good" if abs(dist_21) < 14 else "warn" if abs(dist_21) < 20 else "bad"
         render_kpi_card(
             label="Abstand 21-EMA",
@@ -8420,7 +8420,7 @@ def _tab_aktienbewertung():
             why_important="Je weiter der Kurs von der 21-EMA entfernt ist, desto höher ist oft das kurzfristige Rücksetzerrisiko.",
             rule_note="Unter 14% Abstand wird hier als konstruktiv bewertet.",
         )
-    with kpi_extra[1]:
+    with extra_row_1[1]:
         dist10_tone = "neutral" if pd.isna(dist_10) else "good" if abs(dist_10) < 10 else "warn" if abs(dist_10) < 16 else "bad"
         render_kpi_card(
             label="Abstand 10-SMA",
@@ -8430,31 +8430,61 @@ def _tab_aktienbewertung():
             why_important="Der 10-SMA-Abstand zeigt, wie stark der Kurs vom sehr kurzfristigen Trend abweicht.",
             rule_note="Unter 10% Abstand gilt hier als günstig.",
         )
-    with kpi_extra[2]:
-        beta_tone = "neutral" if beta is None or pd.isna(beta) else "good" if beta <= 1.0 else "warn" if beta <= 1.6 else "bad"
+    with extra_row_1[2]:
+        dist50_tone = "neutral" if pd.isna(dist_50) else "good" if abs(dist_50) <= 6 else "warn" if abs(dist_50) <= 14 else "bad"
         render_kpi_card(
-            label="Beta",
-            value=f"{beta:.2f}" if beta is not None and pd.notna(beta) else "n/a",
-            interpretation="niedrige Marktsensitivität" if beta is not None and pd.notna(beta) and beta <= 1.0 else "erhöhte Schwankung" if beta is not None and pd.notna(beta) and beta <= 1.6 else "hohe Schwankung" if beta is not None and pd.notna(beta) else "nicht verfügbar",
-            tone=beta_tone,
-            glossary_key="Beta",
-            why_important="Beta beschreibt, wie stark eine Aktie auf Marktbewegungen reagiert.",
-            rule_note="≤1.0 defensiver, 1.01–1.60 offensiver, >1.60 deutlich volatiler.",
+            label="Abstand 50-SMA",
+            value=f"{dist_50:+.1f}%" if pd.notna(dist_50) else "n/a",
+            interpretation="nahe der 50-SMA" if pd.notna(dist_50) and abs(dist_50) <= 6 else "moderat entfernt" if pd.notna(dist_50) and abs(dist_50) <= 14 else "deutlich erweitert",
+            tone=dist50_tone,
+            glossary_key="50-SMA",
+            why_important="Größere Abstände zur 50-SMA erhöhen oft das Rücksetzer-Risiko im laufenden Trend.",
+            rule_note="Bis etwa ±6% gilt als stabil, darüber steigt der Beobachtungsbedarf.",
         )
-    with kpi_extra[3]:
+
+    extra_row_2 = st.columns(3)
+    with extra_row_2[0]:
+        dist200_tone = "neutral" if pd.isna(dist_200) else "good" if dist_200 >= 0 else "warn" if dist_200 >= -8 else "bad"
+        render_kpi_card(
+            label="Abstand 200-SMA",
+            value=f"{dist_200:+.1f}%" if pd.notna(dist_200) else "n/a",
+            interpretation="oberhalb Langfristtrend" if pd.notna(dist_200) and dist_200 >= 0 else "leicht unter Langfristtrend" if pd.notna(dist_200) and dist_200 >= -8 else "deutlich unter Langfristtrend",
+            tone=dist200_tone,
+            why_important="Die 200-SMA zeigt den langfristigen Trendzustand und wirkt als Strukturfilter.",
+            rule_note="Über der 200-SMA ist der langfristige Grundzustand konstruktiver.",
+        )
+    with extra_row_2[1]:
+        atr_tone = "neutral" if pd.isna(atr_pct) else "good" if atr_pct <= 2.5 else "warn" if atr_pct <= 4.5 else "bad"
+        render_kpi_card(
+            label="ATR / Volatilität",
+            value=f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a",
+            interpretation=f"{cat_lbl or 'ohne Kategorie'}",
+            tone=atr_tone,
+            glossary_key="ATR (21T)",
+            why_important="Volatilität beeinflusst Schwankungsrisiko und sinnvolle Positionsgrößen.",
+            rule_note="Niedrige ATR-Werte sind stabiler, hohe Werte signalisieren mehr Bewegungsrisiko.",
+        )
+    with extra_row_2[2]:
         dist52_tone = "neutral" if pd.isna(drawdown_52w) else "good" if drawdown_52w >= -10 else "warn" if drawdown_52w >= -20 else "bad"
+        dist52_interp = (
+            "über 52W-Hoch" if pd.notna(drawdown_52w) and drawdown_52w > 0
+            else "am 52W-Hoch" if pd.notna(drawdown_52w) and abs(drawdown_52w) < 0.2
+            else "nahe Hoch" if pd.notna(drawdown_52w) and drawdown_52w >= -10
+            else "spürbar darunter" if pd.notna(drawdown_52w) and drawdown_52w >= -20
+            else "deutlich unter Hoch"
+        )
         render_kpi_card(
             label="Abstand 52W-Hoch",
             value=f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a",
-            interpretation="nahe Hoch" if pd.notna(drawdown_52w) and drawdown_52w >= -10 else "spürbar darunter" if pd.notna(drawdown_52w) and drawdown_52w >= -20 else "deutlich unter Hoch",
+            interpretation=dist52_interp,
             tone=dist52_tone,
             glossary_key="Drawdown",
-            why_important="Der Abstand zum 52-Wochen-Hoch zeigt, ob die Aktie in relativer Stärke oder in Korrektur notiert.",
-            rule_note="Je näher an 0%, desto näher am 52-Wochen-Hoch.",
+            why_important="Der Abstand zum 52-Wochen-Hoch zeigt relative Stärke oder laufende Korrektur.",
+            rule_note="Positive Werte bedeuten: Kurs liegt über dem bisherigen 52-Wochen-Hoch.",
         )
 
     with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["Closing Range", "ATR (21T)", "Beta", "RS-Linie", "RS-Rating"])
+        _render_market_glossary(["Closing Range", "ATR (21T)", "21-EMA", "50-SMA", "Drawdown"])
 
     bullet_cols = st.columns(2)
     with bullet_cols[0]:
