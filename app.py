@@ -2698,7 +2698,10 @@ def _fetch_yahoo_info_via_http(ticker_symbol: str) -> dict:
     if not symbol:
         return {}
     url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-    modules = ",".join(["price", "summaryProfile", "defaultKeyStatistics", "financialData"])
+    modules = ",".join([
+        "price", "summaryProfile", "defaultKeyStatistics",
+        "financialData", "majorHoldersBreakdown",
+    ])
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.get(url, params={"modules": modules}, headers=headers, timeout=12)
     resp.raise_for_status()
@@ -2711,6 +2714,7 @@ def _fetch_yahoo_info_via_http(ticker_symbol: str) -> dict:
     stats = block.get("defaultKeyStatistics", {}) if isinstance(block, dict) else {}
     fin = block.get("financialData", {}) if isinstance(block, dict) else {}
     profile = block.get("summaryProfile", {}) if isinstance(block, dict) else {}
+    holders_breakdown = block.get("majorHoldersBreakdown", {}) if isinstance(block, dict) else {}
 
     def _raw(d, key):
         v = d.get(key) if isinstance(d, dict) else None
@@ -2720,14 +2724,18 @@ def _fetch_yahoo_info_via_http(ticker_symbol: str) -> dict:
 
     out["shortName"] = _raw(price, "shortName") or _raw(price, "longName")
     out["returnOnEquity"] = _raw(fin, "returnOnEquity")
+    out["profitMargins"] = _raw(fin, "profitMargins")
     out["grossMargins"] = _raw(fin, "grossMargins")
     out["operatingMargins"] = _raw(fin, "operatingMargins")
     out["debtToEquity"] = _raw(fin, "debtToEquity")
     out["revenueGrowth"] = _raw(fin, "revenueGrowth")
     out["earningsGrowth"] = _raw(fin, "earningsGrowth")
     out["beta"] = _raw(stats, "beta")
+    out["bookValue"] = _raw(stats, "bookValue")
+    out["sharesOutstanding"] = _raw(stats, "sharesOutstanding") or _raw(price, "sharesOutstanding")
     out["sector"] = _raw(profile, "sector")
     out["industry"] = _raw(profile, "industry")
+    out["heldPercentInstitutions"] = _raw(holders_breakdown, "institutionsPercentHeld")
     return {k: v for k, v in out.items() if v is not None}
 
 
@@ -2844,7 +2852,8 @@ def load_stock_full(ticker, lookback_days=500):
         # Retry critical fields sequentially (including a fresh Ticker object)
         # so ROE/margins/institutional checks don't end up "Nicht verfügbar".
         needs_info = (not info) or (isinstance(info, dict) and not info.get("returnOnEquity"))
-        needs_ih = ih is None
+        _ih_empty = ih is None or (isinstance(ih, pd.DataFrame) and ih.empty)
+        needs_ih = _ih_empty
         if needs_info or needs_ih:
             for attempt in range(2):
                 source_obj = ticker_obj if attempt == 0 else yf.Ticker(ticker)
@@ -2855,7 +2864,11 @@ def load_stock_full(ticker, lookback_days=500):
                         needs_info = not info.get("returnOnEquity")
                 if needs_ih:
                     retry_ih = _load_ticker_attr_value(source_obj, ticker, "institutional_holders")
-                    if retry_ih is not None:
+                    _retry_ih_ok = (
+                        retry_ih is not None
+                        and not (isinstance(retry_ih, pd.DataFrame) and retry_ih.empty)
+                    )
+                    if _retry_ih_ok:
                         ih = retry_ih
                         needs_ih = False
                 if not needs_info and not needs_ih:
