@@ -8278,10 +8278,6 @@ def _tab_aktienbewertung():
         chart_signs=signs,
         rs_ctx=rs_ctx,
     )
-    verdict_label = assessment["status"]
-    verdict_cls = f"status-{assessment['status_tone']}"
-    verdict_text = assessment["summary"]
-    overall_score = assessment["total_score"]
 
     def _pct_or_na(value):
         return f"{value*100:.1f}%" if value is not None and pd.notna(value) else "n/a"
@@ -8333,6 +8329,24 @@ def _tab_aktienbewertung():
     ma_score_single_i = _round_half_up_int(ma_score_single)
     chart_score_100_i = _round_half_up_int(chart_score_100)
 
+    # Verdict basiert auf dem neuen Gesamtscore; Sonderfälle aus dem Assessment bleiben erhalten
+    if assessment["status"] in ("Nicht bewertbar", "Zu erweitert"):
+        verdict_label = assessment["status"]
+        verdict_cls = f"status-{assessment['status_tone']}"
+        verdict_text = assessment["summary"]
+    elif overall_score >= 75:
+        verdict_label = "Attraktiv"
+        verdict_cls = "status-good"
+        verdict_text = "Mehrere Teilbereiche wirken stabil und liefern ein konstruktives Gesamtbild."
+    elif overall_score >= 55:
+        verdict_label = "Beobachten"
+        verdict_cls = "status-warn"
+        verdict_text = "Das Bild ist gemischt und sollte mit Blick auf Trend und Risiko weiter beobachtet werden."
+    else:
+        verdict_label = "Zu schwach"
+        verdict_cls = "status-bad"
+        verdict_text = "Die regelbasierte Gesamtlage bleibt derzeit zu schwach für eine belastbare positive Einordnung."
+
     _vol_str = f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—"
     rs_quick = f"{int(rs_rating_val)}" if rs_rating_val is not None and pd.notna(rs_rating_val) else "n/a"
     st.markdown(
@@ -8376,10 +8390,10 @@ def _tab_aktienbewertung():
             label="Gesamtscore",
             value=f"{overall_score}/100",
             interpretation=f"{verdict_label} · {name} ({ticker})",
-            tone=assessment["status_tone"],
-            help_text=assessment["summary"],
-            why_important="Der Gesamtscore bündelt Qualität, Wachstum, Trend und Risiko in einer konsistenten Gesamtperspektive.",
-            rule_note="≥80 mit ausreichendem Risikoscore ist konstruktiv, 60–79 ist gemischt, darunter steigt der Prüfbedarf.",
+            tone="good" if overall_score >= 75 else "warn" if overall_score >= 55 else "bad",
+            help_text=verdict_text,
+            why_important="Der Gesamtscore ist der gleichgewichtete Durchschnitt aus Technisch, Fundamental, Gleitende Durchschnitte und Chartverhalten.",
+            rule_note="≥75 Attraktiv, 55–74 Beobachten, <55 Zu schwach.",
         )
     with score_cols[1]:
         render_kpi_card(
