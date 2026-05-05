@@ -7173,6 +7173,59 @@ def _technical_points_score(technical_checks, rs_rating, cmf_value):
     return round(float(np.clip(score / max_score * 100.0, 0, 100)), 1)
 
 
+def _fundamental_checklist_score_100(
+    fundamentals_checks,
+    q_earnings_growth,
+    q_revenue_growth,
+    earnings_growth,
+    revenue_growth,
+    roe,
+    profit_margin,
+):
+    criteria_labels = [
+        "EPS ≥20% YoY (3Q)",
+        "EPS-Beschleunigung",
+        "Jährl. EPS ≥20% (3 Jahre)",
+        "Summe letzte 4 Quartals-EPS > 0",
+        "Umsatz ≥20% YoY (3Q)",
+        "Umsatz-Beschleunigung (Bonus)",
+        "Jährl. Umsatz ≥20% (3J)",
+        "ROE ≥17%",
+        "Gewinnmarge positiv",
+    ]
+    check_map = {label: bool(ok) for label, ok, _ in (fundamentals_checks or [])}
+    unit = 100.0 / len(criteria_labels)
+
+    def _tiered_growth_points(value, minimum=0.20, stretch=0.60):
+        v = _safe_float(value, np.nan)
+        if pd.isna(v) or v < minimum:
+            return 0.0
+        return unit * min((v - minimum) / max(stretch - minimum, 1e-9), 1.0)
+
+    score = 0.0
+    # 1) EPS YoY (3Q): mehr Wachstum = mehr Punkte
+    score += _tiered_growth_points(q_earnings_growth, minimum=0.20, stretch=0.80)
+    # 2) EPS-Beschleunigung
+    score += unit if check_map.get("EPS-Beschleunigung", False) else 0.0
+    # 3) Jährl. EPS-Wachstum
+    score += _tiered_growth_points(earnings_growth, minimum=0.20, stretch=0.60)
+    # 4) Summe 4Q EPS > 0
+    score += unit if check_map.get("Summe letzte 4 Quartals-EPS > 0", False) else 0.0
+    # 5) Umsatz YoY (3Q)
+    score += _tiered_growth_points(q_revenue_growth, minimum=0.20, stretch=0.60)
+    # 6) Umsatz-Beschleunigung
+    score += unit if check_map.get("Umsatz-Beschleunigung (Bonus)", False) else 0.0
+    # 7) Jährl. Umsatz-Wachstum
+    score += _tiered_growth_points(revenue_growth, minimum=0.20, stretch=0.50)
+    # 8) ROE
+    score += _tiered_growth_points(roe, minimum=0.17, stretch=0.35)
+    # 9) Gewinnmarge
+    score += _tiered_growth_points(profit_margin, minimum=0.00, stretch=0.25) if _safe_float(profit_margin, np.nan) > 0 else 0.0
+
+    met = sum(1 for label in criteria_labels if check_map.get(label, False))
+    return round(float(np.clip(score, 0, 100)), 1), met, len(criteria_labels)
+
+
 def _weekly_ohlc(df):
     if df is None or df.empty:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
@@ -7580,6 +7633,24 @@ def evaluate_chart_signs(df, rs_ctx=None):
     if not np.isnan(e21) and abs(l.iloc[-1] - e21) / e21 < 0.005: signs["neutral"].append(("Test der 21-EMA", ""))
     if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-SMA", ""))
     return signs
+
+
+def _chart_behavior_score_100(positive_count: int, negative_count: int) -> int:
+    """Skaliert Chartverhalten auf 0–100 anhand Maximalsignalen und Pos/Neg-Verhältnis."""
+    max_positive = 17
+    max_negative = 17
+    total_max_signals = max_positive + max_negative
+    total_active = positive_count + negative_count
+
+    # Anteil positiver Signale unter allen aktiven Pos/Neg-Signalen.
+    ratio_component = (positive_count / total_active) if total_active > 0 else 0.5  # 0..1
+
+    # Breiten-Komponente relativ zum maximal möglichen Signalumfang.
+    net_component = ((positive_count - negative_count) + max_negative) / total_max_signals  # 0..1
+
+    # Verhältnis hat den größeren Einfluss, Netto-Signalbreite stabilisiert.
+    score = int(round((ratio_component * 0.65 + net_component * 0.35) * 100))
+    return max(0, min(100, score))
 
 
 def build_stock_assessment(
@@ -8198,12 +8269,42 @@ def _tab_aktienbewertung():
     roe = info.get("returnOnEquity") if info else None
     gross_margin = info.get("grossMargins") if info else None
     op_margin = info.get("operatingMargins") if info else None
+    profit_margin = info.get("profitMargins") if info else None
     debt_to_equity = info.get("debtToEquity") if info else None
     revenue_growth = info.get("revenueGrowth") if info else None
     earnings_growth = info.get("earningsGrowth") if info else None
     q_revenue_growth = _q_rev_fb
     q_earnings_growth = _q_eps_fb
     drawdown_52w = (price / df["Close"].rolling(252).max().iloc[-1] - 1) * 100 if len(df) >= 252 else np.nan
+
+    _sma10 = df["Close"].rolling(10).mean()
+    ma_score_single = (
+        30.0 * float(pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1])
+        + 24.0 * float(pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1])
+        + 18.0 * float(pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1])
+        + 8.0 * float(pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1])
+        + 20.0 * float(pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1])
+    )
+    technical_score_single = _technical_points_score(
+        technical_checks,
+        rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None,
+        cmf_val,
+    )
+    fundamental_score_single, fundamental_met, fundamental_total = _fundamental_checklist_score_100(
+        fundamentals_checks,
+        q_earnings_growth,
+        q_revenue_growth,
+        earnings_growth,
+        revenue_growth,
+        roe,
+        profit_margin,
+    )
+    np_ = len(signs["positiv"])
+    nn = len(signs["negativ"])
+    nu = len(signs["neutral"])
+    chart_score = np_ - nn
+    chart_score_100 = _chart_behavior_score_100(np_, nn)
+    overall_score = int(round(np.mean([technical_score_single, fundamental_score_single, chart_score_100, ma_score_single])))
 
     _vol_str = f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—"
     st.markdown(
@@ -8225,24 +8326,19 @@ def _tab_aktienbewertung():
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
-    _sma10 = df["Close"].rolling(10).mean()
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
     dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
-    ma_score_single = (
-        30.0 * float(pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1])
-        + 24.0 * float(pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1])
-        + 18.0 * float(pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1])
-        + 8.0 * float(pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1])
-        + 20.0 * float(pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1])
-    )
+    if chart_score >= 3:
+        chart_verdict, chart_color = "Starkes Chartbild", "#22c55e"
+    elif chart_score >= 1:
+        chart_verdict, chart_color = "Leicht positiv", "#22c55e"
+    elif chart_score >= -1:
+        chart_verdict, chart_color = "Gemischt", "#f59e0b"
+    else:
+        chart_verdict, chart_color = "Schwaches Chartbild", "#ef4444"
 
-    # --- Gesamtscore + Technisch nebeneinander ---
-    technical_score_single = _technical_points_score(
-        technical_checks,
-        rs_ctx.get("rating") if isinstance(rs_ctx, dict) else None,
-        cmf_val,
-    )
-    score_cols = st.columns(2)
+    # --- Gesamtscore + Technisch + Chartverhalten nebeneinander ---
+    score_cols = st.columns(5)
     with score_cols[0]:
         render_kpi_card(
             label="Gesamtscore",
@@ -8263,50 +8359,17 @@ def _tab_aktienbewertung():
             why_important="Zeigt die technische Qualität unabhängig von fundamentalen Teilaspekten.",
             rule_note="Punktesystem gemäß definierter Kriterien, anschließend auf 0–100 skaliert.",
         )
-
-    # --- 5 Einzelscores ---
-    kpi_sub = st.columns(5)
-    with kpi_sub[0]:
+    with score_cols[2]:
         render_kpi_card(
-            label="Qualität",
-            value=f'{assessment["quality_score"]}/100',
-            interpretation=(
-                f'ROE {_pct_or_na(roe)} · Bruttomarge {_pct_or_na(gross_margin)} · '
-                f'Operative Marge {_pct_or_na(op_margin)} · Debt/Equity {_val_or_na(debt_to_equity, "{:.0f}")}'
-            ),
-            tone="good" if assessment["quality_score"] >= 70 else "warn" if assessment["quality_score"] >= 45 else "bad",
-            help_text="Misst Profitabilität und Bilanzstabilität auf Basis der verfügbaren Fundamentaldaten.",
-            why_important="Höhere Qualität kann die Robustheit des Geschäftsmodells in schwierigeren Marktphasen unterstützen.",
-            rule_note="ROE, Margen und Debt/Equity werden zu einem Teilscore zusammengeführt; n/a bedeutet fehlende Provider-Daten.",
+            label="Fundamental",
+            value=f"{fundamental_score_single}/100",
+            interpretation=f"{fundamental_met}/{fundamental_total} Kriterien erfüllt",
+            tone="good" if fundamental_score_single >= 70 else "warn" if fundamental_score_single >= 45 else "bad",
+            help_text="Gleichgewichtete 9er-Checkliste: EPS/Umsatz-Wachstum, Beschleunigung, ROE und Gewinnmarge.",
+            why_important="Zeigt, wie viele Kernkriterien der fundamentalen Checkliste aktuell erfüllt sind.",
+            rule_note="Jedes der 9 Kriterien zählt gleich viel (1/9); Score = erfüllte Kriterien / 9 × 100.",
         )
-    with kpi_sub[1]:
-        render_kpi_card(
-            label="Wachstum",
-            value=f'{assessment["growth_score"]}/100',
-            interpretation=(
-                f'Umsatz Jahr {_pct_or_na(revenue_growth)} · Gewinn Jahr {_pct_or_na(earnings_growth)} · '
-                f'Umsatz Quartal {_pct_or_na(q_revenue_growth)} · Gewinn Quartal {_pct_or_na(q_earnings_growth)}'
-            ),
-            tone="good" if assessment["growth_score"] >= 70 else "warn" if assessment["growth_score"] >= 45 else "bad",
-            help_text="Bewertet die Dynamik von Umsatz und Gewinn auf Jahres- und Quartalsbasis.",
-            why_important="Nachhaltiges Wachstum kann die Wahrscheinlichkeit steigender Gewinnerwartungen erhöhen.",
-            rule_note="Jahres- und Quartalsraten werden kombiniert; n/a bedeutet, dass die Datenquelle keinen Wert geliefert hat.",
-        )
-    with kpi_sub[2]:
-        render_kpi_card(
-            label="Chart & Trend",
-            value=f'{assessment["trend_score"]}/100',
-            interpretation=(
-                f'Über 21-EMA: {"ja" if pd.notna(_ema21.iloc[-1]) and price > _ema21.iloc[-1] else "nein"} · '
-                f'Über 50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · '
-                f'Über 200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"}'
-            ),
-            tone="good" if assessment["trend_score"] >= 70 else "warn" if assessment["trend_score"] >= 45 else "bad",
-            help_text="Trend und Marktführerschaft werden über gleitende Durchschnitte, RS-Rating und Chartsignale bewertet.",
-            why_important="Ein stabiler Trend reduziert häufig die Zahl impulsiver Entscheidungen gegen den Marktfluss.",
-            rule_note="Kurslage über EMA/SMA und relative Stärke bestimmen, ob das Setup konstruktiv oder anfällig wirkt.",
-        )
-    with kpi_sub[3]:
+    with score_cols[3]:
         render_kpi_card(
             label="Gleitende Durchschnitte",
             value=f"{ma_score_single:.0f}/100",
@@ -8322,20 +8385,15 @@ def _tab_aktienbewertung():
             why_important="Der Score zeigt auf einen Blick, ob die Trendstruktur über mehrere Zeithorizonte konstruktiv ausgerichtet ist.",
             rule_note="Gewichtung: 200-SMA 30, 50-SMA 24, 21-EMA 18, MA-Ordnung 20, 10-SMA 8 Punkte.",
         )
-    with kpi_sub[4]:
+    with score_cols[4]:
         render_kpi_card(
-            label="Risiko",
-            value=f'{assessment["risk_score"]}/100',
-            interpretation=(
-                f'ATR {f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a"} · '
-                f'Beta {f"{beta:.2f}" if beta and pd.notna(beta) else "n/a"} · '
-                f'Drawdown {f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a"} · '
-                f'Volumenfaktor {f"{vol_ratio:.2f}x" if pd.notna(vol_ratio) else "n/a"}'
-            ),
-            tone="good" if assessment["risk_score"] >= 70 else "warn" if assessment["risk_score"] >= 45 else "bad",
-            help_text="Kombiniert Schwankungsbreite, Marktsensitivität und Abstand zu zentralen Referenzniveaus.",
-            why_important="Risikokennzahlen helfen, Positionsgrößen und Erwartungshaltung realistisch zu kalibrieren.",
-            rule_note="Niedrigere ATR/Beta-Werte sowie moderatere Abstände zu 50-SMA und 52W-Hoch verbessern die Einordnung; n/a bei fehlenden Daten.",
+            label="Chartverhalten",
+            value=f"{chart_score_100}/100",
+            interpretation=chart_verdict,
+            tone="good" if chart_score >= 1 else "warn" if chart_score >= -1 else "bad",
+            help_text=f"{np_} Positiv · {nn} Negativ · {nu} Neutral · Netto {chart_score:+d}",
+            why_important="Verdichtet die Chartsignale zu einer schnellen Einordnung des aktuellen Chartbilds.",
+            rule_note="0–100 aus Maximalsignalen (17/17) und Pos/Neg-Verhältnis; die verbale Einordnung folgt dem Netto-Score.",
         )
 
     # --- Trennlinie: Zusatzindikatoren (kein Bestandteil des Gesamtscores) ---
@@ -8455,20 +8513,6 @@ def _tab_aktienbewertung():
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, width="stretch", key="stock_chart")
 
-    rs_rating_value = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
-    technical_score_value = _technical_points_score(technical_checks, rs_rating_value, cmf_val)
-    score_color = "#22c55e" if technical_score_value >= 75 else "#f59e0b" if technical_score_value >= 50 else "#ef4444"
-    st.markdown(
-        (
-            '<div class="info-card" style="margin-bottom:12px;">'
-            '<div class="card-label">Technisch Scorecard</div>'
-            '<div class="mini-help">Regelbasiert nach Preis, RS, Volumen, RS-Linie und CMF</div>'
-            f'<div style="font-size:1.5rem;font-weight:800;color:{score_color};margin-top:6px;">{technical_score_value:.1f}/100</div>'
-            '</div>'
-        ),
-        unsafe_allow_html=True,
-    )
-
     col_f, col_t = st.columns(2)
     with col_f:
         st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
@@ -8500,18 +8544,8 @@ def _tab_aktienbewertung():
                 st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    np_ = len(signs["positiv"]); nn = len(signs["negativ"]); nu = len(signs["neutral"])
-    score = np_ - nn
-    if score >= 3:
-        verd, vc = "Starkes Chartbild", "#22c55e"
-    elif score >= 1:
-        verd, vc = "Leicht positiv", "#22c55e"
-    elif score >= -1:
-        verd, vc = "Gemischt", "#f59e0b"
-    else:
-        verd, vc = "Schwaches Chartbild", "#ef4444"
     st.markdown(
-        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{vc};">{verd}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {score:+d}</div></div>',
+        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{chart_color};">{chart_verdict}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}</div></div>',
         unsafe_allow_html=True,
     )
 
