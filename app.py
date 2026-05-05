@@ -2468,7 +2468,7 @@ def _merge_quarterly_raw(primary, secondary):
     if secondary is None:
         return primary
     out = dict(primary)
-    for key in ["DilutedEPS", "TotalRevenue", "NetIncome"]:
+    for key in ["DilutedEPS", "TotalRevenue", "NetIncome", "StockholdersEquity"]:
         p = primary.get(key)
         s = secondary.get(key)
         if p is None and s is not None:
@@ -2561,10 +2561,49 @@ def _fetch_quarterly_sec_companyfacts(ticker):
             "ProfitLoss",
             "NetIncomeLossAvailableToCommonStockholdersBasic",
         ]
+        eq_concepts = [
+            "StockholdersEquity",
+            "StockholdersEquityAttributableToParent",
+            "Equity",
+            "LiabilitiesAndStockholdersEquity",
+        ]
+
+        def _extract_balance_sheet(concepts, unit_keys):
+            """Extract point-in-time balance sheet values (10-K and 10-Q, any fp)."""
+            by_end = {}
+            for concept in concepts:
+                node = facts.get(concept) or {}
+                units = node.get("units") or {}
+                for unit_key in unit_keys:
+                    entries = units.get(unit_key) or []
+                    for item in entries:
+                        form = str(item.get("form", ""))
+                        if form not in ("10-K", "10-Q"):
+                            continue
+                        end = item.get("end")
+                        val = item.get("val")
+                        if end is None or val is None:
+                            continue
+                        try:
+                            end_ts = pd.Timestamp(end)
+                            numeric_val = float(val)
+                        except Exception:
+                            continue
+                        filed = pd.Timestamp(item.get("filed")) if item.get("filed") else pd.Timestamp.min
+                        prev = by_end.get(end_ts)
+                        if prev is None or filed > prev[0]:
+                            by_end[end_ts] = (filed, numeric_val)
+                if by_end:
+                    break  # stop at first concept that has data
+            if not by_end:
+                return None
+            ser = pd.Series({k: v[1] for k, v in by_end.items()})
+            return ser.sort_index(ascending=False)
 
         eps_series = _extract_quarters(eps_concepts, ["USD/shares"])
         rev_series = _extract_quarters(rev_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
         ni_series = _extract_quarters(ni_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
+        eq_series = _extract_balance_sheet(eq_concepts, ["USD"])
 
         out = {}
         if eps_series is not None and len(eps_series) > 0:
@@ -2573,6 +2612,8 @@ def _fetch_quarterly_sec_companyfacts(ticker):
             out["TotalRevenue"] = rev_series
         if ni_series is not None and len(ni_series) > 0:
             out["NetIncome"] = ni_series
+        if eq_series is not None and len(eq_series) > 0:
+            out["StockholdersEquity"] = eq_series
         if not out:
             return None, "Keine SEC-Quartalsdaten gefunden"
         return out, None
@@ -6903,6 +6944,19 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
                     roe = net_income / equity
         except Exception:
             pass
+    # Fallback 3: compute TTM from SEC NetIncome / StockholdersEquity (no API key needed)
+    if roe is None and qraw is not None:
+        try:
+            ni_q = qraw.get("NetIncome")
+            eq_q = qraw.get("StockholdersEquity")
+            if ni_q is not None and eq_q is not None and len(ni_q) >= 1 and len(eq_q) >= 1:
+                n = min(4, len(ni_q))
+                ni_ttm = ni_q.head(n).sum()
+                equity_val = float(eq_q.iloc[0])
+                if equity_val > 0:
+                    roe = ni_ttm / equity_val
+        except Exception:
+            pass
     if roe is not None:
         checks.append(("ROE ≥17%", roe*100 >= 17, f"{roe*100:.1f}%"))
     else:
@@ -6927,7 +6981,7 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
             checks.append(("Institutionelle Unterstützung", free_float < 0.9,
                            f"Proxy Free-Float: {free_float*100:.0f}% (Institutionen-Datenfeed fehlt)"))
         else:
-            checks.append(("Institutionelle Unterstützung", False, "Nicht verfügbar"))
+            checks.append(("Institutionelle Unterstützung", False, "Quelldaten nicht abrufbar – Yahoo blockiert od. FMP-Key fehlt"))
 
     # ── Profit margin ──
     pm = _g("profitMargins")
