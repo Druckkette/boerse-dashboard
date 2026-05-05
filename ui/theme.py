@@ -333,6 +333,18 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 }
 .stButton > button:hover { background: var(--accent-hover) !important; }
 
+/* Secondary buttons – Verlauf / zuletzt geprüft */
+.stButton > [data-testid="baseButton-secondary"] {
+  background: var(--warn-bg) !important;
+  color: var(--warn) !important;
+  border: 1.5px solid var(--warn-border) !important;
+  box-shadow: none !important;
+}
+.stButton > [data-testid="baseButton-secondary"]:hover {
+  background: var(--warn-border) !important;
+  color: var(--warn) !important;
+}
+
 /* Selectbox / inputs */
 [data-baseweb="select"] > div,
 [data-baseweb="input"] > div {
