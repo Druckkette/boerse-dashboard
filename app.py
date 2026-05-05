@@ -7582,6 +7582,24 @@ def evaluate_chart_signs(df, rs_ctx=None):
     return signs
 
 
+def _chart_behavior_score_100(positive_count: int, negative_count: int) -> int:
+    """Skaliert Chartverhalten auf 0–100 anhand Maximalsignalen und Pos/Neg-Verhältnis."""
+    max_positive = 17
+    max_negative = 17
+    total_max_signals = max_positive + max_negative
+    total_active = positive_count + negative_count
+
+    # Anteil positiver Signale unter allen aktiven Pos/Neg-Signalen.
+    ratio_component = (positive_count / total_active) if total_active > 0 else 0.5  # 0..1
+
+    # Breiten-Komponente relativ zum maximal möglichen Signalumfang.
+    net_component = ((positive_count - negative_count) + max_negative) / total_max_signals  # 0..1
+
+    # Verhältnis hat den größeren Einfluss, Netto-Signalbreite stabilisiert.
+    score = int(round((ratio_component * 0.65 + net_component * 0.35) * 100))
+    return max(0, min(100, score))
+
+
 def build_stock_assessment(
     df: pd.DataFrame,
     info: dict | None,
@@ -8240,6 +8258,7 @@ def _tab_aktienbewertung():
     nn = len(signs["negativ"])
     nu = len(signs["neutral"])
     chart_score = np_ - nn
+    chart_score_100 = _chart_behavior_score_100(np_, nn)
     if chart_score >= 3:
         chart_verdict, chart_color = "Starkes Chartbild", "#22c55e"
     elif chart_score >= 1:
@@ -8279,12 +8298,12 @@ def _tab_aktienbewertung():
     with score_cols[2]:
         render_kpi_card(
             label="Chartverhalten",
-            value=f"{chart_score:+d}",
+            value=f"{chart_score_100}/100",
             interpretation=chart_verdict,
             tone="good" if chart_score >= 1 else "warn" if chart_score >= -1 else "bad",
-            help_text=f"{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}",
+            help_text=f"{np_} Positiv · {nn} Negativ · {nu} Neutral · Netto {chart_score:+d}",
             why_important="Verdichtet die Chartsignale zu einer schnellen Einordnung des aktuellen Chartbilds.",
-            rule_note="Bewertung: ab +3 starkes Chartbild, +1 bis +2 leicht positiv, -1 bis +1 gemischt, darunter schwach.",
+            rule_note="0–100 aus Maximalsignalen (17/17) und Pos/Neg-Verhältnis; die verbale Einordnung folgt dem Netto-Score.",
         )
 
     # --- 5 Einzelscores ---
