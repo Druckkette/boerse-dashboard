@@ -2,6 +2,7 @@
 
 import hashlib
 import html
+from decimal import Decimal, ROUND_HALF_UP
 import hmac
 import io
 import json
@@ -673,6 +674,7 @@ def render_kpi_card(
     why_important: str | None = None,
     rule_note: str | None = None,
     glossary_key: str | None = None,
+    compact: bool = False,
 ) -> None:
     tone_cls = {
         "good": "status-good",
@@ -691,6 +693,20 @@ def render_kpi_card(
     safe = lambda v: html.escape(str(v), quote=True)
     why_html = f'<div class="kpi-copy"><strong>Warum wichtig?</strong> {safe(why_important)}</div>' if why_important else ""
     rule_html = f'<div class="kpi-copy"><strong>Regelbasierte Einordnung:</strong> {safe(rule_note)}</div>' if rule_note else ""
+    if compact:
+        compact_rule = f'<div class="kpi-copy">{safe(rule_note)}</div>' if rule_note else ""
+        st.markdown(
+            f'<article class="kpi-card">'
+            f'<div class="kpi-header"><div class="kpi-label">{safe(label)}</div>'
+            f'<span class="status-chip {tone_cls}">{safe(tone_label)}</span></div>'
+            f'<div class="kpi-value">{safe(value)}</div>'
+            f"{compact_rule}"
+            f'<div class="kpi-interpretation">{safe(interpretation)}</div>'
+            f'</article>',
+            unsafe_allow_html=True,
+        )
+        return
+
     st.markdown(
         f'<article class="kpi-card">'
         f'<div class="kpi-header"><div class="kpi-label">{safe(label)}</div>'
@@ -736,6 +752,13 @@ def _safe_float(value, default=np.nan):
         return float(value)
     except Exception:
         return default
+
+
+
+def _round_half_up_int(value) -> int:
+    if value is None or pd.isna(value):
+        return 0
+    return int(Decimal(str(float(value))).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 def _get_portfolio_settings() -> dict:
     _init_workspace_state()
@@ -8304,17 +8327,24 @@ def _tab_aktienbewertung():
     nu = len(signs["neutral"])
     chart_score = np_ - nn
     chart_score_100 = _chart_behavior_score_100(np_, nn)
-    overall_score = int(round(np.mean([technical_score_single, fundamental_score_single, chart_score_100, ma_score_single])))
+    overall_score = _round_half_up_int(np.mean([technical_score_single, fundamental_score_single, chart_score_100, ma_score_single]))
+    technical_score_single_i = _round_half_up_int(technical_score_single)
+    fundamental_score_single_i = _round_half_up_int(fundamental_score_single)
+    ma_score_single_i = _round_half_up_int(ma_score_single)
+    chart_score_100_i = _round_half_up_int(chart_score_100)
 
     _vol_str = f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—"
+    rs_quick = f"{int(rs_rating_val)}" if rs_rating_val is not None and pd.notna(rs_rating_val) else "n/a"
     st.markdown(
         f'<div class="info-card">'
         f'<div class="card-label">Schnellurteil</div>'
         f'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center;">'
         f'<div><div class="hero-title" style="font-size:1.05rem;">{name} ({ticker})</div>'
-        f'<div class="mini-help">Letzter Schluss {last_date} · Schlusskurs ${price:,.2f} · {chg:+.2f}% · Volumen {_vol_str}</div></div>'
+        f'<div class="mini-help">Letzter Schluss {last_date} · Schlusskurs ${price:,.2f} · {chg:+.2f}% · Volumen {_vol_str} · RS-Rating {rs_quick}</div></div>'
         f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         f'<span class="pill">Gesamtscore: {overall_score}/100</span>'
+        f'<div style="width:52px;height:52px;border-radius:50%;border:2px solid rgba(59,130,246,0.35);display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(59,130,246,0.08);">'
+        f'<div style="font-size:.58rem;color:#64748b;line-height:1;">RS</div><div style="font-size:1rem;font-weight:700;color:#1d4ed8;line-height:1.05;">{rs_quick}</div></div>'
         f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
         f'<div class="mini-help">{verdict_text}</div>'
         f'<div class="mini-help">Bewertungsbasis: {"Chartbasierte Einordnung" if assessment.get("data_basis") == "chart_only" else "Fundamental + Chart"}</div></div>',
@@ -8326,6 +8356,8 @@ def _tab_aktienbewertung():
     cr_today = (L["Close"] - L["Low"]) / rng_hl * 100 if rng_hl > 0 else 50
     beta = info.get("beta") if info else None
     cat_lbl, _ = _atr_category(atr_pct)
+    dist_10 = (price / _sma10.iloc[-1] - 1) * 100 if pd.notna(_sma10.iloc[-1]) and _sma10.iloc[-1] else np.nan
+    dist_21 = (price / _ema21.iloc[-1] - 1) * 100 if pd.notna(_ema21.iloc[-1]) and _ema21.iloc[-1] else np.nan
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
     dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
     if chart_score >= 3:
@@ -8352,9 +8384,9 @@ def _tab_aktienbewertung():
     with score_cols[1]:
         render_kpi_card(
             label="Score Technisch",
-            value=f"{technical_score_single}/100",
+            value=f"{technical_score_single_i}/100",
             interpretation="Regelbasiert nach Preis, Volumen, RS-Struktur und CMF.",
-            tone="good" if technical_score_single >= 70 else "warn" if technical_score_single >= 45 else "bad",
+            tone="good" if technical_score_single_i >= 70 else "warn" if technical_score_single_i >= 45 else "bad",
             help_text="Technischer Teilscore nach deiner Punktelogik (inkl. RS-Staffelung und CMF-Bewertung).",
             why_important="Zeigt die technische Qualität unabhängig von fundamentalen Teilaspekten.",
             rule_note="Punktesystem gemäß definierter Kriterien, anschließend auf 0–100 skaliert.",
@@ -8362,9 +8394,9 @@ def _tab_aktienbewertung():
     with score_cols[2]:
         render_kpi_card(
             label="Fundamental",
-            value=f"{fundamental_score_single}/100",
+            value=f"{fundamental_score_single_i}/100",
             interpretation=f"{fundamental_met}/{fundamental_total} Kriterien erfüllt",
-            tone="good" if fundamental_score_single >= 70 else "warn" if fundamental_score_single >= 45 else "bad",
+            tone="good" if fundamental_score_single_i >= 70 else "warn" if fundamental_score_single_i >= 45 else "bad",
             help_text="Gleichgewichtete 9er-Checkliste: EPS/Umsatz-Wachstum, Beschleunigung, ROE und Gewinnmarge.",
             why_important="Zeigt, wie viele Kernkriterien der fundamentalen Checkliste aktuell erfüllt sind.",
             rule_note="Jedes der 9 Kriterien zählt gleich viel (1/9); Score = erfüllte Kriterien / 9 × 100.",
@@ -8372,7 +8404,7 @@ def _tab_aktienbewertung():
     with score_cols[3]:
         render_kpi_card(
             label="Gleitende Durchschnitte",
-            value=f"{ma_score_single:.0f}/100",
+            value=f"{ma_score_single_i}/100",
             interpretation=(
                 f'200-SMA: {"ja" if pd.notna(_sma200.iloc[-1]) and price > _sma200.iloc[-1] else "nein"} · '
                 f'50-SMA: {"ja" if pd.notna(_sma50.iloc[-1]) and price > _sma50.iloc[-1] else "nein"} · '
@@ -8380,7 +8412,7 @@ def _tab_aktienbewertung():
                 f'10-SMA: {"ja" if pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1] else "nein"} · '
                 f'Ordnung 21>50>200: {"ja" if pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1] else "nein"}'
             ),
-            tone="good" if ma_score_single >= 75 else "warn" if ma_score_single >= 45 else "bad",
+            tone="good" if ma_score_single_i >= 75 else "warn" if ma_score_single_i >= 45 else "bad",
             help_text="Gewichteter MA-Teilscore mit Schwerpunkt auf 200-SMA, danach 50-SMA, 21-EMA, MA-Ordnung und 10-SMA.",
             why_important="Der Score zeigt auf einen Blick, ob die Trendstruktur über mehrere Zeithorizonte konstruktiv ausgerichtet ist.",
             rule_note="Gewichtung: 200-SMA 30, 50-SMA 24, 21-EMA 18, MA-Ordnung 20, 10-SMA 8 Punkte.",
@@ -8388,7 +8420,7 @@ def _tab_aktienbewertung():
     with score_cols[4]:
         render_kpi_card(
             label="Chartverhalten",
-            value=f"{chart_score_100}/100",
+            value=f"{chart_score_100_i}/100",
             interpretation=chart_verdict,
             tone="good" if chart_score >= 1 else "warn" if chart_score >= -1 else "bad",
             help_text=f"{np_} Positiv · {nn} Negativ · {nu} Neutral · Netto {chart_score:+d}",
@@ -8405,46 +8437,57 @@ def _tab_aktienbewertung():
         unsafe_allow_html=True,
     )
 
-    # --- 4 Zusatzindikatoren ---
-    kpi_extra = st.columns(4)
-    with kpi_extra[0]:
-        rs_tone = "neutral"
-        rs_interp = "Kein RS-Rating verfügbar"
-        if rs_rating_val is not None:
-            rs_tone = "good" if rs_rating_val >= 80 else "warn" if rs_rating_val >= 65 else "bad"
-            rs_interp = "Marktführerschaft" if rs_rating_val >= 80 else "im Mittelfeld" if rs_rating_val >= 65 else "unterdurchschnittlich"
+    # --- Zusatzindikatoren ---
+    extra_row_1 = st.columns(3)
+    with extra_row_1[0]:
+        dist21_tone = "neutral" if pd.isna(dist_21) else "good" if abs(dist_21) < 14 else "warn" if abs(dist_21) < 20 else "bad"
         render_kpi_card(
-            label="RS-Rating",
-            value=f"{rs_rating_val}" if rs_rating_val is not None else "n/a",
-            interpretation=f"{rs_interp} · {rs_hint or 'Tempo stabil'}",
-            tone=rs_tone,
-            glossary_key="RS-Rating",
-            why_important="Relative Stärke zeigt, ob eine Aktie im Vergleich zum Markt eher Kapital anzieht oder verliert.",
-            rule_note="Werte ab 80 gelten im Regelset als klar konstruktiv, 65–79 als beobachtbar, darunter als schwächer.",
+            label="Abstand 21-EMA",
+            value=f"{dist_21:+.1f}%" if pd.notna(dist_21) else "n/a",
+            interpretation="im grünen Bereich" if pd.notna(dist_21) and abs(dist_21) < 14 else "leicht überdehnt" if pd.notna(dist_21) and abs(dist_21) < 20 else "deutlich überdehnt",
+            tone=dist21_tone,
+            glossary_key="21-EMA",
+            why_important="Je weiter der Kurs von der 21-EMA entfernt ist, desto höher ist oft das kurzfristige Rücksetzerrisiko.",
+            rule_note="Unter 14% Abstand ist gut.",
+            compact=True,
         )
-    with kpi_extra[1]:
+    with extra_row_1[1]:
+        dist10_tone = "neutral" if pd.isna(dist_10) else "good" if abs(dist_10) < 10 else "warn" if abs(dist_10) < 16 else "bad"
+        render_kpi_card(
+            label="Abstand 10-SMA",
+            value=f"{dist_10:+.1f}%" if pd.notna(dist_10) else "n/a",
+            interpretation="nah am Kurzfristtrend" if pd.notna(dist_10) and abs(dist_10) < 10 else "moderat entfernt" if pd.notna(dist_10) and abs(dist_10) < 16 else "stark erweitert",
+            tone=dist10_tone,
+            why_important="Der 10-SMA-Abstand zeigt, wie stark der Kurs vom sehr kurzfristigen Trend abweicht.",
+            rule_note="Unter 10% Abstand ist gut.",
+            compact=True,
+        )
+    with extra_row_1[2]:
         dist50_tone = "neutral" if pd.isna(dist_50) else "good" if abs(dist_50) <= 6 else "warn" if abs(dist_50) <= 14 else "bad"
         render_kpi_card(
             label="Abstand 50-SMA",
             value=f"{dist_50:+.1f}%" if pd.notna(dist_50) else "n/a",
-            interpretation="Nahe der 50-SMA" if pd.notna(dist_50) and abs(dist_50) <= 6 else "deutlich erweitert" if pd.notna(dist_50) and abs(dist_50) > 14 else "moderat entfernt",
+            interpretation="nahe der 50-SMA" if pd.notna(dist_50) and abs(dist_50) <= 6 else "moderat entfernt" if pd.notna(dist_50) and abs(dist_50) <= 14 else "deutlich erweitert",
             tone=dist50_tone,
             glossary_key="50-SMA",
-            why_important="Große Abstände zur 50-SMA erhöhen oft Rücksetzer-Risiko oder zeigen fortgeschrittene Bewegungen.",
-            rule_note="Im Regelset gilt ein Abstand bis ca. ±6% als stabil, darüber steigt der Beobachtungsbedarf.",
+            why_important="Größere Abstände zur 50-SMA erhöhen oft das Rücksetzer-Risiko im laufenden Trend.",
+            rule_note="Bis etwa ±6% stabil, darüber beobachten.",
+            compact=True,
         )
-    with kpi_extra[2]:
+
+    extra_row_2 = st.columns(3)
+    with extra_row_2[0]:
         dist200_tone = "neutral" if pd.isna(dist_200) else "good" if dist_200 >= 0 else "warn" if dist_200 >= -8 else "bad"
         render_kpi_card(
             label="Abstand 200-SMA",
             value=f"{dist_200:+.1f}%" if pd.notna(dist_200) else "n/a",
-            interpretation="oberhalb langfristigem Trend" if pd.notna(dist_200) and dist_200 >= 0 else "unter langfristigem Trend" if pd.notna(dist_200) else "keine 200-Tage-Basis",
+            interpretation="oberhalb Langfristtrend" if pd.notna(dist_200) and dist_200 >= 0 else "leicht unter Langfristtrend" if pd.notna(dist_200) and dist_200 >= -8 else "deutlich unter Langfristtrend",
             tone=dist200_tone,
-            help_text="Der Abstand zur 200-SMA zeigt, ob der Kurs im langfristigen Auf- oder Abwärtstrend liegt.",
-            why_important="Der langfristige Trend wirkt als struktureller Filter für Erwartungsmanagement und Risiko.",
-            rule_note="Kurse über der 200-SMA gelten hier als konstruktiver Grundzustand, darunter vorsichtiger.",
+            why_important="Die 200-SMA zeigt den langfristigen Trendzustand und wirkt als Strukturfilter.",
+            rule_note="Über 200-SMA ist der langfristige Trend konstruktiver.",
+            compact=True,
         )
-    with kpi_extra[3]:
+    with extra_row_2[1]:
         atr_tone = "neutral" if pd.isna(atr_pct) else "good" if atr_pct <= 2.5 else "warn" if atr_pct <= 4.5 else "bad"
         render_kpi_card(
             label="ATR / Volatilität",
@@ -8452,12 +8495,29 @@ def _tab_aktienbewertung():
             interpretation=f"{cat_lbl or 'ohne Kategorie'}",
             tone=atr_tone,
             glossary_key="ATR (21T)",
-            why_important="Volatilität beeinflusst das kurzfristige Schwankungsrisiko und die sinnvolle Positionsgröße.",
-            rule_note="Niedrigere ATR-Werte stabilisieren den Risikoscore; hohe Werte signalisieren mehr Bewegungsrisiko.",
+            why_important="Volatilität beeinflusst Schwankungsrisiko und sinnvolle Positionsgrößen.",
+            rule_note="Niedrige ATR stabiler, hohe ATR volatiler.",
+            compact=True,
         )
-
-    with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["Closing Range", "ATR (21T)", "Beta", "RS-Linie", "RS-Rating"])
+    with extra_row_2[2]:
+        dist52_tone = "neutral" if pd.isna(drawdown_52w) else "good" if drawdown_52w >= -10 else "warn" if drawdown_52w >= -20 else "bad"
+        dist52_interp = (
+            "über 52W-Hoch" if pd.notna(drawdown_52w) and drawdown_52w > 0
+            else "am 52W-Hoch" if pd.notna(drawdown_52w) and abs(drawdown_52w) < 0.2
+            else "nahe Hoch" if pd.notna(drawdown_52w) and drawdown_52w >= -10
+            else "spürbar darunter" if pd.notna(drawdown_52w) and drawdown_52w >= -20
+            else "deutlich unter Hoch"
+        )
+        render_kpi_card(
+            label="Abstand 52W-Hoch",
+            value=f"{drawdown_52w:+.1f}%" if pd.notna(drawdown_52w) else "n/a",
+            interpretation=dist52_interp,
+            tone=dist52_tone,
+            glossary_key="Drawdown",
+            why_important="Der Abstand zum 52-Wochen-Hoch zeigt relative Stärke oder laufende Korrektur.",
+            rule_note="Positiv = über dem bisherigen 52W-Hoch.",
+            compact=True,
+        )
 
     bullet_cols = st.columns(2)
     with bullet_cols[0]:
@@ -8513,9 +8573,8 @@ def _tab_aktienbewertung():
     fig_stock.update_xaxes(showgrid=False)
     st.plotly_chart(fig_stock, width="stretch", key="stock_chart")
 
-    col_f, col_t = st.columns(2)
-    with col_f:
-        st.markdown('<div class="info-card"><div class="card-label">Fundamentale Checkliste</div>', unsafe_allow_html=True)
+    with st.expander("Fundamentale Checkliste", expanded=False):
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
         fok = sum(1 for _, ok, _ in fundamentals_checks if ok)
         for label, ok, detail in fundamentals_checks:
             render_check(label, ok, detail)
@@ -8523,8 +8582,8 @@ def _tab_aktienbewertung():
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fundamentals_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    with col_t:
-        st.markdown('<div class="info-card"><div class="card-label">Technische Checkliste</div>', unsafe_allow_html=True)
+    with st.expander("Technische Checkliste", expanded=False):
+        st.markdown('<div class="info-card">', unsafe_allow_html=True)
         tok = sum(1 for _, ok, _ in technical_checks if ok)
         for label, ok, detail in technical_checks:
             render_check(label, ok, detail)
@@ -8532,22 +8591,22 @@ def _tab_aktienbewertung():
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{tok}/{len(technical_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="card-label">Chartverhalten</div>', unsafe_allow_html=True)
-    sc1, sc2, sc3 = st.columns(3)
-    for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
-        with col:
-            st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
-            if signs[key]:
-                for nm, dt in signs[key]:
-                    st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+    with st.expander("Chartverhalten", expanded=False):
+        sc1, sc2, sc3 = st.columns(3)
+        for col, key, label, color in [(sc1, "positiv", "✓ Positiv", "#22c55e"), (sc2, "negativ", "✗ Negativ", "#ef4444"), (sc3, "neutral", "○ Neutral", "#94a3b8")]:
+            with col:
+                st.markdown(f'<div class="info-card" style="border-color:{color}30;"><div class="card-label" style="color:{color};">{label}</div>', unsafe_allow_html=True)
+                if signs[key]:
+                    for nm, dt in signs[key]:
+                        st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:{color};">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                else:
+                    st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Zeichen</div>', unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{chart_color};">{chart_verdict}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}</div></div>',
-        unsafe_allow_html=True,
-    )
+        st.markdown(
+            f'<div class="info-card"><div class="card-label">Gesamtbewertung</div><div style="font-size:1rem;font-weight:700;color:{chart_color};">{chart_verdict}</div><div class="mini-help">{np_} Positiv · {nn} Negativ · {nu} Neutral · Score {chart_score:+d}</div></div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ═══════════════════════════════════════════════════════
@@ -9065,9 +9124,6 @@ def _tab_marktanalyse(compact: bool = False):
         else:
             d200_tone, d200_lbl = "good", "✓ OK"
         _render_dist_tile("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone, "Langfristiger Trendabstand")
-
-    with st.expander("Kennzahlen kurz erklärt", expanded=False):
-        _render_market_glossary(["21-EMA", "50-SMA", "Drawdown"])
 
     st.plotly_chart(plot_price_with_volume(df, sd), width="stretch", config={"displayModeBar": False})
 
