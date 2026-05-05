@@ -7595,6 +7595,14 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                     return 50.0
                 return round((pos + neu * 0.5) / total * 100.0, 1)
 
+            ma_score = (
+                30.0 * float(above_200)
+                + 24.0 * float(above_50)
+                + 18.0 * float(above_21)
+                + 8.0 * float(pd.notna(sma10 := (close.rolling(10).mean().iloc[-1] if len(close) >= 10 else np.nan)) and latest > sma10)
+                + 20.0 * float(pd.notna(ema21) and pd.notna(sma50) and pd.notna(sma200) and ema21 > sma50 > sma200)
+            )
+
             rows.append({
                 "Ticker": ticker,
                 "Name": (info.get("shortName", ticker) if isinstance(info, dict) else ticker),
@@ -7606,9 +7614,12 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "ATR %": atr_pct,
                 "Beta": beta,
                 "RS-Rating": rs_rating,
+                "Über 10-SMA": bool(pd.notna(sma10) and latest > sma10),
                 "Über 21-EMA": above_21,
                 "Über 50-SMA": above_50,
                 "Über 200-SMA": above_200,
+                "MA-Ordnung": bool(pd.notna(ema21) and pd.notna(sma50) and pd.notna(sma200) and ema21 > sma50 > sma200),
+                "Score Gleitende Durchschnitte": round(ma_score, 1),
                 "Trend Positiv": trend_pos,
                 "Trend Negativ": trend_neg,
                 "Trend Neutral": trend_neu,
@@ -7650,8 +7661,9 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
     df["Gesamt-Score"] = (
         df["Score Momentum"] * 0.25
         + df["Score RS"] * 0.25
-        + df["Score Trend"] * 0.20
-        + df["Score Fundamental"] * 0.15
+        + df["Score Trend"] * 0.16
+        + df["Score Gleitende Durchschnitte"] * 0.10
+        + df["Score Fundamental"] * 0.14
         + df["Score Technisch"] * 0.10
         + df["Score Chart"] * 0.05
     ).round(1)
@@ -7690,7 +7702,7 @@ def _render_stock_compare_section() -> None:
 
     overview_cols = [
         "Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score RS", "Score Trend",
-        "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
+        "Score Gleitende Durchschnitte", "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
     ]
     st.markdown("##### 1) Gesamtranking")
     st.dataframe(compare_df[overview_cols].round(1), width="stretch", hide_index=True, column_config=rating_overview_column_config())
@@ -7701,9 +7713,13 @@ def _render_stock_compare_section() -> None:
         "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
         "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
         "Trend": [
-            "Rang", "Ticker", "Score Trend",
+            "Rang", "Ticker", "Score Trend", "Score Gleitende Durchschnitte",
             "Trend Positiv", "Trend Negativ", "Trend Neutral",
-            "Über 21-EMA", "Über 50-SMA", "Über 200-SMA",
+            "Über 10-SMA", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA", "MA-Ordnung",
+        ],
+        "Gleitende Durchschnitte": [
+            "Rang", "Ticker", "Score Gleitende Durchschnitte",
+            "Über 200-SMA", "Über 50-SMA", "Über 21-EMA", "Über 10-SMA", "MA-Ordnung",
         ],
         "Fundamental": ["Rang", "Ticker", "Score Fundamental", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral"],
         "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral"],
@@ -7729,13 +7745,13 @@ def _render_stock_compare_section() -> None:
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
             "Ticker", "Name", "Preis", "Perf 1M %", "Perf 3M %", "Perf 6M %", "Drawdown %", "ATR %", "Beta",
-            "RS-Rating", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA",
+            "RS-Rating", "Über 10-SMA", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA", "MA-Ordnung",
             "Trend Positiv", "Trend Negativ", "Trend Neutral",
             "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
             "Technisch Positiv", "Technisch Negativ", "Technisch Neutral",
             "Chart Positiv", "Chart Negativ", "Chart Neutral",
             "Score Fundamental", "Score Technisch", "Score Chart",
-            "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Gesamt-Score",
+            "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Score Gleitende Durchschnitte", "Gesamt-Score",
         ]
         st.dataframe(compare_df[raw_cols].round(2), width="stretch", hide_index=True)
 
