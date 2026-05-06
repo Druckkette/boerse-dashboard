@@ -380,7 +380,15 @@ def _is_mobile_client() -> bool:
         ua = ""
     return any(token in ua for token in ["iphone", "android", "mobile", "ipad"])
 
-def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA oder Nvidia", show_quick: bool = True):
+def _render_ticker_picker(
+    key_prefix: str,
+    label: str,
+    placeholder: str = "NVDA oder Nvidia",
+    show_quick: bool = True,
+    action_label: str | None = None,
+    action_key: str | None = None,
+    action_help: str | None = None,
+):
     _init_workspace_state()
     input_key = f"{key_prefix}_query_input"
     selected_key = f"{key_prefix}_query"
@@ -391,7 +399,16 @@ def _render_ticker_picker(key_prefix: str, label: str, placeholder: str = "NVDA 
         st.session_state[input_key] = pending_ticker
     elif input_key not in st.session_state:
         st.session_state[input_key] = st.session_state.get(selected_key, "")
-    query = st.text_input(label, placeholder=placeholder, key=input_key)
+    if action_label and action_key:
+        input_col, action_col = st.columns([4, 1])
+        with input_col:
+            query = st.text_input(label, placeholder=placeholder, key=input_key)
+        with action_col:
+            st.markdown("<div style='height: 1.75rem'></div>", unsafe_allow_html=True)
+            if st.button(action_label, width="stretch", key=action_key, type="secondary", help=action_help):
+                st.session_state[f"{action_key}_requested"] = True
+    else:
+        query = st.text_input(label, placeholder=placeholder, key=input_key)
     query = (query or "").strip()
     st.session_state[selected_key] = query
 
@@ -7941,7 +7958,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             rs_ctx = _calc_rs_rating(close, spx_close, universe_scores=rs_universe_scores)
             rs_ctx, _ = _apply_rs_source_override(ticker, rs_ctx)
             rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
-            technical_checks, _, _ = evaluate_technicals(
+            technical_checks, cmf_val, _ = evaluate_technicals(
                 df,
                 info,
                 spx_df=spx_df,
@@ -8164,12 +8181,23 @@ def _tab_aktienbewertung():
         _render_stock_compare_section()
         st.divider()
 
-    ticker = _render_ticker_picker("stock", "Ticker oder Firmenname suchen", "Ticker eingeben, z. B. NVDA, MSFT, PLTR", show_quick=True)
+    ticker = _render_ticker_picker(
+        "stock",
+        "Ticker oder Firmenname suchen",
+        "Ticker eingeben, z. B. NVDA, MSFT, PLTR",
+        show_quick=True,
+        action_label="Daten neu laden",
+        action_key="refresh_stock_data",
+        action_help="Lädt die Daten für den aktuell ausgewählten Ticker ohne Cache neu.",
+    )
     if not ticker:
         return
 
     rs_source_setting = _get_rs_rating_source_setting()
     _cache_v_key = f"_stock_cache_v_{ticker}"
+    refresh_requested = st.session_state.pop("refresh_stock_data_requested", False)
+    if refresh_requested:
+        st.session_state[_cache_v_key] = st.session_state.get(_cache_v_key, 0) + 1
     cache_buster = st.session_state.get(_cache_v_key, 0)
     with st.spinner(f"Lade {ticker} …"):
         (
@@ -8198,7 +8226,7 @@ def _tab_aktienbewertung():
     chg = (price / prev - 1) * 100
     last_date = _format_market_date(df.index[-1])
 
-    act1, act2, act3, act4 = st.columns([1, 1, 1, 1])
+    act1, act2, act3 = st.columns([1, 1, 1])
     private_ok = _is_private_unlocked()
     with act1:
         if private_ok and st.button("➕ Zur Watchlist", width="stretch", key="add_watch_stock", type="secondary"):
@@ -8216,10 +8244,6 @@ def _tab_aktienbewertung():
             })
             st.success(f"{ticker} als Position vorgemerkt.")
     with act3:
-        if st.button("Daten neu laden", width="stretch", key="refresh_stock_data", type="secondary"):
-            st.session_state[_cache_v_key] = st.session_state.get(_cache_v_key, 0) + 1
-            st.rerun()
-    with act4:
         st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
         if not private_ok:
             st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
