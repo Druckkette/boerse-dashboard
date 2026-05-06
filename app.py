@@ -7990,21 +7990,43 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             chart_pos = len(chart_signs.get("positiv", []))
             chart_neg = len(chart_signs.get("negativ", []))
             chart_neu = len(chart_signs.get("neutral", []))
+
+            q_revenue_growth = info.get("quarterlyRevenueGrowth") if isinstance(info, dict) else None
+            q_earnings_growth = info.get("quarterlyEarningsGrowth") if isinstance(info, dict) else None
+            if q_revenue_growth is None:
+                revenue_fallback = _quarterly_yoy_growth(qi, "revenue", qe=qe, ed=ed, qraw=qraw)
+                if revenue_fallback and revenue_fallback[0][1] is not None:
+                    q_revenue_growth = revenue_fallback[0][1] / 100
+            if q_earnings_growth is None:
+                eps_fallback = _quarterly_yoy_growth(qi, "eps", qe=qe, ed=ed, qraw=qraw)
+                if eps_fallback and eps_fallback[0][1] is not None:
+                    q_earnings_growth = eps_fallback[0][1] / 100
+
             technical_points_score = _technical_points_score(technical_checks, rs_rating, cmf_val)
+            fundamental_score, fundamental_met, fundamental_total = _fundamental_checklist_score_100(
+                fundamental_checks,
+                q_earnings_growth,
+                q_revenue_growth,
+                info.get("earningsGrowth") if isinstance(info, dict) else None,
+                info.get("revenueGrowth") if isinstance(info, dict) else None,
+                info.get("returnOnEquity") if isinstance(info, dict) else None,
+                info.get("profitMargins") if isinstance(info, dict) else None,
+            )
+            chart_score_100 = _chart_behavior_score_100(chart_pos, chart_neg)
 
-            def _score_signs(pos: int, neg: int, neu: int) -> float:
-                total = pos + neg + neu
-                if total <= 0:
-                    return 50.0
-                return round((pos + neu * 0.5) / total * 100.0, 1)
-
+            sma10 = close.rolling(10).mean().iloc[-1] if len(close) >= 10 else np.nan
             ma_score = (
                 30.0 * float(above_200)
                 + 24.0 * float(above_50)
                 + 18.0 * float(above_21)
-                + 8.0 * float(pd.notna(sma10 := (close.rolling(10).mean().iloc[-1] if len(close) >= 10 else np.nan)) and latest > sma10)
+                + 8.0 * float(pd.notna(sma10) and latest > sma10)
                 + 20.0 * float(pd.notna(ema21) and pd.notna(sma50) and pd.notna(sma200) and ema21 > sma50 > sma200)
             )
+            overall_score = _round_half_up_int(np.mean([technical_points_score, fundamental_score, chart_score_100, ma_score]))
+            technical_score_display = _round_half_up_int(technical_points_score)
+            fundamental_score_display = _round_half_up_int(fundamental_score)
+            ma_score_display = _round_half_up_int(ma_score)
+            chart_score_display = _round_half_up_int(chart_score_100)
 
             rows.append({
                 "Ticker": ticker,
@@ -8022,7 +8044,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "Über 50-SMA": above_50,
                 "Über 200-SMA": above_200,
                 "MA-Ordnung": bool(pd.notna(ema21) and pd.notna(sma50) and pd.notna(sma200) and ema21 > sma50 > sma200),
-                "Score Gleitende Durchschnitte": round(ma_score, 1),
+                "Score Gleitende Durchschnitte": ma_score_display,
                 "Trend Positiv": trend_pos,
                 "Trend Negativ": trend_neg,
                 "Trend Neutral": trend_neu,
@@ -8035,10 +8057,12 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 "Chart Positiv": chart_pos,
                 "Chart Negativ": chart_neg,
                 "Chart Neutral": chart_neu,
-                "Score Trend": _score_signs(trend_pos, trend_neg, trend_neu),
-                "Score Fundamental": _score_signs(fund_pos, fund_neg, fund_neu),
-                "Score Technisch": technical_points_score,
-                "Score Chart": _score_signs(chart_pos, chart_neg, chart_neu),
+                "Score Fundamental": fundamental_score_display,
+                "Fundamental Kriterien erfüllt": fundamental_met,
+                "Fundamental Kriterien gesamt": fundamental_total,
+                "Score Technisch": technical_score_display,
+                "Score Chart": chart_score_display,
+                "Gesamt-Score": overall_score,
             })
 
     if not rows:
@@ -8061,15 +8085,6 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
         rs_score.loc[band_80p] = 60 + high_scaled * 0.40
     df["Score RS"] = rs_score.round(1)
     df["Score Risiko"] = _scale_series_0_100(df["ATR %"], invert=True) * 0.6 + _scale_series_0_100(df["Drawdown %"], invert=True) * 0.4
-    df["Gesamt-Score"] = (
-        df["Score Momentum"] * 0.25
-        + df["Score RS"] * 0.25
-        + df["Score Trend"] * 0.16
-        + df["Score Gleitende Durchschnitte"] * 0.10
-        + df["Score Fundamental"] * 0.14
-        + df["Score Technisch"] * 0.10
-        + df["Score Chart"] * 0.05
-    ).round(1)
     df = df.sort_values(["Gesamt-Score", "RS-Rating"], ascending=[False, False]).reset_index(drop=True)
     df["Rang"] = np.arange(1, len(df) + 1)
     return df
@@ -8104,40 +8119,40 @@ def _render_stock_compare_section() -> None:
         return
 
     overview_cols = [
-        "Rang", "Ticker", "Gesamt-Score", "Score Momentum", "Score RS", "Score Trend",
-        "Score Gleitende Durchschnitte", "Score Fundamental", "Score Technisch", "Score Chart", "Score Risiko",
+        "Rang", "Ticker", "Gesamt-Score", "Score Technisch", "Score Fundamental",
+        "Score Gleitende Durchschnitte", "Score Chart", "RS-Rating",
     ]
     st.markdown("##### 1) Gesamtranking")
+    st.caption("Das Ranking nutzt dieselben Teil-Scores wie der Einzelaktien-Check: Technisch, Fundamental, Gleitende Durchschnitte und Chartverhalten.")
     st.dataframe(compare_df[overview_cols].round(1), width="stretch", hide_index=True, column_config=rating_overview_column_config())
 
     st.markdown("##### 2) Kategorien")
     category_map = {
-        "Momentum": ["Rang", "Ticker", "Score Momentum", "Perf 1M %", "Perf 3M %", "Perf 6M %"],
-        "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
-        "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
-        "Trend": [
-            "Rang", "Ticker", "Score Trend", "Score Gleitende Durchschnitte",
-            "Trend Positiv", "Trend Negativ", "Trend Neutral",
-            "Über 10-SMA", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA", "MA-Ordnung",
+        "Gesamtscore": ["Rang", "Ticker", "Gesamt-Score", "Score Technisch", "Score Fundamental", "Score Gleitende Durchschnitte", "Score Chart"],
+        "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral", "RS-Rating"],
+        "Fundamental": [
+            "Rang", "Ticker", "Score Fundamental", "Fundamental Kriterien erfüllt",
+            "Fundamental Kriterien gesamt", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
         ],
         "Gleitende Durchschnitte": [
             "Rang", "Ticker", "Score Gleitende Durchschnitte",
             "Über 200-SMA", "Über 50-SMA", "Über 21-EMA", "Über 10-SMA", "MA-Ordnung",
         ],
-        "Fundamental": ["Rang", "Ticker", "Score Fundamental", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral"],
-        "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral"],
         "Chartverhalten": ["Rang", "Ticker", "Score Chart", "Chart Positiv", "Chart Negativ", "Chart Neutral"],
+        "Momentum": ["Rang", "Ticker", "Score Momentum", "Perf 1M %", "Perf 3M %", "Perf 6M %"],
+        "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
+        "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
     }
-    if "compare_selected_category" not in st.session_state:
-        st.session_state["compare_selected_category"] = "Momentum"
+    if st.session_state.get("compare_selected_category") not in category_map:
+        st.session_state["compare_selected_category"] = "Gesamtscore"
 
     button_cols = st.columns(len(category_map))
     for idx, category in enumerate(category_map.keys()):
         if button_cols[idx].button(category, width="stretch", key=f"cmp_cat_{idx}"):
             st.session_state["compare_selected_category"] = category
 
-    selected = st.session_state.get("compare_selected_category", "Momentum")
-    selected_cols = category_map.get(selected, category_map["Momentum"])
+    selected = st.session_state.get("compare_selected_category", "Gesamtscore")
+    selected_cols = category_map.get(selected, category_map["Gesamtscore"])
     sort_col = selected_cols[2]
     detail_df = compare_df.sort_values(sort_col, ascending=False).reset_index(drop=True).copy()
     detail_df["Rang"] = np.arange(1, len(detail_df) + 1)
@@ -8151,10 +8166,11 @@ def _render_stock_compare_section() -> None:
             "RS-Rating", "Über 10-SMA", "Über 21-EMA", "Über 50-SMA", "Über 200-SMA", "MA-Ordnung",
             "Trend Positiv", "Trend Negativ", "Trend Neutral",
             "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
+            "Fundamental Kriterien erfüllt", "Fundamental Kriterien gesamt",
             "Technisch Positiv", "Technisch Negativ", "Technisch Neutral",
             "Chart Positiv", "Chart Negativ", "Chart Neutral",
             "Score Fundamental", "Score Technisch", "Score Chart",
-            "Score Momentum", "Score RS", "Score Risiko", "Score Trend", "Score Gleitende Durchschnitte", "Gesamt-Score",
+            "Score Momentum", "Score RS", "Score Risiko", "Score Gleitende Durchschnitte", "Gesamt-Score",
         ]
         st.dataframe(compare_df[raw_cols].round(2), width="stretch", hide_index=True)
 
