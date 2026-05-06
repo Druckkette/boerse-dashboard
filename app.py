@@ -8203,7 +8203,7 @@ def _tab_aktienbewertung():
     )
     if mode == "Vergleich & Ranking":
         _render_stock_compare_section()
-        st.divider()
+        return
 
     ticker = _render_ticker_picker(
         "stock",
