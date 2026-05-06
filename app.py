@@ -8069,23 +8069,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    momentum_input = df[["Perf 1M %", "Perf 3M %", "Perf 6M %"]].mean(axis=1)
-    df["Score Momentum"] = _scale_series_0_100(momentum_input)
-    rs_numeric = pd.to_numeric(df["RS-Rating"], errors="coerce")
-    rs_score = pd.Series(0.0, index=df.index)
-    band_50_60 = (rs_numeric >= 50) & (rs_numeric < 60)
-    band_60_70 = (rs_numeric >= 60) & (rs_numeric < 70)
-    band_70_80 = (rs_numeric >= 70) & (rs_numeric < 80)
-    band_80p = rs_numeric >= 80
-    rs_score.loc[band_50_60] = ((rs_numeric.loc[band_50_60] - 50) / 10 * 30).clip(0, 30)
-    rs_score.loc[band_60_70] = 30 + ((rs_numeric.loc[band_60_70] - 60) / 10 * 10).clip(0, 10)
-    rs_score.loc[band_70_80] = 40 + ((rs_numeric.loc[band_70_80] - 70) / 10 * 10).clip(0, 10)
-    if band_80p.any():
-        high_scaled = _scale_series_0_100(rs_numeric.loc[band_80p]).fillna(0)
-        rs_score.loc[band_80p] = 60 + high_scaled * 0.40
-    df["Score RS"] = rs_score.round(1)
-    df["Score Risiko"] = _scale_series_0_100(df["ATR %"], invert=True) * 0.6 + _scale_series_0_100(df["Drawdown %"], invert=True) * 0.4
-    df = df.sort_values(["Gesamt-Score", "RS-Rating"], ascending=[False, False]).reset_index(drop=True)
+    df = df.sort_values(["Gesamt-Score", "Ticker"], ascending=[False, True]).reset_index(drop=True)
     df["Rang"] = np.arange(1, len(df) + 1)
     return df
 
@@ -8118,47 +8102,38 @@ def _render_stock_compare_section() -> None:
         st.warning("Für die ausgewählten Ticker konnten nicht genug Kursdaten geladen werden.")
         return
 
-    overview_cols = [
+    score_cols = [
         "Rang", "Ticker", "Gesamt-Score", "Score Technisch", "Score Fundamental",
-        "Score Gleitende Durchschnitte", "Score Chart", "RS-Rating",
+        "Score Gleitende Durchschnitte", "Score Chart",
     ]
+    overview_cols = score_cols
     st.markdown("##### 1) Gesamtranking")
     st.caption("Das Ranking nutzt dieselben Teil-Scores wie der Einzelaktien-Check: Technisch, Fundamental, Gleitende Durchschnitte und Chartverhalten.")
     st.dataframe(compare_df[overview_cols].round(1), width="stretch", hide_index=True, column_config=rating_overview_column_config())
 
     st.markdown("##### 2) Kategorien")
-    category_map = {
-        "Gesamtscore": ["Rang", "Ticker", "Gesamt-Score", "Score Technisch", "Score Fundamental", "Score Gleitende Durchschnitte", "Score Chart"],
-        "Technisch": ["Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ", "Technisch Neutral", "RS-Rating"],
-        "Fundamental": [
-            "Rang", "Ticker", "Score Fundamental", "Fundamental Kriterien erfüllt",
-            "Fundamental Kriterien gesamt", "Fundamental Positiv", "Fundamental Negativ", "Fundamental Neutral",
-        ],
-        "Gleitende Durchschnitte": [
-            "Rang", "Ticker", "Score Gleitende Durchschnitte",
-            "Über 200-SMA", "Über 50-SMA", "Über 21-EMA", "Über 10-SMA", "MA-Ordnung",
-        ],
-        "Chartverhalten": ["Rang", "Ticker", "Score Chart", "Chart Positiv", "Chart Negativ", "Chart Neutral"],
-        "Momentum": ["Rang", "Ticker", "Score Momentum", "Perf 1M %", "Perf 3M %", "Perf 6M %"],
-        "Risiko": ["Rang", "Ticker", "Score Risiko", "ATR %", "Drawdown %", "Beta"],
-        "Relative Stärke": ["Rang", "Ticker", "Score RS", "RS-Rating"],
+    category_sort_map = {
+        "Gesamtscore": "Gesamt-Score",
+        "Technisch": "Score Technisch",
+        "Fundamental": "Score Fundamental",
+        "Gleitende Durchschnitte": "Score Gleitende Durchschnitte",
+        "Chartverhalten": "Score Chart",
     }
-    if st.session_state.get("compare_selected_category") not in category_map:
+    if st.session_state.get("compare_selected_category") not in category_sort_map:
         st.session_state["compare_selected_category"] = "Gesamtscore"
 
-    button_cols = st.columns(len(category_map))
-    for idx, category in enumerate(category_map.keys()):
+    button_cols = st.columns(len(category_sort_map))
+    for idx, category in enumerate(category_sort_map.keys()):
         if button_cols[idx].button(category, width="stretch", key=f"cmp_cat_{idx}"):
             st.session_state["compare_selected_category"] = category
 
     selected = st.session_state.get("compare_selected_category", "Gesamtscore")
-    selected_cols = category_map.get(selected, category_map["Gesamtscore"])
-    sort_col = selected_cols[2]
-    detail_df = compare_df.sort_values(sort_col, ascending=False).reset_index(drop=True).copy()
+    sort_col = category_sort_map.get(selected, "Gesamt-Score")
+    detail_df = compare_df.sort_values([sort_col, "Ticker"], ascending=[False, True]).reset_index(drop=True).copy()
     detail_df["Rang"] = np.arange(1, len(detail_df) + 1)
 
     st.markdown(f"##### 3) Detailvergleich · {selected}")
-    st.dataframe(detail_df[selected_cols].round(2), width="stretch", hide_index=True)
+    st.dataframe(detail_df[score_cols].round(2), width="stretch", hide_index=True)
 
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
@@ -8170,7 +8145,7 @@ def _render_stock_compare_section() -> None:
             "Technisch Positiv", "Technisch Negativ", "Technisch Neutral",
             "Chart Positiv", "Chart Negativ", "Chart Neutral",
             "Score Fundamental", "Score Technisch", "Score Chart",
-            "Score Momentum", "Score RS", "Score Risiko", "Score Gleitende Durchschnitte", "Gesamt-Score",
+            "Score Gleitende Durchschnitte", "Gesamt-Score",
         ]
         st.dataframe(compare_df[raw_cols].round(2), width="stretch", hide_index=True)
 
