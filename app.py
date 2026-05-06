@@ -8112,28 +8112,61 @@ def _render_stock_compare_section() -> None:
     st.dataframe(compare_df[overview_cols].round(1), width="stretch", hide_index=True, column_config=rating_overview_column_config())
 
     st.markdown("##### 2) Kategorien")
-    category_sort_map = {
-        "Gesamtscore": "Gesamt-Score",
-        "Technisch": "Score Technisch",
-        "Fundamental": "Score Fundamental",
-        "Gleitende Durchschnitte": "Score Gleitende Durchschnitte",
-        "Chartverhalten": "Score Chart",
+    category_config = {
+        "Gesamtscore": {
+            "sort": "Gesamt-Score",
+            "cols": score_cols,
+        },
+        "Technisch": {
+            "sort": "Score Technisch",
+            "cols": [
+                "Rang", "Ticker", "Score Technisch", "Technisch Positiv", "Technisch Negativ",
+                "Technisch Neutral", "RS-Rating",
+            ],
+        },
+        "Fundamental": {
+            "sort": "Score Fundamental",
+            "cols": [
+                "Rang", "Ticker", "Score Fundamental", "Fundamental Kriterien erfüllt",
+                "Fundamental Kriterien gesamt", "Fundamental Positiv", "Fundamental Negativ",
+                "Fundamental Neutral",
+            ],
+        },
+        "Gleitende Durchschnitte": {
+            "sort": "Score Gleitende Durchschnitte",
+            "cols": [
+                "Rang", "Ticker", "Score Gleitende Durchschnitte", "Über 200-SMA", "Über 50-SMA",
+                "Über 21-EMA", "Über 10-SMA", "MA-Ordnung",
+            ],
+        },
+        "Chartverhalten": {
+            "sort": "Score Chart",
+            "cols": ["Rang", "Ticker", "Score Chart", "Chart Positiv", "Chart Negativ", "Chart Neutral"],
+        },
     }
-    if st.session_state.get("compare_selected_category") not in category_sort_map:
+    if st.session_state.get("compare_selected_category") not in category_config:
         st.session_state["compare_selected_category"] = "Gesamtscore"
 
-    button_cols = st.columns(len(category_sort_map))
-    for idx, category in enumerate(category_sort_map.keys()):
+    button_cols = st.columns(len(category_config))
+    for idx, category in enumerate(category_config.keys()):
         if button_cols[idx].button(category, width="stretch", key=f"cmp_cat_{idx}"):
             st.session_state["compare_selected_category"] = category
+            st.rerun()
 
     selected = st.session_state.get("compare_selected_category", "Gesamtscore")
-    sort_col = category_sort_map.get(selected, "Gesamt-Score")
+    selected_config = category_config.get(selected, category_config["Gesamtscore"])
+    sort_col = selected_config["sort"]
+    detail_cols = selected_config["cols"]
     detail_df = compare_df.sort_values([sort_col, "Ticker"], ascending=[False, True]).reset_index(drop=True).copy()
     detail_df["Rang"] = np.arange(1, len(detail_df) + 1)
 
     st.markdown(f"##### 3) Detailvergleich · {selected}")
-    st.dataframe(detail_df[score_cols].round(2), width="stretch", hide_index=True)
+    st.dataframe(
+        detail_df[detail_cols].round(2),
+        width="stretch",
+        hide_index=True,
+        key=f"compare_detail_{selected}",
+    )
 
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
