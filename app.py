@@ -8151,6 +8151,7 @@ def _render_stock_compare_section() -> None:
     for idx, category in enumerate(category_config.keys()):
         if button_cols[idx].button(category, width="stretch", key=f"cmp_cat_{idx}"):
             st.session_state["compare_selected_category"] = category
+            st.rerun()
 
     selected = st.session_state.get("compare_selected_category", "Gesamtscore")
     selected_config = category_config.get(selected, category_config["Gesamtscore"])
@@ -8160,7 +8161,12 @@ def _render_stock_compare_section() -> None:
     detail_df["Rang"] = np.arange(1, len(detail_df) + 1)
 
     st.markdown(f"##### 3) Detailvergleich · {selected}")
-    st.dataframe(detail_df[detail_cols].round(2), width="stretch", hide_index=True)
+    st.dataframe(
+        detail_df[detail_cols].round(2),
+        width="stretch",
+        hide_index=True,
+        key=f"compare_detail_{selected}",
+    )
 
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
         raw_cols = [
