@@ -6037,6 +6037,18 @@ def render_check(label,ok,detail="",warn=False):
     cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
     st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#0d1626;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
 
+def _check_label(check):
+    return check[0]
+
+def _check_ok(check):
+    return bool(check[1])
+
+def _check_detail(check):
+    return check[2] if len(check) > 2 else ""
+
+def _check_warn(check):
+    return bool(check[3]) if len(check) > 3 else False
+
 def render_breadth(mode,dist_pct):
     c={"rueckenwind":"#22c55e","wachsam":"#f59e0b","schutz":"#ef4444"}.get(mode,"#64748b")
     lbl,desc={"rueckenwind":("Rückenwind","≤4%. Breite Stärke."),"wachsam":("Wachsam","4–8%. Strenger auswählen."),"schutz":("Schutz",">8%. Kapitalschutz.")}.get(mode,("—",""))
@@ -6846,16 +6858,32 @@ def _fmt_delta_de(value):
     return f"{number:+,}".replace(",", ".")
 
 
+def _optional_int(value):
+    if value is None or value == "":
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 def _institutional_13f_check(record):
-    large = int(record.get("large_holder_count") or 0)
-    large_delta = record.get("large_holder_delta")
-    holder_count = int(record.get("holder_count") or 0)
-    holder_delta = record.get("holder_count_delta")
+    large = _optional_int(record.get("large_holder_count")) or 0
+    large_delta = _optional_int(record.get("large_holder_delta"))
+    holder_count = _optional_int(record.get("holder_count")) or 0
+    holder_delta = _optional_int(record.get("holder_count_delta"))
     period = record.get("period") or ""
     previous_period = record.get("previous_period") or ""
     trend = record.get("trend") or "neutral"
 
-    positive = large >= 5 and (large_delta is None or large_delta >= 0)
+    negative = (large_delta is not None and large_delta < 0) or large < 5
+    mixed = (not negative) and trend == "neutral"
+    positive = not negative and not mixed
     parts = [f"Große Institutionen: {_fmt_int_de(large)}"]
     if large_delta is not None:
         parts[-1] += f" ({_fmt_delta_de(large_delta)} vs. Vorquartal)"
@@ -6863,11 +6891,13 @@ def _institutional_13f_check(record):
     if holder_delta is not None:
         holder_detail += f" ({_fmt_delta_de(holder_delta)})"
     parts.append(holder_detail)
-    if previous_period and period:
+    if previous_period:
         parts.append(f"{previous_period} → {period}")
+    elif period:
+        parts.append(period)
     if trend in {"positive", "negative", "neutral", "new"}:
         parts.append({"positive": "Trend positiv", "negative": "Trend negativ", "neutral": "Trend stabil", "new": "neu in 13F"}[trend])
-    return positive, " · ".join(parts)
+    return positive, " · ".join(parts), mixed
 
 
 def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err=None, ticker=None):
@@ -7070,25 +7100,25 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     institutional_13f = _institutional_13f_trend_for(ticker)
     inst_pct = _g("heldPercentInstitutions")
     if institutional_13f:
-        ok, detail = _institutional_13f_check(institutional_13f)
-        checks.append(("Institutionelle Unterstützung", ok, detail))
+        ok, detail, warn = _institutional_13f_check(institutional_13f)
+        checks.append(("Institutionelle Unterstützung", ok, detail, warn))
     elif ih is not None and not ih.empty:
         n_holders = len(ih)
         total_pct = inst_pct * 100 if inst_pct else 0
         checks.append(("Institutionelle Unterstützung", n_holders >= 5,
-                       f"{n_holders} Top-Institutionen · {total_pct:.0f}% inst. gehalten"))
+                       f"{n_holders} Top-Institutionen · {total_pct:.1f}% inst. gehalten"))
     elif inst_pct is not None:
         checks.append(("Institutionelle Beteiligung", inst_pct * 100 > 20,
-                       f"{inst_pct*100:.0f}% inst. gehalten (Detailliste nicht verfügbar)"))
+                       f"{inst_pct*100:.1f}% inst. gehalten (Detailliste nicht verfügbar)"))
     else:
         float_shares = _g("floatShares")
         shares_out = _g("sharesOutstanding")
         if float_shares is not None and shares_out is not None and float(shares_out) > 0:
             free_float = float(float_shares) / float(shares_out)
             checks.append(("Institutionelle Unterstützung", free_float < 0.9,
-                           f"Proxy Free-Float: {free_float*100:.0f}% (Institutionen-Datenfeed fehlt)"))
+                           f"Proxy Free-Float: {free_float*100:.1f}% (Institutionen-Datenfeed fehlt)"))
         else:
-            checks.append(("Institutionelle Unterstützung", False, "Quelldaten nicht abrufbar – Yahoo blockiert od. FMP-Key fehlt"))
+            checks.append(("Institutionelle Unterstützung", False, "Keine belastbaren Institutionendaten im aktuellen Datenlauf"))
 
     # ── Profit margin ──
     pm = _g("profitMargins")
@@ -7300,7 +7330,7 @@ def _fundamental_checklist_score_100(
         "ROE ≥17%",
         "Gewinnmarge positiv",
     ]
-    check_map = {label: bool(ok) for label, ok, _ in (fundamentals_checks or [])}
+    check_map = {_check_label(check): _check_ok(check) for check in (fundamentals_checks or [])}
     unit = 100.0 / len(criteria_labels)
 
     def _tiered_growth_points(value, minimum=0.20, stretch=0.60):
@@ -7942,7 +7972,7 @@ def build_stock_assessment(
         summary = "Die regelbasierte Gesamtlage bleibt derzeit zu schwach für eine belastbare positive Einordnung."
 
     if fundamentals_checks:
-        failed_fund = [label for label, ok, _ in fundamentals_checks if not ok]
+        failed_fund = [_check_label(check) for check in fundamentals_checks if not _check_ok(check)]
         if len(failed_fund) >= 8:
             warnings.append("Viele fundamentale Prüfpunkte sind aktuell nicht erfüllt oder nicht verfügbar.")
     if technical_checks:
@@ -8045,9 +8075,9 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
             trend_checks = [(label, ok, detail) for label, ok, detail in technical_checks if label in trend_check_names]
             technical_core_checks = [(label, ok, detail) for label, ok, detail in technical_checks if label not in trend_check_names]
 
-            fund_pos = sum(1 for _, ok, _ in fundamental_checks if ok)
-            fund_neg = sum(1 for _, ok, _ in fundamental_checks if not ok)
-            fund_neu = 0
+            fund_pos = sum(1 for check in fundamental_checks if _check_ok(check))
+            fund_neu = sum(1 for check in fundamental_checks if _check_warn(check))
+            fund_neg = sum(1 for check in fundamental_checks if not _check_ok(check) and not _check_warn(check))
             tech_pos = sum(1 for _, ok, _ in technical_core_checks if ok)
             tech_neg = sum(1 for _, ok, _ in technical_core_checks if not ok)
             tech_neu = 0
@@ -8709,9 +8739,9 @@ def _tab_aktienbewertung():
 
     with st.expander("Fundamentale Checkliste", expanded=False):
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        fok = sum(1 for _, ok, _ in fundamentals_checks if ok)
-        for label, ok, detail in fundamentals_checks:
-            render_check(label, ok, detail)
+        fok = sum(1 for check in fundamentals_checks if _check_ok(check))
+        for check in fundamentals_checks:
+            render_check(_check_label(check), _check_ok(check), _check_detail(check), warn=_check_warn(check))
         sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
         st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fundamentals_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
