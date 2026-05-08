@@ -1,0 +1,66 @@
+name: institutional-13f
+
+on:
+  schedule:
+    # 13F-Daten sind quartalsweise; ein Wochenlauf reicht und erkennt neue SEC-ZIPs automatisch.
+    - cron: "15 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      large_holder_min_value_usd:
+        description: Mindestwert für große Institutionen in USD
+        required: false
+        default: "10000000"
+        type: string
+
+jobs:
+  update-institutional-13f:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    permissions:
+      contents: write
+
+    env:
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Cache SEC 13F ZIP downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/sec13f
+          key: sec13f-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            sec13f-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build 13F institutional trend artifacts
+        env:
+          LARGE_HOLDER_MIN_VALUE_USD: ${{ github.event.inputs.large_holder_min_value_usd || '10000000' }}
+        run: |
+          python scripts/update_institutional_13f.py \
+            --large-holder-min-value-usd "${LARGE_HOLDER_MIN_VALUE_USD}"
+
+      - name: Commit updated 13F artifacts
+        run: |
+          if [[ -n "$(git status --porcelain -- output/institutional_13f_trends.json output/institutional_13f_trends.csv output/sec13f_cusip_ticker_map.csv output/sec13f_unmatched_cusips.csv)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add output/institutional_13f_trends.json output/institutional_13f_trends.csv output/sec13f_cusip_ticker_map.csv output/sec13f_unmatched_cusips.csv
+            git commit -m "Update institutional 13F trends"
+            git push
+          else
+            echo "Keine 13F-Änderungen zum Commit vorhanden."
+          fi

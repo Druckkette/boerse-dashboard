@@ -53,6 +53,7 @@ RS_SOURCE_LABELS = {
 }
 RS_OUTPUT_DIR_NAME = "output"
 RS_OUTPUT_FILE_NAME = "rs_stocks.csv"
+INSTITUTIONAL_13F_OUTPUT_FILE_NAME = "institutional_13f_trends.json"
 FRED_RS_CSV_URL = "https://raw.githubusercontent.com/Fred6725/rs-log/main/output/rs_stocks.csv"
 METRIC_GLOSSARY = {
     "Dist.-Tage": "Verkaufstage mit höherem Volumen als am Vortag. Viele Distribution Days sprechen für institutionellen Abgabedruck.",
@@ -6806,7 +6807,70 @@ def _atr_category(pct):
     if pct <= 8.0: return "Stürmisch","#f59e0b"
     return "Explosiv","#ef4444"
 
-def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err=None):
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_institutional_13f_trends():
+    path = Path(RS_OUTPUT_DIR_NAME) / INSTITUTIONAL_13F_OUTPUT_FILE_NAME
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        tickers = payload.get("tickers", {}) if isinstance(payload, dict) else {}
+        return tickers if isinstance(tickers, dict) else {}
+    except Exception as exc:
+        logger.debug("13F trend load failed: %s", exc)
+        return {}
+
+
+def _institutional_13f_trend_for(ticker):
+    ticker = str(ticker or "").strip().upper()
+    if not ticker:
+        return None
+    trend = _load_institutional_13f_trends().get(ticker)
+    return trend if isinstance(trend, dict) else None
+
+
+def _fmt_int_de(value):
+    try:
+        return f"{int(value):,}".replace(",", ".")
+    except Exception:
+        return "0"
+
+
+def _fmt_delta_de(value):
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    try:
+        number = int(value)
+    except Exception:
+        return ""
+    return f"{number:+,}".replace(",", ".")
+
+
+def _institutional_13f_check(record):
+    large = int(record.get("large_holder_count") or 0)
+    large_delta = record.get("large_holder_delta")
+    holder_count = int(record.get("holder_count") or 0)
+    holder_delta = record.get("holder_count_delta")
+    period = record.get("period") or ""
+    previous_period = record.get("previous_period") or ""
+    trend = record.get("trend") or "neutral"
+
+    positive = large >= 5 and (large_delta is None or large_delta >= 0)
+    parts = [f"Große Institutionen: {_fmt_int_de(large)}"]
+    if large_delta is not None:
+        parts[-1] += f" ({_fmt_delta_de(large_delta)} vs. Vorquartal)"
+    holder_detail = f"alle 13F-Halter: {_fmt_int_de(holder_count)}"
+    if holder_delta is not None:
+        holder_detail += f" ({_fmt_delta_de(holder_delta)})"
+    parts.append(holder_detail)
+    if previous_period and period:
+        parts.append(f"{previous_period} → {period}")
+    if trend in {"positive", "negative", "neutral", "new"}:
+        parts.append({"positive": "Trend positiv", "negative": "Trend negativ", "neutral": "Trend stabil", "new": "neu in 13F"}[trend])
+    return positive, " · ".join(parts)
+
+
+def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err=None, ticker=None):
     checks = []
     def _g(k, d=None):
         if not info:
@@ -7002,14 +7066,17 @@ def evaluate_fundamentals(info, qi, ai, ih, qe=None, ed=None, qraw=None, fmp_err
     else:
         checks.append(("ROE ≥17%", False, "Nicht verfügbar"))
 
-    # ── Institutional holders: count + top holders list ──
+    # ── Institutional holders: 13F trend without fund names ──
+    institutional_13f = _institutional_13f_trend_for(ticker)
     inst_pct = _g("heldPercentInstitutions")
-    if ih is not None and not ih.empty:
+    if institutional_13f:
+        ok, detail = _institutional_13f_check(institutional_13f)
+        checks.append(("Institutionelle Unterstützung", ok, detail))
+    elif ih is not None and not ih.empty:
         n_holders = len(ih)
         total_pct = inst_pct * 100 if inst_pct else 0
-        top3 = ", ".join(ih["Holder"].head(3).tolist()) if "Holder" in ih.columns else ""
         checks.append(("Institutionelle Unterstützung", n_holders >= 5,
-                       f"{n_holders} Top-Institutionen · {total_pct:.0f}% inst. gehalten" + (f" · Top: {top3}" if top3 else "")))
+                       f"{n_holders} Top-Institutionen · {total_pct:.0f}% inst. gehalten"))
     elif inst_pct is not None:
         checks.append(("Institutionelle Beteiligung", inst_pct * 100 > 20,
                        f"{inst_pct*100:.0f}% inst. gehalten (Detailliste nicht verfügbar)"))
@@ -7965,7 +8032,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
                 rs_ctx=rs_ctx,
                 rs_universe_scores=rs_universe_scores,
             )
-            fundamental_checks = evaluate_fundamentals(info, qi, ai, ih, qe=qe, ed=ed, qraw=qraw, fmp_err=fmp_err)
+            fundamental_checks = evaluate_fundamentals(info, qi, ai, ih, qe=qe, ed=ed, qraw=qraw, fmp_err=fmp_err, ticker=ticker)
             chart_signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
 
             trend_check_names = {
@@ -8301,7 +8368,7 @@ def _tab_aktienbewertung():
     _sma50 = df["Close"].rolling(50).mean()
     _sma200 = df["Close"].rolling(200).mean()
 
-    fundamentals_checks = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err)
+    fundamentals_checks = evaluate_fundamentals(info, qi, ai, ih, qe, ed, qraw, fmp_err, ticker=ticker)
     technical_checks, cmf_val, _ = evaluate_technicals(df, info, spx_df, rs_ctx=rs_ctx, rs_universe_scores=rs_universe_scores)
     signs = evaluate_chart_signs(df, rs_ctx=rs_ctx)
 

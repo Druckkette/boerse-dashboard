@@ -159,3 +159,27 @@ Im Screen gibt es **zwei Darstellungs-Ebenen** mit teilweise gleichen Begriffen:
   - „Trend“ im KPI-Cockpit ist die Kurzbezeichnung.
   - „Chart & Trend“ in der 4er-Karte betont, dass neben MAs/RS auch Chartsignale in die Einordnung einfließen.
 - **Praktische Lesart**: Oben = Überblick, unten = Erklärung desselben Scores.
+
+## SEC 13F Institutionen-Trend
+
+Der Workflow `.github/workflows/institutional-13f.yml` wertet die offiziellen SEC Form-13F-Datensätze aus und erzeugt gemeinsame Artefakte für Streamlit und iOS:
+
+- `output/institutional_13f_trends.json` für App/Streamlit-Lookups
+- `output/institutional_13f_trends.csv` zur Kontrolle in Tabellenform
+- `output/sec13f_cusip_ticker_map.csv` als erzeugtes CUSIP→Ticker-Mapping
+- `output/sec13f_unmatched_cusips.csv` für nicht zuordenbare CUSIPs
+
+Der Lauf zählt keine Fondsnamen aus, sondern aggregiert nur je Ticker:
+
+- Anzahl aller 13F-Halter
+- Anzahl großer Institutionen ab 10 Mio. USD Positionswert
+- Veränderung zum Vorquartal
+- Trend `positive`, `neutral`, `negative` oder `new`
+
+Manuell lokal:
+
+```bash
+python scripts/update_institutional_13f.py
+```
+
+Für GitHub Actions sollte optional ein Secret `SEC_USER_AGENT` mit Kontaktkennung gesetzt werden, damit der SEC-Abruf den Fair-Access-Regeln sauber entspricht.
