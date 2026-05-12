@@ -1572,52 +1572,163 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
     df = df.assign(_cash_sort=df["is_cash"].astype(int)).sort_values(["_cash_sort", "pnl_pct"], ascending=[True, False], na_position="last").drop(columns=["_cash_sort"])
     return df, summary
 
-def _portfolio_health_messages(summary: dict, positions_df: pd.DataFrame, settings: dict) -> list[tuple[str, str]]:
-    messages = []
+def _portfolio_health_cards(summary: dict, positions_df: pd.DataFrame, settings: dict) -> list[dict]:
+    cards = []
     count = int(summary.get("tracked_count", 0))
     if count < 8:
-        messages.append(("warning", f"Du hältst aktuell {count} echte Depotpositionen. Kapitel 7.2 empfiehlt meist einen Korridor von 8 bis 12 Aktien."))
+        cards.append({
+            "tone": "warn",
+            "title": "Depotstruktur",
+            "value": f"{count} Positionen",
+            "status": "unter Korridor",
+            "detail": "Kapitel 7.2 empfiehlt meist einen Korridor von 8 bis 12 Aktien.",
+        })
     elif count > 12:
-        messages.append(("warning", f"Du hältst aktuell {count} Positionen. Das liegt über dem empfohlenen Korridor von 8 bis 12 Aktien und macht das Depot schwerer steuerbar."))
+        cards.append({
+            "tone": "warn",
+            "title": "Depotstruktur",
+            "value": f"{count} Positionen",
+            "status": "über Korridor",
+            "detail": "Der empfohlene Korridor liegt bei 8 bis 12 Aktien. Mehr Positionen machen das Depot schwerer steuerbar.",
+        })
     else:
-        messages.append(("success", f"Mit {count} Positionen liegst du im empfohlenen Korridor von 8 bis 12 Aktien."))
+        cards.append({
+            "tone": "good",
+            "title": "Depotstruktur",
+            "value": f"{count} Positionen",
+            "status": "im Korridor",
+            "detail": "Du liegst im empfohlenen Korridor von 8 bis 12 Aktien.",
+        })
 
     max_loss = _safe_float(summary.get("max_depot_loss_pct"), np.nan)
     low = _safe_float(settings.get("max_depot_loss_low"), 8.0)
     high = _safe_float(settings.get("max_depot_loss_high"), 12.0)
     if not np.isnan(max_loss):
         if max_loss < low:
-            messages.append(("info", f"Der modellierte maximale Depotverlust liegt bei {max_loss:.1f}%. Das ist defensiver als dein Zielkorridor von {low:.0f} bis {high:.0f}%."))
+            cards.append({
+                "tone": "neutral",
+                "title": "Max. Depotverlust",
+                "value": f"{max_loss:.1f}%",
+                "status": "defensiv",
+                "detail": f"Der Wert liegt unter deinem Zielkorridor von {low:.0f} bis {high:.0f}%.",
+            })
         elif max_loss > high:
-            messages.append(("warning", f"Der modellierte maximale Depotverlust liegt bei {max_loss:.1f}% und damit über deinem Zielkorridor von {low:.0f} bis {high:.0f}%."))
+            cards.append({
+                "tone": "bad",
+                "title": "Max. Depotverlust",
+                "value": f"{max_loss:.1f}%",
+                "status": "über Ziel",
+                "detail": f"Der modellierte Verlust liegt über deinem Zielkorridor von {low:.0f} bis {high:.0f}%. Prüfe Positionsgrößen und Stopps zuerst.",
+            })
         else:
-            messages.append(("success", f"Der modellierte maximale Depotverlust liegt mit {max_loss:.1f}% im Zielkorridor von {low:.0f} bis {high:.0f}%."))
+            cards.append({
+                "tone": "good",
+                "title": "Max. Depotverlust",
+                "value": f"{max_loss:.1f}%",
+                "status": "im Ziel",
+                "detail": f"Der Wert liegt im Zielkorridor von {low:.0f} bis {high:.0f}%.",
+            })
 
     atr_pct = _safe_float(summary.get("portfolio_atr_pct"), np.nan)
     if not np.isnan(atr_pct):
         if atr_pct > 4:
-            messages.append(("warning", f"Deine Portfolio ATR liegt bei {atr_pct:.2f}%. Im Buch gilt ein Wert über 4% als sehr aggressiv."))
+            cards.append({
+                "tone": "bad",
+                "title": "Portfolio ATR",
+                "value": f"{atr_pct:.2f}%",
+                "status": "sehr aggressiv",
+                "detail": "Im Buch gilt ein Wert über 4% als sehr aggressiv. Das Depot reagiert stark auf Schwankungen.",
+            })
         elif atr_pct >= 2.5:
-            messages.append(("info", f"Deine Portfolio ATR liegt bei {atr_pct:.2f}%. Das ist ordentlich Bewegung im Depot, aber noch kontrollierbar."))
+            cards.append({
+                "tone": "neutral",
+                "title": "Portfolio ATR",
+                "value": f"{atr_pct:.2f}%",
+                "status": "offensiv",
+                "detail": "Das ist ordentlich Bewegung im Depot, aber noch kontrollierbar.",
+            })
         else:
-            messages.append(("success", f"Deine Portfolio ATR liegt bei {atr_pct:.2f}%. Das wirkt aktuell vergleichsweise ruhig."))
+            cards.append({
+                "tone": "good",
+                "title": "Portfolio ATR",
+                "value": f"{atr_pct:.2f}%",
+                "status": "ruhig",
+                "detail": "Das Depot wirkt aktuell vergleichsweise ruhig.",
+            })
 
     balancer = _safe_float(summary.get("beta_balancer"), np.nan)
     if not np.isnan(balancer):
         if balancer >= 2.5:
-            messages.append(("warning", f"Dein Beta Balancer liegt bei {balancer:.2f}. Das entspricht einem sehr dynamischen, schwankungsintensiven Depot."))
+            cards.append({
+                "tone": "bad",
+                "title": "Beta-Balancer",
+                "value": f"{balancer:.2f}",
+                "status": "sehr dynamisch",
+                "detail": "Das entspricht einem schwankungsintensiven Depot mit hoher Marktsensitivität.",
+            })
         elif balancer >= 1.5:
-            messages.append(("info", f"Dein Beta Balancer liegt bei {balancer:.2f}. Das ist offensiv, aber noch steuerbar."))
+            cards.append({
+                "tone": "neutral",
+                "title": "Beta-Balancer",
+                "value": f"{balancer:.2f}",
+                "status": "offensiv",
+                "detail": "Das ist offensiv, aber noch steuerbar.",
+            })
         else:
-            messages.append(("success", f"Dein Beta Balancer liegt bei {balancer:.2f}. Das ist näher am Marktrisiko des S&P 500."))
+            cards.append({
+                "tone": "good",
+                "title": "Beta-Balancer",
+                "value": f"{balancer:.2f}",
+                "status": "ausgewogen",
+                "detail": "Der Wert liegt näher am Marktrisiko des S&P 500.",
+            })
 
     target_rc = _safe_float(settings.get("target_risk_contribution"), 0.20)
     if not positions_df.empty and "risk_contribution" in positions_df:
         over = positions_df[positions_df["risk_contribution"] > target_rc]
         if len(over):
             tickers = ", ".join(over["ticker"].head(4).tolist())
-            messages.append(("warning", f"Diese Positionen liegen über dem Ziel-Risikobeitrag von {target_rc:.2f}: {tickers}."))
-    return messages
+            more_count = max(len(over) - 4, 0)
+            more_text = f" und {more_count} weitere" if more_count else ""
+            cards.append({
+                "tone": "warn",
+                "title": "Positionsbudget",
+                "value": f"{len(over)} über Ziel",
+                "status": f"Ziel {target_rc:.2f}",
+                "detail": f"Über dem Ziel-Risikobeitrag: {tickers}{more_text}. Priorisiere diese Positionen beim Rebalancing.",
+            })
+    return cards
+
+
+def _render_portfolio_health_cards(summary: dict, positions_df: pd.DataFrame, settings: dict) -> None:
+    cards = _portfolio_health_cards(summary, positions_df, settings)
+    if not cards:
+        return
+    safe = lambda value: html.escape(str(value or ""), quote=True)
+    card_html = []
+    for card in cards:
+        tone = safe(card.get("tone", "neutral"))
+        card_html.append(
+            f'<article class="portfolio-health-card portfolio-health-card--{tone}">'
+            f'<div class="portfolio-health-card__top">'
+            f'<div class="portfolio-health-card__label">{safe(card.get("title"))}</div>'
+            f'<span class="portfolio-health-card__status">{safe(card.get("status"))}</span>'
+            f'</div>'
+            f'<div class="portfolio-health-card__value">{safe(card.get("value"))}</div>'
+            f'<div class="portfolio-health-card__detail">{safe(card.get("detail"))}</div>'
+            f'</article>'
+        )
+    st.markdown(
+        '<section class="portfolio-health-section">'
+        '<div class="section-header">'
+        '<div class="section-eyebrow">Depot-Kompass</div>'
+        '<p class="section-subtitle">Einordnung der wichtigsten Depot-Hinweise nach Struktur, Verlustbudget und Schwankungsrisiko.</p>'
+        '</div>'
+        '<div class="portfolio-health-grid">'
+        + "".join(card_html)
+        + '</div></section>',
+        unsafe_allow_html=True,
+    )
 
 def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: float, start_date, end_date=None, cash_flows=None) -> pd.DataFrame:
     tracked = _portfolio_positions_only(positions)
@@ -2040,8 +2151,7 @@ beitragen. Beispiel: Hat eine Aktie einen Balancer-Score von 1,5, ergibt sich ei
             """
         )
 
-    for level, msg in _portfolio_health_messages(summary, snapshot_df, settings):
-        getattr(st, level)(msg)
+    _render_portfolio_health_cards(summary, snapshot_df, settings)
 
     if snapshot_df is None or snapshot_df.empty:
         st.info(

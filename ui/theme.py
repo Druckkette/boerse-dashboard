@@ -343,6 +343,43 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 .sector-badge { display:flex; align-items:center; gap:6px; padding:5px 0; font-size:14px; font-weight:700; white-space:nowrap; }
 .sector-dot { width:7px; height:7px; border-radius:50%; flex:0 0 auto; }
 .vol-subline { font-size:12px; color:var(--muted); line-height:1.35; margin-top:3px; }
+.portfolio-health-section { margin: 14px 0 18px; }
+.portfolio-health-grid { display:grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap:10px; }
+.portfolio-health-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: 4px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 13px 14px;
+  min-height: 142px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.portfolio-health-card__top { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.portfolio-health-card__label { color:var(--muted); font-size:11px; line-height:1.2; text-transform:uppercase; letter-spacing:.09em; font-weight:800; }
+.portfolio-health-card__status {
+  border: 1px solid var(--border);
+  border-radius:999px;
+  padding:3px 8px;
+  font-size:11px;
+  line-height:1.1;
+  font-weight:800;
+  color:var(--muted);
+  background:var(--panel-2);
+  white-space:nowrap;
+}
+.portfolio-health-card__value { color:var(--text); font-size:1.45rem; line-height:1.1; font-weight:850; font-variant-numeric:tabular-nums; }
+.portfolio-health-card__detail { color:var(--muted); font-size:.8rem; line-height:1.45; }
+.portfolio-health-card--good { border-top-color:var(--good); background:linear-gradient(180deg, var(--good-bg) 0%, var(--panel) 54%); }
+.portfolio-health-card--good .portfolio-health-card__status { color:var(--good); border-color:var(--good-border); background:var(--good-bg); }
+.portfolio-health-card--warn { border-top-color:var(--warn); background:linear-gradient(180deg, var(--warn-bg) 0%, var(--panel) 54%); }
+.portfolio-health-card--warn .portfolio-health-card__status { color:var(--warn); border-color:var(--warn-border); background:var(--warn-bg); }
+.portfolio-health-card--bad { border-top-color:var(--bad); background:linear-gradient(180deg, var(--bad-bg) 0%, var(--panel) 54%); }
+.portfolio-health-card--bad .portfolio-health-card__status { color:var(--bad); border-color:var(--bad-border); background:var(--bad-bg); }
+.portfolio-health-card--neutral { border-top-color:var(--accent); background:linear-gradient(180deg, var(--accent-bg) 0%, var(--panel) 54%); }
+.portfolio-health-card--neutral .portfolio-health-card__status { color:var(--accent); border-color:#bfdbfe; background:var(--accent-bg); }
 [data-testid="stAlert"] { border-radius:0 !important; border-left:4px solid #dc2626 !important; background:#fef2f2 !important; padding:8px 10px !important; }
 [data-testid="stAlert"] p { font-size:14px !important; line-height:1.4 !important; }
 div[data-testid="stButton"]:has(button[kind="primary"]) button { background:#ffffff !important; color:#2563eb !important; border:1px solid #2563eb !important; border-radius:6px !important; box-shadow:none !important; }
@@ -399,6 +436,7 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   [data-testid="stMetricValue"] { font-size: 1.26rem !important; }
   .summary-hero { padding: 16px 16px; border-radius: var(--radius-lg); }
   .dashboard-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .portfolio-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 640px) {
@@ -414,6 +452,8 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   .hero-title { font-size: 1.12rem; }
   .dashboard-grid { grid-template-columns: 1fr; gap: 10px; }
   .mobile-stack { display: flex; flex-direction: column; gap: 10px; }
+  .portfolio-health-grid { grid-template-columns: 1fr; }
+  .portfolio-health-card { min-height: 0; }
   .kpi-value { font-size: 1.25rem; }
   .kpi-copy { font-size: .82rem; }
   .ampel-light__dot { width:38px; height:38px; }
