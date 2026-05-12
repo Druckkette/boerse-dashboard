@@ -57,7 +57,7 @@ Das Dashboard bewertet das Volatilitätsumfeld zweistufig: Zuerst wird das VIX-R
 
 ### 1) VIX-Regime
 
-Für den VIX werden ein 10-Tage-EMA, ein 63-Tage-Z-Score und ein 252-Tage-Perzentilrang berechnet. Die Einordnung erfolgt in dieser Reihenfolge: Stress vor Ruhig vor Neutral.
+Für den VIX werden ein 10-Tage-EMA, ein 63-Tage-Z-Score und ein 252-Tage-Perzentilrang berechnet. Die Einordnung erfolgt in dieser Reihenfolge: Stress vor Ruhig vor Neutral. Zusätzlich gilt eine 2-Tage-Hysterese: Stress wird erst aufgelöst, wenn die rohe Panikbedingung zwei Handelstage hintereinander nicht erfüllt ist.
 
 | Regime | Bedingung |
 |---|---|
@@ -89,7 +89,7 @@ Das finale `Vol_Regime` wird in der folgenden Priorität vergeben:
 | Risk On / ruhig | VIX ist ruhig, VIXY baut ab und S&P 500 steigt über 5 Tage | Ruhiges Umfeld mit abbauendem VIXY |
 | Neutral | Keine der obigen Bedingungen ist erfüllt | Keine klare Volatilitätslage |
 
-Eine fragile Rally liegt konkret vor, wenn `SPX_Ret_5d > 0` gilt und zusätzlich mindestens eine der folgenden Bedingungen erfüllt ist: VIXY-Stress-Bestätigung, `VIX_Ret_5d > 0`, oder `VIXY_Ret_5d > 3%` bei gleichzeitigem `VIX_PctRank252 > 0.55`.
+Eine fragile Rally liegt konkret vor, wenn `SPX_Ret_5d > 0` gilt und zusätzlich mindestens zwei der folgenden drei Vola-Warnungen aktiv sind: VIXY-Stress-Bestätigung, `VIX_Ret_5d > 0`, oder `VIXY_Ret_5d > 3%` bei gleichzeitigem `VIX_PctRank252 > 0.55`. Diese gewichtete Zählung verhindert, dass eine einzelne milde Vola-Auffälligkeit in neutralen Marktphasen bereits für das Regime „Fragile Rally“ ausreicht.
 
 ## Aktienanalyse: Scoring-Kriterien, Gewichtung und Schwellenwerte
 
