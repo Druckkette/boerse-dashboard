@@ -5935,8 +5935,11 @@ def render_ampel_section(L, history_df=None):
     for i, key in enumerate(light_keys):
         is_active = i == info["active"]
         if phase == "aufwaertstrend" and i == 2:
-            bg = "#3b82f6"
-            glow = "0 0 20px #3b82f680, 0 0 40px #3b82f640"
+            # The traffic light itself stays green. The confirmed uptrend is
+            # communicated separately below, so the green light does not turn
+            # blue and remains visually consistent with the ampelsystem.
+            bg = colors_on[i]
+            glow = glow_on[i]
             is_active = True
         else:
             bg = colors_on[i] if is_active else colors_off[i]
@@ -6010,7 +6013,28 @@ def render_ampel_section(L, history_df=None):
             f'<div><div style="font-size:.8rem;font-weight:700;color:#94a3b8;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#94a3b8;">{ss_detail}</div></div></div>'
         )
 
-    active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#3b82f6","neutral":"#64748b"}.get(phase,"#64748b")
+    active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#22c55e","neutral":"#64748b"}.get(phase,"#64748b")
+    uptrend_confirmed = phase == "aufwaertstrend"
+    confirmation_color = "#3b82f6" if uptrend_confirmed else "#94a3b8"
+    confirmation_bg = "#eff6ff" if uptrend_confirmed else "#f8fafc"
+    confirmation_border = "#93c5fd" if uptrend_confirmed else "#e3e8f0"
+    confirmation_icon = "✓" if uptrend_confirmed else "—"
+    confirmation_state = "Aktiv" if uptrend_confirmed else "Noch nicht aktiv"
+    confirmation_detail = (
+        "MA-Ordnung bestätigt: 21-EMA > 50-SMA > 200-SMA."
+        if uptrend_confirmed else
+        "Separate Bestätigung erscheint, sobald die Aufwärtstrend-Regel erfüllt ist."
+    )
+    confirmation_html = (
+        f'<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 12px;'
+        f'background:{confirmation_bg};border:1px solid {confirmation_border};border-radius:8px;">'
+        f'<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;'
+        f'border-radius:999px;background:{confirmation_color}18;color:{confirmation_color};font-weight:900;">{confirmation_icon}</span>'
+        f'<div style="min-width:0;">'
+        f'<div style="font-size:.78rem;font-weight:800;color:{confirmation_color};letter-spacing:.03em;">Aufwärtstrend-Bestätigung: {confirmation_state}</div>'
+        f'<div style="font-size:.68rem;color:#64748b;line-height:1.35;margin-top:2px;">{confirmation_detail}</div>'
+        f'</div></div>'
+    )
     html = (
         '<div class="info-card" style="padding:20px;">'
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
@@ -6023,6 +6047,7 @@ def render_ampel_section(L, history_df=None):
         f'<div style="font-size:.8rem;color:#0d1626;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
         f'<div style="font-size:.75rem;color:#5e6e89;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
         f'{startschuss_html}'
+        f'{confirmation_html}'
         '</div></div></div>'
     )
     st.markdown(html, unsafe_allow_html=True)
