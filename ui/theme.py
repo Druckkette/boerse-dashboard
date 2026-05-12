@@ -271,6 +271,15 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
   border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border);
   color: var(--text); font-size: .81rem; font-weight: 500;
 }
+.workspace-chip {
+  width: 100%; justify-content: center; min-height: 34px;
+  background: linear-gradient(135deg, #eef4ff 0%, #ffffff 100%);
+  border-color: var(--border-strong); font-weight: 800; letter-spacing: .03em;
+}
+.workspace-card [data-testid="stButton"] button[kind="secondary"],
+.workspace-card [data-testid="stButton"] button {
+  border-radius: 999px;
+}
 .workspace-note { font-size: .81rem; color: var(--muted); line-height: 1.5; }
 
 /* ── Ampel (traffic light) ── */
