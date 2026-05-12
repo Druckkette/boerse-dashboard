@@ -10095,16 +10095,16 @@ def _render_arbeitsbereich() -> None:
             pnl_sign = "+" if row["pnl_pct"] > 0 else ""
             currency = "€" if row.get("currency") == "EUR" else "$"
             kaufdatum = pd.Timestamp(row["kaufdatum"]).strftime("%d.%m.%y")
-            table_html += f'''
-                <tr class="{row_class}">
-                    <td><span class="ws-mono">{html.escape(str(row['ticker']))}</span></td>
-                    <td style="text-align: right;">{row['stueck']:.0f}</td>
-                    <td style="text-align: right;">{row['einstand']:.2f} {currency}</td>
-                    <td style="color: #888780;">{kaufdatum}</td>
-                    <td style="text-align: center;"><span class="ws-badge {badge_class}">{row['status']}</span></td>
-                    <td style="text-align: right;" class="{pnl_class}">{pnl_sign}{row['pnl_pct']:.2f} %</td>
-                </tr>
-            '''
+            table_html += (
+                f'<tr class="{row_class}">'
+                f'<td><span class="ws-mono">{html.escape(str(row["ticker"]))}</span></td>'
+                f'<td style="text-align: right;">{row["stueck"]:.0f}</td>'
+                f'<td style="text-align: right;">{row["einstand"]:.2f} {currency}</td>'
+                f'<td style="color: #888780;">{kaufdatum}</td>'
+                f'<td style="text-align: center;"><span class="ws-badge {badge_class}">{html.escape(str(row["status"]))}</span></td>'
+                f'<td style="text-align: right;" class="{pnl_class}">{pnl_sign}{row["pnl_pct"]:.2f} %</td>'
+                '</tr>'
+            )
     table_html += '</tbody></table></div>'
     st.markdown(table_html, unsafe_allow_html=True)
     if st.button("+ Position hinzufügen", key="add_position"):
