@@ -320,9 +320,21 @@ def _is_valid_ticker(ticker: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,14}", _normalize_single_ticker(ticker)))
 
 
-def _normalize_ticker_list(values, limit: int = 25) -> list[str]:
+def _normalize_workspace_ticker_list(values, limit: int = 25) -> list[str]:
+    if values is None:
+        candidates = []
+    elif isinstance(values, str):
+        candidates = re.split(r"[,;\s]+", values)
+    elif isinstance(values, dict):
+        candidates = values.values()
+    else:
+        try:
+            candidates = list(values)
+        except TypeError:
+            candidates = [values]
+
     out = []
-    for value in values or []:
+    for value in candidates:
         ticker = _normalize_single_ticker(value)
         if ticker and _is_valid_ticker(ticker) and ticker not in out:
             out.append(ticker)
@@ -350,15 +362,20 @@ def _commit_watchlist_inline_input() -> bool:
 
 
 def _render_watchlist_chips() -> None:
-    watchlist = _normalize_ticker_list(st.session_state.get("watchlist", []), limit=25)
-    if watchlist != st.session_state.get("watchlist", []):
+    raw_watchlist = st.session_state.get("watchlist", [])
+    watchlist = _normalize_workspace_ticker_list(raw_watchlist, limit=25)
+    try:
+        needs_sync = not isinstance(raw_watchlist, list) or raw_watchlist != watchlist
+    except Exception:
+        needs_sync = True
+    if needs_sync:
         st.session_state["watchlist"] = watchlist
         _sync_workspace()
     if watchlist:
         cols = st.columns([1] * min(len(watchlist), 5))
         for idx, ticker in enumerate(watchlist):
             with cols[idx % len(cols)]:
-                chip_cols = st.columns([0.72, 0.28], gap="small", vertical_alignment="center")
+                chip_cols = st.columns([0.72, 0.28], gap="small")
                 chip_cols[0].markdown(f'<span class="pill workspace-chip">{html.escape(ticker)}</span>', unsafe_allow_html=True)
                 if chip_cols[1].button("×", key=f"watch_chip_remove_{ticker}", help=f"{ticker} entfernen"):
                     _remove_watchlist_ticker(ticker)
@@ -367,7 +384,7 @@ def _render_watchlist_chips() -> None:
         st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
 
     if st.session_state.get("watchlist_add_mode"):
-        input_col, ok_col, cancel_col = st.columns([1.0, 0.22, 0.22], vertical_alignment="bottom")
+        input_col, ok_col, cancel_col = st.columns([1.0, 0.22, 0.22])
         with input_col:
             st.text_input(
                 "Ticker inline hinzufügen",
@@ -1166,7 +1183,14 @@ def _price_to_usd(price: float, currency: str, trade_date) -> tuple[float, float
     return value * float(rate), float(rate)
 
 def _normalize_single_ticker(value: str) -> str:
-    t = str(value or "").strip().upper()
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return ""
+    except Exception:
+        pass
+    t = str(value).strip().upper()
     t = t.replace(".", "-").replace("/", "-").replace(" ", "")
     return t
 
