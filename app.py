@@ -443,7 +443,7 @@ def _workspace_positions_df(positions: list[dict], settings: dict | None = None)
                 "status": status,
                 "pnl_pct": pnl_pct if not np.isnan(pnl_pct) else 0.0,
                 "wert": _safe_float(row.get("current_value"), 0.0),
-                "currency": str(row.get("currency", "USD") or "USD").upper(),
+                "currency": str(row.get("currency", "EUR") or "EUR").upper(),
             })
     return pd.DataFrame(rows, columns=["ticker", "stueck", "einstand", "kaufdatum", "status", "pnl_pct", "wert", "currency"])
 
@@ -458,6 +458,10 @@ def _usd_eur_rate() -> float:
     except Exception as exc:
         logger.debug("USD/EUR rate lookup failed: %s", exc)
     return 0.9259
+
+
+def _usd_to_eur(value: float) -> float:
+    return float(value or 0.0) * _usd_eur_rate()
 
 
 def _format_eur(value: float) -> str:
@@ -937,18 +941,21 @@ def _simple_position_health(position: dict):
     if df is None or len(df) < 20:
         return {"ticker": ticker, "status": "Keine Daten", "pnl": np.nan, "detail": "Yahoo-Daten fehlen"}
     latest = df.iloc[-1]
-    price = float(latest["Close"])
-    buy_price = float(position.get("buy_price_usd") or position.get("buy_price") or 0)
+    raw_price = float(latest["Close"])
+    market_currency = str((info or {}).get("currency", "USD") or "USD").upper()
+    price = raw_price if market_currency == "EUR" else _usd_to_eur(raw_price)
+    buy_price = _position_entry_price(position)
     pnl = ((price / buy_price) - 1) * 100 if buy_price else np.nan
     sma50 = df["Close"].rolling(50).mean().iloc[-1]
+    sma50 = sma50 if market_currency == "EUR" else _usd_to_eur(sma50)
     status = "OK"
-    detail = f"Aktuell ${price:,.2f}"
+    detail = f"Aktuell {price:,.2f} €"
     if not np.isnan(pnl) and pnl < -7:
         status = "Stop-Loss"
         detail = f"{pnl:.1f}% seit Kauf"
     elif not np.isnan(sma50) and price < sma50:
         status = "Unter 50-SMA"
-        detail = f"${price:,.2f} unter ${sma50:,.2f}"
+        detail = f"{price:,.2f} € unter {sma50:,.2f} €"
     elif not np.isnan(pnl):
         detail = f"{pnl:+.1f}% seit Kauf"
     return {"ticker": ticker, "name": (info or {}).get("shortName", ticker), "status": status, "pnl": pnl, "detail": detail, "price": price}
@@ -1066,7 +1073,14 @@ def _persist_curve_start_from_widget() -> None:
     _sync_workspace()
 
 def _position_entry_price(position: dict) -> float:
-    return _safe_float(position.get("buy_price_usd") or position.get("buy_price"), np.nan)
+    if position.get("buy_price_eur") is not None:
+        return _safe_float(position.get("buy_price_eur"), np.nan)
+    currency = str(position.get("currency", "EUR") or "EUR").upper()
+    raw_price = _safe_float(position.get("buy_price"), np.nan)
+    if currency == "EUR" and not np.isnan(raw_price):
+        return raw_price
+    usd_price = _safe_float(position.get("buy_price_usd"), raw_price)
+    return _usd_to_eur(usd_price) if not np.isnan(usd_price) else np.nan
 
 def _position_stop_pct(position: dict) -> float:
     val = _safe_float(position.get("stop_pct"), np.nan)
@@ -1075,26 +1089,28 @@ def _position_stop_pct(position: dict) -> float:
 def _position_stop_price(position: dict) -> float:
     manual = _safe_float(position.get("stop_price"), np.nan)
     if not np.isnan(manual) and manual > 0:
-        return manual
+        currency = str(position.get("currency", "EUR") or "EUR").upper()
+        return manual if currency == "EUR" else _usd_to_eur(manual)
     entry = _position_entry_price(position)
     stop_pct = _position_stop_pct(position)
     if entry > 0 and not np.isnan(stop_pct):
         return entry * (1 - stop_pct / 100)
     return np.nan
 
-def _price_to_usd(price: float, currency: str, trade_date) -> tuple[float, float | None]:
+def _price_to_eur(price: float, currency: str, trade_date) -> tuple[float, float | None]:
     value = float(price or 0.0)
-    if str(currency).upper() != "EUR":
+    if str(currency).upper() == "EUR":
         return value, None
     rate = None
     try:
         fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(trade_date) - timedelta(days=5), end=pd.Timestamp(trade_date) + timedelta(days=3))
         if fx is not None and len(fx) > 0:
-            rate = float(fx["Close"].iloc[-1])
+            eur_usd = float(fx["Close"].iloc[-1])
+            rate = 1.0 / eur_usd if eur_usd > 0 else None
     except Exception:
         rate = None
     if rate is None:
-        rate = 1.08
+        rate = _usd_eur_rate()
     return value * float(rate), float(rate)
 
 def _normalize_single_ticker(value: str) -> str:
@@ -1293,13 +1309,14 @@ def _portfolio_symbol_metrics(ticker: str) -> dict:
     if not ticker:
         return {}
 
-    def _fallback_payload(name=None, sector="", industry="", price=np.nan, atr_pct=np.nan, beta=np.nan):
+    def _fallback_payload(name=None, sector="", industry="", price=np.nan, atr_pct=np.nan, beta=np.nan, currency="USD"):
         return {
             "ticker": ticker,
             "name": name or ticker,
             "sector": sector or "",
             "industry": industry or "",
             "price": price,
+            "currency": str(currency or "USD").upper(),
             "atr_pct": atr_pct,
             "beta": beta,
         }
@@ -1318,6 +1335,7 @@ def _portfolio_symbol_metrics(ticker: str) -> dict:
             sector=(info or {}).get("sector", ""),
             industry=(info or {}).get("industry", ""),
             price=latest_price,
+            currency=(info or {}).get("currency", "USD"),
             atr_pct=atr_pct,
             beta=beta,
         )
@@ -1349,6 +1367,7 @@ def _portfolio_symbol_metrics(ticker: str) -> dict:
             sector=info.get("sector", ""),
             industry=info.get("industry", ""),
             price=latest_price,
+            currency=info.get("currency", "USD"),
             atr_pct=atr_pct,
             beta=beta,
         )
@@ -1385,6 +1404,7 @@ def _bulk_portfolio_metrics(tickers: tuple[str, ...]) -> dict[str, dict]:
             "sector": "",
             "industry": "",
             "price": latest_price,
+            "currency": "EUR" if ticker.endswith((".DE", ".PA", ".AS", ".MI", ".MC", ".F")) else "USD",
             "atr_pct": atr_pct,
             "beta": beta,
         }
@@ -1428,7 +1448,9 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
         if not ticker or shares <= 0:
             continue
         metrics = metrics_map.get(ticker) or _portfolio_symbol_metrics(ticker)
-        price = _safe_float(metrics.get("price"), np.nan)
+        raw_price = _safe_float(metrics.get("price"), np.nan)
+        market_currency = str(metrics.get("currency", "USD") or "USD").upper()
+        price = raw_price if market_currency == "EUR" else _usd_to_eur(raw_price)
         entry = _position_entry_price(pos)
         current_value = shares * price if not np.isnan(price) else np.nan
         if not np.isnan(current_value):
@@ -1443,7 +1465,8 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
             "current_price": price,
             "current_value": current_value,
             "buy_date": pos.get("buy_date", ""),
-            "currency": pos.get("currency", "USD"),
+            "currency": pos.get("currency", "EUR"),
+            "market_currency": market_currency,
             "note": pos.get("note", ""),
             "stop_pct": _position_stop_pct(pos),
             "stop_price": _position_stop_price(pos),
@@ -1493,7 +1516,8 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
             "current_price": 1.0,
             "current_value": cash_value,
             "buy_date": "",
-            "currency": "USD",
+            "currency": "EUR",
+            "market_currency": "EUR",
             "note": "Freie Liquidität",
             "stop_pct": 0.0,
             "stop_price": 1.0,
@@ -1947,7 +1971,6 @@ def _render_depot_overview(state: dict | None = None) -> None:
     beta_balancer = _safe_float(summary.get("beta_balancer"), np.nan)
     max_depot_loss = _safe_float(summary.get("max_depot_loss_pct"), np.nan)
     target_rc = _safe_float(settings.get("target_risk_contribution"), 0.20)
-    risk_idea = _safe_float(settings.get("risk_per_position_pct"), 1.0)
     loss_low = _safe_float(settings.get("max_depot_loss_low"), 8.0)
     loss_high = _safe_float(settings.get("max_depot_loss_high"), 12.0)
 
@@ -1969,14 +1992,14 @@ def _render_depot_overview(state: dict | None = None) -> None:
           <div style="display:flex; flex-wrap:wrap; gap: 24px; align-items:flex-end; justify-content:space-between;">
             <div>
               <div style="font-size:12px;color:#6b6a64;letter-spacing:.4px;text-transform:uppercase;">Depotwert</div>
-              <div style="font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;">{total_value:,.0f} USD</div>
+              <div style="font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;">{_format_eur(total_value)}</div>
               <div style="font-size:12px;color:#6b6a64;margin-top:2px;">
-                {tracked_count} Position{"en" if tracked_count != 1 else ""} · Investiert {invested_value:,.0f} · Cash {cash_balance:,.0f}
+                {tracked_count} Position{"en" if tracked_count != 1 else ""} · Investiert {_format_eur(invested_value)} · Cash {_format_eur(cash_balance)}
               </div>
             </div>
             <div style="text-align:right;">
               <div style="font-size:12px;color:#6b6a64;letter-spacing:.4px;text-transform:uppercase;">Unrealisiert</div>
-              <div style="font-size:24px;font-weight:600;color:{pnl_tone};font-variant-numeric:tabular-nums;">{pnl_sign}{total_pnl_abs:,.0f} USD</div>
+              <div style="font-size:24px;font-weight:600;color:{pnl_tone};font-variant-numeric:tabular-nums;">{pnl_sign}{_format_eur(total_pnl_abs)}</div>
               <div style="font-size:12px;color:#6b6a64;margin-top:2px;">{pnl_pct_text} ggü. Einstand</div>
             </div>
           </div>
@@ -1984,17 +2007,6 @@ def _render_depot_overview(state: dict | None = None) -> None:
         """,
         unsafe_allow_html=True,
     )
-
-    with st.expander("🎛️ Aktive Portfolio-Regler", expanded=False):
-        st.caption(
-            "Diese Werte gelten für Snapshot, Risiko-Ranking, Rechner und Verkaufs-Score. "
-            "Anpassen im Tab „Einstellungen“."
-        )
-        cfg_cols = st.columns(4)
-        cfg_cols[0].metric("Max. Verlust je Idee", f"{risk_idea:.2f}%")
-        cfg_cols[1].metric("Ziel Risikobeitrag", f"{target_rc:.2f}")
-        cfg_cols[2].metric("Cash gesetzt", f"{cash_balance:,.0f} USD")
-        cfg_cols[3].metric("Max.-Depotverlust-Korridor", f"{loss_low:.1f}% – {loss_high:.1f}%")
 
     k1, k2, k3, k4 = st.columns(4)
     cash_ratio_text = f"{cash_ratio*100:.1f}%" if not np.isnan(cash_ratio) else "—"
@@ -2010,6 +2022,23 @@ def _render_depot_overview(state: dict | None = None) -> None:
         st.metric("Beta-Balancer", beta_text, help="Summe der Risikobeiträge (Gewicht × (0,6 Beta + 0,4 ATR/Markt-ATR)).")
     with k4:
         st.metric("Max. Depotverlust", loss_text, help=f"Aggregierter Stop-Loss aller Positionen. Korridor laut Regler: {loss_target}.")
+
+    with st.expander("Was bedeutet Ziel-Risikobeitrag 0,20?", expanded=False):
+        st.markdown(
+            f"""
+Der Ziel-Risikobeitrag begrenzt, wie viel marktrisiko-gewichtetes Gewicht eine einzelne Position im Depot haben soll.
+Die App berechnet je Position:
+
+```
+Risikobeitrag = Depotgewicht × Balancer-Score
+Balancer-Score = 0,60 × Beta + 0,40 × (ATR% der Aktie / ATR% des S&P 500)
+```
+
+Ein Zielwert von **{target_rc:.2f}** bedeutet: Eine Position soll höchstens rund **{target_rc:.0%} Risiko-Punkte**
+beitragen. Beispiel: Hat eine Aktie einen Balancer-Score von 1,5, ergibt sich ein Maximalgewicht von
+**{target_rc:.2f} / 1,5 = {target_rc / 1.5:.1%}**. Höhere Beta- oder ATR-Werte senken also automatisch die sinnvolle Positionsgröße.
+            """
+        )
 
     for level, msg in _portfolio_health_messages(summary, snapshot_df, settings):
         getattr(st, level)(msg)
@@ -2043,17 +2072,17 @@ def _render_depot_overview(state: dict | None = None) -> None:
     display_df = display_df.rename(columns={
         "ticker": "Ticker",
         "shares": "Stück",
-        "current_value": "Wert USD",
+        "current_value": "Wert EUR",
         "pnl_pct": "P&L %",
         "stop_distance_pct": "Abstand Stop %",
         "risk_contribution": "Risikobeitrag",
-    })[["Ticker", "Stück", "Wert USD", "Gewicht %", "P&L %", "Abstand Stop %", "Risikobeitrag"]]
-    display_df = display_df.sort_values("Wert USD", ascending=False).reset_index(drop=True)
+    })[["Ticker", "Stück", "Wert EUR", "Gewicht %", "P&L %", "Abstand Stop %", "Risikobeitrag"]]
+    display_df = display_df.sort_values("Wert EUR", ascending=False).reset_index(drop=True)
     st.dataframe(
         display_df.round(2), width="stretch", hide_index=True,
         column_config={
             "Stück": st.column_config.NumberColumn("Stück", format="%.0f"),
-            "Wert USD": st.column_config.NumberColumn("Wert USD", format="%.0f"),
+            "Wert EUR": st.column_config.NumberColumn("Wert EUR", format="%.0f €"),
             "Gewicht %": st.column_config.ProgressColumn("Gewicht %", format="%.1f%%", min_value=0, max_value=100),
             "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f%%"),
             "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%+.2f%%"),
@@ -2107,7 +2136,7 @@ Der Portfolio-Regler legt fest, **wie das Depot gemessen und Positionsgrößen b
 Die Werte fließen in den Snapshot, das Risiko-Ranking, den Stückzahl-Rechner und den
 Verkaufs-Score ein:
 
-- **Cash / freie Liquidität** — verfügbarer Cashbestand in USD. Wird zum Depotwert addiert,
+- **Cash / freie Liquidität** — verfügbarer Cashbestand in EUR. Wird zum Depotwert addiert,
   bestimmt damit das Risikobudget und die Cashquote.
 - **Max. Verlust je Idee %** — wie viel Prozent des Depots du pro Idee maximal riskieren willst.
   → `Risikobudget je Idee = Depotwert × Max. Verlust je Idee %`. Direkt verwendet im Rechner für
@@ -2124,7 +2153,7 @@ Verkaufs-Score ein:
     set_cols = st.columns(2)
     with set_cols[0]:
         cash_balance = st.number_input(
-            "Cash / freie Liquidität (USD)", min_value=0.0,
+            "Cash / freie Liquidität (EUR)", min_value=0.0,
             value=float(settings.get("cash_balance", 0.0)), step=100.0,
             key="pf_cash_balance",
             help="Wird automatisch durch Käufe/Verkäufe und Cash-Flows angepasst.",
@@ -2187,47 +2216,44 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                 "atr_pct", "beta", "risk_contribution", "max_position_value",
             ]].copy().rename(columns={
                 "ticker": "Ticker", "shares": "Stück", "entry": "Einstand",
-                "current_price": "Aktuell", "current_value": "Wert USD",
+                "current_price": "Aktuell", "current_value": "Wert EUR",
                 "pnl_pct": "P&L %", "stop_pct": "Stopp %", "stop_price": "Stoppkurs",
                 "stop_distance_pct": "Abstand Stop %", "atr_pct": "ATR %",
                 "beta": "Beta", "risk_contribution": "Risikobeitrag",
                 "max_position_value": "Max. Wert",
-            }).sort_values("Wert USD", ascending=False)
-            st.dataframe(
+            }).sort_values("Wert EUR", ascending=False)
+            overview.insert(0, "Entfernen", False)
+            edited_overview = st.data_editor(
                 overview.round(2), width="stretch", hide_index=True,
+                disabled=[col for col in overview.columns if col != "Entfernen"],
+                key="pf_positions_editor",
                 column_config={
+                    "Entfernen": st.column_config.CheckboxColumn(
+                        "Entfernen",
+                        help="Anklicken entfernt die Position ohne Cash-Verbuchung.",
+                        width="small",
+                    ),
                     "Stück": st.column_config.NumberColumn("Stück", format="%.0f"),
-                    "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f"),
-                    "Aktuell": st.column_config.NumberColumn("Aktuell", format="%.2f"),
-                    "Wert USD": st.column_config.NumberColumn("Wert USD", format="%.0f"),
+                    "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f €"),
+                    "Aktuell": st.column_config.NumberColumn("Aktuell", format="%.2f €"),
+                    "Wert EUR": st.column_config.NumberColumn("Wert EUR", format="%.0f €"),
                     "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f"),
                     "Stopp %": st.column_config.NumberColumn("Stopp %", format="%.1f"),
-                    "Stoppkurs": st.column_config.NumberColumn("Stoppkurs", format="%.2f"),
+                    "Stoppkurs": st.column_config.NumberColumn("Stoppkurs", format="%.2f €"),
                     "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%+.2f"),
                     "ATR %": st.column_config.NumberColumn("ATR %", format="%.2f"),
                     "Beta": st.column_config.NumberColumn("Beta", format="%.2f"),
                     "Risikobeitrag": st.column_config.NumberColumn("Risikobeitrag", format="%.3f"),
-                    "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f"),
+                    "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f €"),
                 },
             )
-
-        st.markdown("##### 🗑️ Position entfernen")
-        del_options = [p.get("ticker", "") for p in all_positions if p.get("ticker")]
-        if del_options:
-            del_c1, del_c2 = st.columns([2, 1])
-            with del_c1:
-                del_ticker = st.selectbox(
-                    "Ticker auswählen",
-                    options=[""] + del_options,
-                    key="pf_quick_delete_ticker",
-                    label_visibility="collapsed",
-                )
-            with del_c2:
-                if st.button("Komplett entfernen", width="stretch", key="pf_quick_delete_btn", disabled=not bool(del_ticker), type="secondary"):
-                    _remove_position(del_ticker)
-                    st.success(f"{del_ticker} aus dem Depot entfernt.")
-                    st.rerun()
-            st.caption("Entfernt die Position ohne Cash-Verbuchung. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
+            removals = edited_overview[edited_overview["Entfernen"] == True]["Ticker"].tolist()
+            if removals:
+                for ticker_to_remove in removals:
+                    _remove_position(ticker_to_remove)
+                st.success(f"{', '.join(removals)} aus dem Depot entfernt.")
+                st.rerun()
+            st.caption("Zum Entfernen einfach die Checkbox in der Positionszeile anklicken. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
 
     st.markdown("---")
     st.markdown("#### ➕ Neue Position erfassen oder bestehende aktualisieren")
@@ -2256,8 +2282,8 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             default_date = datetime.now(timezone.utc).date()
         buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
     with curr_col:
-        curr_default = (selected_pos or {}).get("currency", "USD")
-        currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if curr_default == "USD" else 1, key="pf_currency")
+        curr_default = (selected_pos or {}).get("currency", "EUR")
+        currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if curr_default != "USD" else 1, key="pf_currency")
     with note_col:
         note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="pf_note")
 
@@ -2267,14 +2293,14 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
     save_col, _spacer = st.columns([1, 3])
     with save_col:
         if st.button("💾 Speichern", width="stretch", key="pf_save_position", type="primary", disabled=not bool(pos_ticker)):
-            buy_price_usd, eur_usd_rate = _price_to_usd(float(buy_price), currency, buy_date)
+            buy_price_eur, eur_rate = _price_to_eur(float(buy_price), currency, buy_date)
             previous_shares = _safe_float((selected_pos or {}).get("shares"), 0.0) if selected_pos else 0.0
             delta_shares = max(float(shares) - previous_shares, 0.0)
-            buy_delta_value = delta_shares * float(buy_price_usd)
+            buy_delta_value = delta_shares * float(buy_price_eur)
             _upsert_position({
                 "ticker": pos_ticker,
                 "buy_price": float(buy_price),
-                "buy_price_usd": float(buy_price_usd),
+                "buy_price_eur": float(buy_price_eur),
                 "buy_date": str(buy_date),
                 "currency": currency,
                 "shares": float(shares),
@@ -2285,7 +2311,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             if buy_delta_value > 0:
                 new_cash = _adjust_cash_balance(-buy_delta_value)
                 if buy_delta_value > float(settings.get("cash_balance", 0.0)):
-                    st.warning(f"Kaufvolumen ({buy_delta_value:,.2f} USD) überstieg den verfügbaren Cashbestand. Cash wurde auf {new_cash:,.2f} USD begrenzt.")
+                    st.warning(f"Kaufvolumen ({buy_delta_value:,.2f} €) überstieg den verfügbaren Cashbestand. Cash wurde auf {new_cash:,.2f} € begrenzt.")
             st.success(f"{pos_ticker} gespeichert.")
             st.rerun()
 
@@ -2301,7 +2327,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             sell_price = st.number_input("Verkaufspreis", min_value=0.0, value=float(_safe_float((selected_sell or {}).get("current_price"), 0.0)), step=0.01, key="pf_sell_price")
         sell_c3, sell_c4 = st.columns(2)
         with sell_c3:
-            sell_currency = st.selectbox("Währung Verkauf", ["USD", "EUR"], index=0, key="pf_sell_currency")
+            sell_currency = st.selectbox("Währung Verkauf", ["EUR", "USD"], index=0, key="pf_sell_currency")
         with sell_c4:
             sell_date = st.date_input("Verkaufsdatum", value=datetime.now(timezone.utc).date(), key="pf_sell_date")
         if st.button("Verkauf buchen", width="stretch", key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
@@ -2310,8 +2336,8 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             elif sell_shares > max_sell_shares:
                 st.error("Die Verkaufsmenge ist größer als die vorhandene Stückzahl.")
             else:
-                sell_price_usd, _ = _price_to_usd(float(sell_price), sell_currency, sell_date)
-                proceeds = float(sell_shares) * float(sell_price_usd)
+                sell_price_eur, _ = _price_to_eur(float(sell_price), sell_currency, sell_date)
+                proceeds = float(sell_shares) * float(sell_price_eur)
                 remaining = max(max_sell_shares - float(sell_shares), 0.0)
                 if remaining <= 0:
                     _remove_position(selected_sell.get("ticker", ""))
@@ -2320,7 +2346,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     updated["shares"] = remaining
                     _upsert_position(updated)
                 _adjust_cash_balance(proceeds)
-                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} USD.")
+                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €.")
                 st.rerun()
 
     st.markdown("#### 💵 Cash-Flows")
@@ -2328,7 +2354,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
     flow_form_col, flow_log_col = st.columns([1.1, 1.2])
     with flow_form_col:
         flow_date = st.date_input("Cash-Flow Datum", value=datetime.now(timezone.utc).date(), key="pf_flow_date")
-        flow_amount = st.number_input("Cash-Flow Betrag", min_value=0.0, value=0.0, step=100.0, key="pf_flow_amount")
+        flow_amount = st.number_input("Cash-Flow Betrag (EUR)", min_value=0.0, value=0.0, step=100.0, key="pf_flow_amount")
         flow_note = st.text_input("Cash-Flow Notiz", value="", key="pf_flow_note")
         flow_act1, flow_act2 = st.columns(2)
         with flow_act1:
@@ -2362,7 +2388,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             )
             delete_idx = st.selectbox(
                 "Cash-Flow löschen",
-                options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f}" for i, row in flow_df.iterrows()],
+                options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f} €" for i, row in flow_df.iterrows()],
                 key="pf_flow_delete_sel",
             )
             if delete_idx and st.button("Cash-Flow löschen", width="stretch", key="pf_flow_delete_btn"):
@@ -2454,8 +2480,8 @@ def _render_depot_curve_only(state: dict | None = None) -> None:
         column_config={
             "Datum": st.column_config.TextColumn("Datum", width="small"),
             "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"),
-            "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f"),
-            "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f"),
+            "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f €"),
+            "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f €"),
             "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f"),
         },
     )
@@ -2520,7 +2546,7 @@ kleineres Maximalgewicht. **Praxis:** Vergleiche beide Resultate
     cfg1, cfg2, cfg3 = st.columns(3)
     with cfg1:
         depot_value = st.number_input(
-            "Depotwert (modelliert) — USD", min_value=0.0,
+            "Depotwert (modelliert) — EUR", min_value=0.0,
             value=float(depot_default), step=500.0, key="rechner_depot_value",
             help="Vorbelegt aus dem gespeicherten Depot (inkl. Cash). Frei überschreibbar.",
         )
@@ -2548,7 +2574,7 @@ kleineres Maximalgewicht. **Praxis:** Vergleiche beide Resultate
             show_quick=False,
         )
     with p2:
-        buy_price = st.number_input("Einstand (USD)", min_value=0.01, value=1.00, step=0.01, key="rechner_buy_price")
+        buy_price = st.number_input("Einstand (EUR)", min_value=0.01, value=1.00, step=0.01, key="rechner_buy_price")
     with p3:
         stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=7.0, step=0.5, key="rechner_stop_pct")
 
@@ -2564,16 +2590,16 @@ kleineres Maximalgewicht. **Praxis:** Vergleiche beide Resultate
         st.metric("Maximale Stückzahl", f"{max_shares:,}" if max_shares else "—",
                   help="floor(Risikobudget / Risiko pro Aktie)")
     with m2:
-        st.metric("Risikobudget / Idee", f"{risk_budget:,.0f}" if not np.isnan(risk_budget) else "—",
+        st.metric("Risikobudget / Idee", f"{risk_budget:,.0f} €" if not np.isnan(risk_budget) else "—",
                   help="Depotwert × (Max. Verlust je Idee % / 100)")
     with m3:
-        st.metric("Risiko pro Aktie", f"{risk_per_share:,.2f}" if not np.isnan(risk_per_share) else "—",
+        st.metric("Risiko pro Aktie", f"{risk_per_share:,.2f} €" if not np.isnan(risk_per_share) else "—",
                   help="Einstand × (Stoppabstand % / 100)")
     with m4:
-        st.metric("Maximaler Positionswert", f"{max_position_value:,.0f}" if not np.isnan(max_position_value) else "—",
+        st.metric("Maximaler Positionswert", f"{max_position_value:,.0f} €" if not np.isnan(max_position_value) else "—",
                   help="Maximale Stückzahl × Einstand")
     with m5:
-        st.metric("Abgeleiteter Stoppkurs", f"{stop_price:,.2f}",
+        st.metric("Abgeleiteter Stoppkurs", f"{stop_price:,.2f} €",
                   help="Einstand × (1 − Stoppabstand % / 100)")
 
     if ticker_input:
@@ -2583,9 +2609,12 @@ kleineres Maximalgewicht. **Praxis:** Vergleiche beide Resultate
         score = np.nan
         if not np.isnan(beta) and not np.isnan(atr_pct) and not np.isnan(spx_atr_pct) and spx_atr_pct > 0:
             score = 0.60 * beta + 0.40 * (atr_pct / spx_atr_pct)
+        raw_market_price = _safe_float(metrics.get("price"), np.nan)
+        market_currency = str(metrics.get("currency", "USD") or "USD").upper()
+        market_price_eur = raw_market_price if market_currency == "EUR" else _usd_to_eur(raw_market_price)
         balancer_weight = (float(target_rc) / score) if not np.isnan(score) and score > 0 else np.nan
         balancer_value = float(depot_value) * balancer_weight if depot_value > 0 and not np.isnan(balancer_weight) else np.nan
-        balancer_shares = int(np.floor(balancer_value / _safe_float(metrics.get("price"), np.nan))) if not np.isnan(balancer_value) and _safe_float(metrics.get("price"), np.nan) > 0 else 0
+        balancer_shares = int(np.floor(balancer_value / market_price_eur)) if not np.isnan(balancer_value) and market_price_eur > 0 else 0
 
         st.markdown("##### Ergebnis · Beta-Balancer")
         spx_label = f"S&P 500 ATR%: {spx_atr_pct:.2f}%" if not np.isnan(spx_atr_pct) else "S&P 500 ATR% n/a"
@@ -2623,7 +2652,7 @@ kleineres Maximalgewicht. **Praxis:** Vergleiche beide Resultate
 
 def _render_workspace_sidebar():
     with st.sidebar:
-        st.markdown("### Arbeitsbereich")
+        st.markdown("### Watchlist")
         st.caption(f"Speicher: {_workspace_backend_label()} · Bereich: {_workspace_scope()}")
         if _private_area_enabled():
             state_label = "✓ entsperrt" if _is_private_unlocked() else "🔒 gesperrt"
@@ -2633,8 +2662,8 @@ def _render_workspace_sidebar():
                     _lock_private_area()
                     st.rerun()
         if not _is_private_unlocked():
-            st.markdown('<div class="workspace-note">Watchlist, Depot und To-dos sind gesperrt.</div>', unsafe_allow_html=True)
-            st.caption("→ Workspace öffnen zum Entsperren")
+            st.markdown('<div class="workspace-note">Watchlist und Depot sind gesperrt.</div>', unsafe_allow_html=True)
+            st.caption("→ Watchlist öffnen zum Entsperren")
             return
         _init_workspace_state()
         watchlist = st.session_state.get("watchlist", [])
@@ -2646,7 +2675,7 @@ def _render_workspace_sidebar():
         positions = st.session_state.get("positions", [])
         st.caption(f"{len(positions)} Positionen · {len(st.session_state.get('recent_tickers', []))} zuletzt genutzt")
         st.divider()
-        st.caption("Seiten: Workspace ⭐ · Einstellungen ⚙️")
+        st.caption("Seiten: Watchlist ⭐ · Einstellungen ⚙️")
 
 # ===== From market_data.py =====
 logger = logging.getLogger(__name__)
@@ -9023,34 +9052,7 @@ def _compute_stock_compare_rows(tickers: list[str], rs_source_setting: str) -> p
     return df
 
 
-def _render_stock_compare_section() -> None:
-    st.markdown("#### 🧮 Aktienvergleich mit Ranking")
-    st.caption("Zuerst Übersicht mit Gesamtranking, danach Kategorie-Rankings. Über die Kategorie-Buttons öffnest du die Detailtabelle für den direkten Vergleich.")
-
-    watchlist = st.session_state.get("watchlist", [])
-    base_defaults = [t for t in watchlist if isinstance(t, str) and t][:6] or DEFAULT_FAVORITES[:5]
-    tickers = st.multiselect(
-        "Ticker vergleichen",
-        options=sorted(set((watchlist or []) + DEFAULT_FAVORITES)),
-        default=base_defaults,
-        help="Wähle mindestens 2 Aktien für den Vergleich.",
-        key="compare_tickers_multi",
-    )
-    manual = st.text_input("Weitere Ticker (kommagetrennt)", value="", placeholder="z.B. AMD, AVGO, NFLX", key="compare_tickers_manual")
-    extra = [x.strip().upper() for x in manual.split(",") if x.strip()]
-    tickers = list(dict.fromkeys([t.upper() for t in tickers] + extra))[:12]
-
-    if len(tickers) < 2:
-        st.info("Bitte mindestens 2 Ticker auswählen, damit ein Vergleich möglich ist.")
-        return
-
-    rs_source_setting = _get_rs_rating_source_setting()
-    with st.spinner("Berechne Ranking und Kategorien …"):
-        compare_df = _compute_stock_compare_rows(tickers, rs_source_setting)
-    if compare_df.empty:
-        st.warning("Für die ausgewählten Ticker konnten nicht genug Kursdaten geladen werden.")
-        return
-
+def _render_stock_ranking_tables(compare_df: pd.DataFrame, key_prefix: str = "compare") -> None:
     score_cols = [
         "Rang", "Ticker", "Gesamt-Score", "Score Technisch", "Score Fundamental",
         "Score Gleitende Durchschnitte", "Score Chart",
@@ -9093,16 +9095,16 @@ def _render_stock_compare_section() -> None:
             "cols": ["Rang", "Ticker", "Score Chart", "Chart Positiv", "Chart Negativ", "Chart Neutral"],
         },
     }
-    if st.session_state.get("compare_selected_category") not in category_config:
-        st.session_state["compare_selected_category"] = "Gesamtscore"
+    if st.session_state.get(f"{key_prefix}_selected_category") not in category_config:
+        st.session_state[f"{key_prefix}_selected_category"] = "Gesamtscore"
 
     button_cols = st.columns(len(category_config))
     for idx, category in enumerate(category_config.keys()):
-        if button_cols[idx].button(category, width="stretch", key=f"cmp_cat_{idx}"):
-            st.session_state["compare_selected_category"] = category
+        if button_cols[idx].button(category, width="stretch", key=f"{key_prefix}_cat_{idx}"):
+            st.session_state[f"{key_prefix}_selected_category"] = category
             st.rerun()
 
-    selected = st.session_state.get("compare_selected_category", "Gesamtscore")
+    selected = st.session_state.get(f"{key_prefix}_selected_category", "Gesamtscore")
     selected_config = category_config.get(selected, category_config["Gesamtscore"])
     sort_col = selected_config["sort"]
     detail_cols = selected_config["cols"]
@@ -9114,7 +9116,7 @@ def _render_stock_compare_section() -> None:
         detail_df[detail_cols].round(2),
         width="stretch",
         hide_index=True,
-        key=f"compare_detail_{selected}",
+        key=f"{key_prefix}_detail_{selected}",
     )
 
     with st.expander("Alle Kennzahlen im direkten Vergleich", expanded=False):
@@ -9130,6 +9132,37 @@ def _render_stock_compare_section() -> None:
             "Score Gleitende Durchschnitte", "Gesamt-Score",
         ]
         st.dataframe(compare_df[raw_cols].round(2), width="stretch", hide_index=True)
+
+
+def _render_stock_compare_section() -> None:
+    st.markdown("#### 🧮 Aktienvergleich mit Ranking")
+    st.caption("Zuerst Übersicht mit Gesamtranking, danach Kategorie-Rankings. Über die Kategorie-Buttons öffnest du die Detailtabelle für den direkten Vergleich.")
+
+    watchlist = st.session_state.get("watchlist", [])
+    base_defaults = [t for t in watchlist if isinstance(t, str) and t][:6] or DEFAULT_FAVORITES[:5]
+    tickers = st.multiselect(
+        "Ticker vergleichen",
+        options=sorted(set((watchlist or []) + DEFAULT_FAVORITES)),
+        default=base_defaults,
+        help="Wähle mindestens 2 Aktien für den Vergleich.",
+        key="compare_tickers_multi",
+    )
+    manual = st.text_input("Weitere Ticker (kommagetrennt)", value="", placeholder="z.B. AMD, AVGO, NFLX", key="compare_tickers_manual")
+    extra = [x.strip().upper() for x in manual.split(",") if x.strip()]
+    tickers = list(dict.fromkeys([t.upper() for t in tickers] + extra))[:12]
+
+    if len(tickers) < 2:
+        st.info("Bitte mindestens 2 Ticker auswählen, damit ein Vergleich möglich ist.")
+        return
+
+    rs_source_setting = _get_rs_rating_source_setting()
+    with st.spinner("Berechne Ranking und Kategorien …"):
+        compare_df = _compute_stock_compare_rows(tickers, rs_source_setting)
+    if compare_df.empty:
+        st.warning("Für die ausgewählten Ticker konnten nicht genug Kursdaten geladen werden.")
+        return
+
+    _render_stock_ranking_tables(compare_df, key_prefix="compare")
 
 
 def _tab_aktienbewertung():
@@ -9195,6 +9228,8 @@ def _tab_aktienbewertung():
     L = df.iloc[-1]
     name = info.get("shortName", ticker) if info else ticker
     price = float(L["Close"])
+    market_currency = str((info or {}).get("currency", "USD") or "USD").upper()
+    price_eur = price if market_currency == "EUR" else _usd_to_eur(price)
     prev = df["Close"].iloc[-2]
     chg = (price / prev - 1) * 100
     last_date = _format_market_date(df.index[-1])
@@ -9209,10 +9244,10 @@ def _tab_aktienbewertung():
         if private_ok and st.button("💼 Als Position merken", width="stretch", key="add_pos_stock", type="secondary"):
             _upsert_position({
                 "ticker": ticker,
-                "buy_price": round(price, 2),
-                "buy_price_usd": round(price, 2),
+                "buy_price": round(price_eur, 2),
+                "buy_price_eur": round(price_eur, 2),
                 "buy_date": last_date,
-                "currency": "USD",
+                "currency": "EUR",
                 "note": "",
             })
             st.success(f"{ticker} als Position vorgemerkt.")
@@ -9650,18 +9685,22 @@ def _tab_nach_kauf():
         st.error("Keine Kursdaten für diesen Ticker.")
         return
 
-    price = float(df["Close"].iloc[-1])
+    raw_price = float(df["Close"].iloc[-1])
+    market_currency = str((info or {}).get("currency", "USD") or "USD").upper()
+    price_eur = raw_price if market_currency == "EUR" else _usd_to_eur(raw_price)
+    price = raw_price
     saved = next((p for p in saved_positions if p.get("ticker") == ticker), None)
 
     bc1, bc2, bc3, bc4 = st.columns(4)
     with bc1:
-        currency_default = "USD"
-        if saved and saved.get("currency") == "EUR":
-            currency_default = "EUR"
-        currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if currency_default == "USD" else 1, key="nk_curr")
+        currency_default = "EUR"
+        if saved and saved.get("currency") == "USD":
+            currency_default = "USD"
+        currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if currency_default == "EUR" else 1, key="nk_curr")
     with bc2:
-        default_buy = round(float(saved.get("buy_price", price * 0.95)) if saved else float(price * 0.95), 2)
-        label = "Kaufkurs ($)" if currency == "USD" else "Kaufkurs (€)"
+        fallback_price = price_eur if currency == "EUR" else raw_price
+        default_buy = round(float(saved.get("buy_price", fallback_price * 0.95)) if saved else float(fallback_price * 0.95), 2)
+        label = "Kaufkurs (€)" if currency == "EUR" else "Kaufkurs ($)"
         buy_price_input = st.number_input(label, min_value=0.01, value=default_buy, step=0.01, key="nk_price")
     with bc3:
         if saved and saved.get("buy_date"):
@@ -9677,23 +9716,11 @@ def _tab_nach_kauf():
         note = st.text_input("Notiz", value=note_default, key="nk_note")
 
     if st.button("💾 Position speichern / aktualisieren", width="stretch", disabled=not private_ok):
-        buy_price_usd = float(buy_price_input)
-        eur_usd_rate = None
-        if currency == "EUR":
-            try:
-                fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
-                if fx is not None and len(fx) > 0:
-                    eur_usd_rate = float(fx["Close"].iloc[-1])
-                    buy_price_usd = buy_price_input * eur_usd_rate
-            except Exception:
-                eur_usd_rate = None
-            if eur_usd_rate is None:
-                eur_usd_rate = 1.08
-                buy_price_usd = buy_price_input * eur_usd_rate
+        buy_price_eur, _ = _price_to_eur(float(buy_price_input), currency, buy_date)
         _upsert_position({
             "ticker": ticker,
             "buy_price": float(buy_price_input),
-            "buy_price_usd": float(buy_price_usd),
+            "buy_price_eur": float(buy_price_eur),
             "buy_date": str(buy_date),
             "currency": currency,
             "note": note,
@@ -9707,7 +9734,7 @@ def _tab_nach_kauf():
 
     buy_price = buy_price_input
     eur_usd_rate = None
-    if currency == "EUR":
+    if currency == "EUR" and market_currency != "EUR":
         try:
             fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
             if fx is not None and len(fx) > 0:
@@ -10341,100 +10368,67 @@ def _tab_dashboard():
 def _render_arbeitsbereich() -> None:
     _init_workspace_state()
     watchlist = _normalize_workspace_ticker_list(st.session_state.get("watchlist", []), limit=25)
-    todos = _normalize_workspace_todos(st.session_state.get("todos", []))
     last_save = _workspace_last_save()
 
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.markdown("#### ⭐ Watchlist und Aufgaben")
+        st.markdown("#### ⭐ Watchlist")
         st.caption(
             f"Letzte Speicherung {last_save.strftime('%d.%m.%Y · %H:%M UTC')}. "
-            "Depot-Positionen findest du im Tab „Positionen“."
+            "Die Tabelle nutzt dieselbe Logik wie „Aktienbewertung → Vergleich & Ranking“."
         )
     with col_h2:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🔒 Sperren", key="ws_lock", use_container_width=True):
-                _lock_private_area()
-                st.rerun()
-        with c2:
-            st.button("↗ Teilen", key="ws_share", use_container_width=True)
+        if st.button("🔒 Sperren", key="ws_lock", use_container_width=True):
+            _lock_private_area()
+            st.rerun()
 
     st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
-    wl_col, td_col = st.columns([1.5, 1])
-
-    with wl_col:
+    add_col, manage_col = st.columns([1, 2])
+    with add_col:
         with st.container(border=True):
-            wl_h1, wl_h2 = st.columns([3, 1])
-            with wl_h1:
-                st.markdown(f'<div class="ws-label">Watchlist · {len(watchlist)}</div>', unsafe_allow_html=True)
-            with wl_h2:
-                if st.button("+ Ticker", key="add_ticker", use_container_width=True):
-                    st.session_state.show_add_ticker = True
-            pills_html = '<div style="display: flex; flex-wrap: wrap;">'
-            if watchlist:
-                for ticker in watchlist:
-                    pills_html += f'<span class="ws-pill">{html.escape(ticker)} ✕</span>'
-            else:
-                pills_html += '<span style="font-size: 13px; color: #888780;">Noch keine Ticker in der Watchlist.</span>'
-            pills_html += '</div>'
-            st.markdown(pills_html, unsafe_allow_html=True)
-            if st.session_state.get("show_add_ticker"):
-                new_ticker = st.text_input("Neuer Ticker", key="new_ticker_input")
-                c_ok, c_cancel = st.columns(2)
-                with c_ok:
-                    if new_ticker and st.button("Hinzufügen", key="confirm_add_ticker", use_container_width=True):
-                        _add_watchlist_ticker(new_ticker.upper())
-                        st.session_state.show_add_ticker = False
-                        st.rerun()
-                with c_cancel:
-                    if st.button("Abbrechen", key="cancel_add_ticker", use_container_width=True):
-                        st.session_state.show_add_ticker = False
-                        st.rerun()
+            st.markdown(f'<div class="ws-label">Watchlist · {len(watchlist)}</div>', unsafe_allow_html=True)
+            new_ticker = st.text_input("Ticker hinzufügen", key="watchlist_new_ticker", placeholder="z.B. AMD")
+            if st.button("Hinzufügen", key="watchlist_add_ticker", use_container_width=True, disabled=not bool(new_ticker.strip())):
+                _add_watchlist_ticker(new_ticker.upper())
+                st.rerun()
+    with manage_col:
+        if watchlist:
+            manage_df = pd.DataFrame({"Entfernen": [False] * len(watchlist), "Ticker": watchlist})
+            edited_watchlist = st.data_editor(
+                manage_df,
+                width="stretch",
+                hide_index=True,
+                disabled=["Ticker"],
+                key="watchlist_manage_editor",
+                column_config={
+                    "Entfernen": st.column_config.CheckboxColumn("Entfernen", width="small"),
+                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                },
+            )
+            removals = edited_watchlist[edited_watchlist["Entfernen"] == True]["Ticker"].tolist()
+            if removals:
+                for ticker_to_remove in removals:
+                    _remove_watchlist_ticker(ticker_to_remove)
+                st.success(f"{', '.join(removals)} aus der Watchlist entfernt.")
+                st.rerun()
+        else:
+            st.info("Noch keine Ticker in der Watchlist.")
 
-    with td_col:
-        with st.container(border=True):
-            td_h1, td_h2 = st.columns([3, 1])
-            with td_h1:
-                st.markdown('<div class="ws-label">Heute</div>', unsafe_allow_html=True)
-            with td_h2:
-                if st.button("+", key="add_todo", use_container_width=True):
-                    st.session_state.show_add_todo = True
-            if todos:
-                for todo in todos:
-                    col_cb, col_txt = st.columns([0.1, 0.9])
-                    with col_cb:
-                        done = st.checkbox("", value=bool(todo["done"]), key=f"todo_{todo['id']}", label_visibility="collapsed")
-                        if done != bool(todo["done"]):
-                            _update_todo_status(todo["id"], done)
-                            st.rerun()
-                    with col_txt:
-                        style = "text-decoration: line-through; color: #888780;" if todo["done"] else ""
-                        st.markdown(f'<div style="font-size: 13px; padding-top: 4px; {style}">{html.escape(todo["text"])}</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div style="font-size: 13px; color: #888780;">Keine Aufgaben für heute.</div>', unsafe_allow_html=True)
-            if st.session_state.get("show_add_todo"):
-                new_todo = st.text_input("Neue Aufgabe", key="new_todo_input")
-                c_ok, c_cancel = st.columns(2)
-                with c_ok:
-                    if new_todo and st.button("Hinzufügen", key="confirm_add_todo", use_container_width=True):
-                        _add_todo(new_todo)
-                        st.session_state.show_add_todo = False
-                        st.rerun()
-                with c_cancel:
-                    if st.button("Abbrechen", key="cancel_add_todo", use_container_width=True):
-                        st.session_state.show_add_todo = False
-                        st.rerun()
+    if not watchlist:
+        return
 
-    st.markdown("<div style='height: 12px'></div>", unsafe_allow_html=True)
-    st.caption(
-        "👉 Depot-Übersicht, Verkaufskandidaten, Positionen, Depotkurve, Rechner und "
-        "Einstellungen liegen jeweils als eigene Tabs unter „Mein Depot“."
-    )
+    rs_source_setting = _get_rs_rating_source_setting()
+    with st.spinner("Berechne Watchlist-Ranking …"):
+        compare_df = _compute_stock_compare_rows(watchlist, rs_source_setting)
+    if compare_df.empty:
+        st.warning("Für deine Watchlist konnten nicht genug Kursdaten geladen werden.")
+        return
+
+    _render_stock_ranking_tables(compare_df, key_prefix="watchlist")
 
 
 def _tab_mein_depot():
-    """Mein Depot: alle depot-bezogenen Funktionen inkl. Rechner und Workspace."""
+    """Mein Depot: alle depot-bezogenen Funktionen inkl. Rechner und Watchlist."""
     if not _render_private_gate("🔐 Mein Depot"):
         return
     inject_workspace_css()
@@ -10450,8 +10444,7 @@ def _tab_mein_depot():
         "📈 Depotkurve",
         "🎯 Nach-Kauf-Check",
         "🧮 Rechner",
-        "⭐ Workspace",
-        "⚙️ Einstellungen",
+        "⭐ Watchlist",
     ])
     with tabs[0]:
         _render_depot_overview(state)
@@ -10466,11 +10459,9 @@ def _tab_mein_depot():
     with tabs[5]:
         _init_workspace_state()
         st.caption(
-            f"Persistent über {_workspace_backend_label()} · Workspace: {_workspace_scope()}"
+            f"Persistent über {_workspace_backend_label()} · Watchlist: {_workspace_scope()}"
         )
         _render_arbeitsbereich()
-    with tabs[6]:
-        _render_depot_portfolio_regler(state)
 
 
 def _render_technical_setup_area():

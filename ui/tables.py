@@ -17,7 +17,7 @@ def flow_column_config() -> dict:
     return {
         "Datum": st.column_config.DateColumn("Datum", format="DD.MM.YYYY"),
         "Typ": st.column_config.TextColumn("Typ", width="small"),
-        "Betrag": st.column_config.NumberColumn("Betrag", format="%.2f"),
+        "Betrag": st.column_config.NumberColumn("Betrag", format="%.2f €"),
         "Notiz": st.column_config.TextColumn("Notiz", width="large"),
     }
 
