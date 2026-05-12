@@ -9338,33 +9338,20 @@ def _tab_aktienbewertung():
     L = df.iloc[-1]
     name = info.get("shortName", ticker) if info else ticker
     price = float(L["Close"])
-    market_currency = str((info or {}).get("currency", "USD") or "USD").upper()
-    price_eur = price if market_currency == "EUR" else _usd_to_eur(price)
     prev = df["Close"].iloc[-2]
     chg = (price / prev - 1) * 100
     last_date = _format_market_date(df.index[-1])
 
-    act1, act2, act3 = st.columns([1, 1, 1])
+    act1, act2 = st.columns([1, 2])
     private_ok = _is_private_unlocked()
     with act1:
         if private_ok and st.button("➕ Zur Watchlist", width="stretch", key="add_watch_stock", type="secondary"):
             _add_watchlist_ticker(ticker)
             st.success(f"{ticker} zur Watchlist hinzugefügt.")
     with act2:
-        if private_ok and st.button("💼 Als Position merken", width="stretch", key="add_pos_stock", type="secondary"):
-            _upsert_position({
-                "ticker": ticker,
-                "buy_price": round(price_eur, 2),
-                "buy_price_eur": round(price_eur, 2),
-                "buy_date": last_date,
-                "currency": "EUR",
-                "note": "",
-            })
-            st.success(f"{ticker} als Position vorgemerkt.")
-    with act3:
         st.caption(f"Datenstand: {last_date} · Quelle Yahoo Finance")
         if not private_ok:
-            st.caption("Watchlist und Depot-Speicherung sind gesperrt, bis du den privaten Bereich entsperrst.")
+            st.caption("Watchlist-Speicherung ist gesperrt, bis du den privaten Bereich entsperrst.")
 
     atr_s = _atr(df, 21)
     atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
