@@ -10473,11 +10473,175 @@ def _tab_mein_depot():
         _render_depot_portfolio_regler(state)
 
 
+def _render_technical_setup_area():
+    st.markdown("### ⚙️ Technisches Setup")
+    st.caption("Privater Wartungsbereich für Datenbankaktualisierung, Worker-Status und Diagnose.")
+    store = _get_price_store()
+    settings_preview = _get_portfolio_settings()
+    pref_auto = settings_preview.get("neon_auto_update_preference", "on")
+    pref_enabled = str(pref_auto).strip().lower() == "on"
+    runtime_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else pref_enabled
+    if runtime_enabled:
+        st.caption("Automatische Neon-Aktualisierung: Montag bis Freitag um 22:30 Uhr (Europe/Berlin). Manueller Start bleibt verfügbar.")
+    else:
+        st.caption("Automatische Neon-Aktualisierung ist deaktiviert. Manueller Start bleibt verfügbar.")
+    st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
+    if store["backend"] != "neon":
+        st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon meist stabiler.")
+
+    current_refresh_at = _get_cache_metadata(store, "last_refresh_at", "")
+    live_status = get_live_universe_store_status(store["backend"], _get_store_label(store), str(current_refresh_at or ""))
+    live_cols = st.columns(5)
+    live_cols[0].metric("Universe live", int(live_status.get("requested", 0)))
+    live_cols[1].metric("Im Cache", int(live_status.get("loaded", 0)))
+    live_cols[2].metric("Abdeckung", f"{float(live_status.get('coverage', 0.0) or 0.0):.0%}")
+    live_cols[3].metric("Mappings", int(live_status.get("mapped", 0)))
+    live_cols[4].metric("Ungeklärt", int(live_status.get("not_found", 0)) + int(live_status.get("no_history", 0)))
+
+    active_job = _get_active_refresh_job(store)
+    latest_jobs = _list_recent_refresh_jobs(store, limit=6)
+    latest_job = latest_jobs[0] if latest_jobs else None
+    if latest_job:
+        with st.container(border=True):
+            st.markdown(f"**Letzter Job:** {_job_type_label(latest_job.get('job_type'))} · **Status:** {_job_status_badge(latest_job.get('status'))}")
+            st.caption(f"Job-ID: {latest_job.get('job_id', '—')} · Schritt: {latest_job.get('current_step') or '—'}")
+            if st.button("Status neu laden", use_container_width=True, key="tech_status_reload"):
+                st.rerun()
+
+    settings = _get_portfolio_settings()
+    saved_neon_pref = settings.get("neon_auto_update_preference", "on")
+    if saved_neon_pref not in {"on", "off"}:
+        saved_neon_pref = "on"
+    neon_auto_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else (saved_neon_pref == "on")
+    auto_cols = st.columns([1, 1.6])
+    with auto_cols[0]:
+        neon_auto_choice = st.selectbox(
+            "Neon Auto-Update",
+            options=["on", "off"],
+            index=0 if neon_auto_enabled else 1,
+            format_func=lambda value: "Aktiviert" if value == "on" else "Deaktiviert",
+            key="tech_neon_auto_update_select",
+        )
+    with auto_cols[1]:
+        if store.get("backend") == "neon":
+            runtime_flag = "Aktiviert" if _is_neon_auto_update_enabled(store) else "Deaktiviert"
+            st.caption(f"Aktiver Rhythmus: Montag–Freitag um 22:30 Uhr (Europe/Berlin) via GitHub Actions · Laufzeitstatus: {runtime_flag}.")
+        else:
+            st.caption("Neon ist nicht aktiv. Du kannst die Auto-Update-Präferenz trotzdem schon speichern.")
+        if st.button("Auto-Update speichern", key="tech_neon_auto_update_save"):
+            settings["neon_auto_update_preference"] = neon_auto_choice
+            _save_portfolio_settings(settings)
+            if store.get("backend") == "neon":
+                _set_neon_auto_update_enabled(store, neon_auto_choice == "on")
+            st.rerun()
+
+    current_rs_source = _get_rs_rating_source_setting()
+    rs_source_options = list(RS_SOURCE_LABELS.keys())
+    rs_source_choice = st.selectbox(
+        "RS-Rating Quelle",
+        options=rs_source_options,
+        index=rs_source_options.index(current_rs_source) if current_rs_source in rs_source_options else 0,
+        format_func=lambda key: RS_SOURCE_LABELS.get(key, key),
+        key="tech_rs_source_select",
+        help="Du kannst zwischen deiner eigenen Repo-CSV, Freds RS-CSV und der DB-/Live-Berechnung umschalten. Die Auswahl wird dauerhaft gespeichert.",
+    )
+    if st.button("RS-Quelle speichern", use_container_width=False, key="tech_rs_source_save"):
+        settings["rs_rating_source"] = rs_source_choice if rs_source_choice in RS_SOURCE_LABELS else RS_SOURCE_CSV_LATEST
+        _save_portfolio_settings(settings)
+        st.success("RS-Quelle gespeichert. Die Auswahl bleibt auch nach Neustart erhalten.")
+
+    backend_options = ["sqlite", "neon"]
+    backend_labels = {
+        "sqlite": "SQLite (Standard)",
+        "neon": "Neon Postgres",
+    }
+    current_backend = settings.get("db_backend_preference", "sqlite")
+    if current_backend not in backend_options:
+        current_backend = "sqlite"
+    backend_choice = st.selectbox(
+        "Datenbank-Backend",
+        options=backend_options,
+        index=backend_options.index(current_backend),
+        format_func=lambda key: backend_labels.get(key, key),
+        key="tech_db_backend_select",
+        help="SQLite ist der Standard. Neon wird nur genutzt, wenn konfiguriert und erreichbar.",
+    )
+    if st.button("Backend speichern", use_container_width=False, key="tech_db_backend_save"):
+        settings["db_backend_preference"] = backend_choice if backend_choice in backend_options else "sqlite"
+        _save_portfolio_settings(settings)
+        st.rerun()
+
+    rs_csv_info = _load_selected_rs_ratings_map(rs_source_choice)
+    if rs_csv_info.get("ok"):
+        csv_caption_parts = [
+            f"Quelle: {RS_SOURCE_LABELS.get(rs_source_choice, rs_source_choice)}",
+            f"CSV: {rs_csv_info.get('file')}",
+            f"{int(rs_csv_info.get('count', 0) or 0)} Ratings",
+        ]
+        if rs_csv_info.get("as_of_date"):
+            csv_caption_parts.append(f"Stand {rs_csv_info.get('as_of_date')}")
+        if rs_csv_info.get("generated_at_utc"):
+            csv_caption_parts.append(f"Erzeugt {rs_csv_info.get('generated_at_utc')} UTC")
+        st.caption(" · ".join(csv_caption_parts))
+    elif rs_source_choice != RS_SOURCE_COMPUTED:
+        st.warning(rs_csv_info.get("error") or "Die gewählte RS-CSV ist noch nicht verfügbar. Die App fällt bis dahin auf die interne Berechnung zurück.")
+    else:
+        st.caption("Die DB-Variante nutzt den internen Snapshot bzw. die Live-Berechnung aus dem Datenspeicher.")
+
+    btn_refresh, btn_rescue, btn_remap, btn_export, btn_diag = st.columns(5)
+    with btn_refresh:
+        refresh_clicked = st.button("Aktienuniversum aktualisieren", use_container_width=True, disabled=bool(active_job), key="tech_refresh_universe")
+    with btn_rescue:
+        rescue_clicked = st.button("Fehlende nachladen", use_container_width=True, disabled=bool(active_job), key="tech_rescue_missing")
+    with btn_remap:
+        remap_clicked = st.button("Automatisch remappen", use_container_width=True, disabled=bool(active_job), key="tech_auto_remap")
+    with btn_export:
+        export_clicked = st.button("RS-CSV erzeugen", use_container_width=True, disabled=bool(active_job), key="tech_export_rs_csv")
+    with btn_diag:
+        diagnose_clicked = st.button("Yahoo-Diagnose", use_container_width=True, key="tech_yahoo_diag")
+
+    if refresh_clicked:
+        result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit_private_tech"})
+        if result.get("ok"):
+            st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der Refresh-Job konnte nicht gestartet werden.")
+    if rescue_clicked:
+        result = _request_external_refresh_job("rescue_missing", payload={"trigger": "streamlit_private_tech"})
+        if result.get("ok"):
+            st.success(f"✓ Rescue-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der Rescue-Job konnte nicht gestartet werden.")
+    if remap_clicked:
+        result = _request_external_refresh_job("auto_remap", payload={"trigger": "streamlit_private_tech"})
+        if result.get("ok"):
+            st.success(f"✓ Auto-Remap-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der Auto-Remap-Job konnte nicht gestartet werden.")
+    if export_clicked:
+        result = _request_external_refresh_job("export_rs_csv", payload={"trigger": "streamlit_private_tech", "rs_source": "github_csv"})
+        if result.get("ok"):
+            st.success(f"✓ RS-CSV-Job angelegt: {result['job']['job_id']}.")
+        else:
+            st.error(result.get("error") or "Der RS-CSV-Job konnte nicht gestartet werden.")
+    if diagnose_clicked:
+        with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
+            diag_stats = diagnose_missing_nyse_yahoo()
+            st.cache_data.clear()
+        if diag_stats.get("ok"):
+            st.success(diag_stats.get("message", "Yahoo-Diagnose abgeschlossen."))
+            results_df = diag_stats.get("results_df")
+            if results_df is not None and not results_df.empty:
+                st.dataframe(results_df, use_container_width=True, hide_index=True)
+        else:
+            st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
+
+
 def _tab_einstellungen():
-    """Systemeinstellungen sind nicht mehr als eigener UI-Bereich verfügbar."""
+    """Technisches Setup: Datenbankpflege, Worker-Status, RS-Quelle, Diagnose."""
     if not _render_private_gate("🔐 Einstellungen"):
         return
-    st.info("Das technische Setup wurde aus dem Workspace entfernt. Persistenz, Datenbank-Backend und Aktualisierungsjobs laufen weiterhin über die bestehende Konfiguration.")
+    _render_technical_setup_area()
 
 
 def _render_topbar() -> None:
