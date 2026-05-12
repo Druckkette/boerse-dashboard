@@ -5661,7 +5661,10 @@ def analyze_vix(dv):
     calm_rule = (dv["PctRank252"] <= 0.25) & (dv["Z63"] <= -0.5)
     fallback_calm = (dv["Close"] < 16) & (dv["Close"] < dv["EMA10"])
 
-    dv["Is_Panic"] = panic_rule.fillna(False) | fallback_panic.fillna(False)
+    raw_panic = (panic_rule.fillna(False) | fallback_panic.fillna(False)).astype(bool)
+    panic_clear = (~raw_panic).astype(int).rolling(2, min_periods=2).min().fillna(0).astype(bool)
+    dv["Raw_Is_Panic"] = raw_panic
+    dv["Is_Panic"] = (raw_panic | (raw_panic.shift(1).fillna(False) & ~panic_clear)).fillna(False)
     dv["Is_Calm"] = calm_rule.fillna(False) | fallback_calm.fillna(False)
     dv["VIX_Regime"] = np.select(
         [dv["Is_Panic"], dv["Is_Calm"]],
@@ -5728,14 +5731,16 @@ def build_volatility_dashboard(spx_df, vix_df=None, vixy_df=None):
         out["VIXY_Carry_Decay"] = False
         out["VIXY_State"] = "n/a"
 
-    out["Fragile_Rally"] = (
-        (out["SPX_Ret_5d"] > 0)
-        & (
-            out["VIXY_Stress_Confirmation"]
-            | (out["VIX_Ret_5d"] > 0)
-            | ((out["VIXY_Ret_5d"] > 0.03) & (out["VIX_PctRank252"] > 0.55))
-        )
+    fragile_rally_warnings = pd.DataFrame(
+        {
+            "vixy_stress": out["VIXY_Stress_Confirmation"],
+            "vix_rising": out["VIX_Ret_5d"] > 0,
+            "vixy_rising_elevated_vix": (out["VIXY_Ret_5d"] > 0.03) & (out["VIX_PctRank252"] > 0.55),
+        },
+        index=out.index,
     ).fillna(False)
+    out["Fragile_Rally_Warnings"] = fragile_rally_warnings.sum(axis=1)
+    out["Fragile_Rally"] = ((out["SPX_Ret_5d"] > 0) & (out["Fragile_Rally_Warnings"] >= 2)).fillna(False)
 
     conditions = [
         out["VIX_Is_Panic"] & out["VIXY_Stress_Confirmation"],

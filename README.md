@@ -50,6 +50,47 @@ Die App ist live unter: `https://dein-name-boerse-dashboard.streamlit.app`
 - **Divergenz-Check** (Index vs. A/D-Linie)
 - **Federal Funds Rate** Trend (FRED API)
 
+
+## Volatilitäts-Regime: Regeln und Grenzwerte
+
+Das Dashboard bewertet das Volatilitätsumfeld zweistufig: Zuerst wird das VIX-Regime aus dem VIX selbst abgeleitet, anschließend kombiniert das finale `Vol_Regime` VIX, VIXY und die 5-Tage-Entwicklung des S&P 500.
+
+### 1) VIX-Regime
+
+Für den VIX werden ein 10-Tage-EMA, ein 63-Tage-Z-Score und ein 252-Tage-Perzentilrang berechnet. Die Einordnung erfolgt in dieser Reihenfolge: Stress vor Ruhig vor Neutral. Zusätzlich gilt eine 2-Tage-Hysterese: Stress wird erst aufgelöst, wenn die rohe Panikbedingung zwei Handelstage hintereinander nicht erfüllt ist.
+
+| Regime | Bedingung |
+|---|---|
+| Stress | `PctRank252 >= 0.85` und `Z63 >= 1.5`, oder Fallback: `VIX Close > 20` und `VIX Close > EMA10` |
+| Ruhig | `PctRank252 <= 0.25` und `Z63 <= -0.5`, oder Fallback: `VIX Close < 16` und `VIX Close < EMA10` |
+| Neutral | Weder Stress noch Ruhig ist erfüllt |
+
+Falls Stress- und Ruhebedingung theoretisch gleichzeitig wahr wären, gewinnt Stress, weil diese Bedingung in der Auswahl zuerst geprüft wird.
+
+### 2) VIXY-Bestätigung
+
+VIXY dient als Bestätigung, ob Volatilitätsstress auch im Futures-Produkt getragen wird.
+
+| Signal | Bedingung |
+|---|---|
+| Steigender VIXY-Trend | `VIXY Close > EMA21` und `EMA21 > EMA21 vor 5 Tagen` |
+| Stress-Bestätigung | `VIXY Ret_5d > 8%`, `VIXY PctRank252 > 0.70` und steigender VIXY-Trend, oder `VIXY Ret_5d > 5%` und steigender VIXY-Trend |
+| Carry-Abbau / kein Stress | `VIXY Close < EMA21` und `VIXY Ret_20d < 0` |
+
+### 3) Finales Volatilitäts-Regime
+
+Das finale `Vol_Regime` wird in der folgenden Priorität vergeben:
+
+| Finales Regime | Bedingung | Interpretation |
+|---|---|---|
+| Risk Off bestätigt | VIX ist Stress und VIXY bestätigt Stress | VIX und VIXY ziehen gleichzeitig an |
+| Kurzer Volatilitätsschock | VIX ist Stress, aber VIXY bestätigt nicht | VIX springt an, Futures bestätigen aber nicht voll |
+| Fragile Rally | S&P 500 steigt über 5 Tage und gleichzeitig bleibt VIX oder VIXY auffällig | Aktienmarkt steigt, Volatilität entspannt aber nicht sauber |
+| Risk On / ruhig | VIX ist ruhig, VIXY baut ab und S&P 500 steigt über 5 Tage | Ruhiges Umfeld mit abbauendem VIXY |
+| Neutral | Keine der obigen Bedingungen ist erfüllt | Keine klare Volatilitätslage |
+
+Eine fragile Rally liegt konkret vor, wenn `SPX_Ret_5d > 0` gilt und zusätzlich mindestens zwei der folgenden drei Vola-Warnungen aktiv sind: VIXY-Stress-Bestätigung, `VIX_Ret_5d > 0`, oder `VIXY_Ret_5d > 3%` bei gleichzeitigem `VIX_PctRank252 > 0.55`. Diese gewichtete Zählung verhindert, dass eine einzelne milde Vola-Auffälligkeit in neutralen Marktphasen bereits für das Regime „Fragile Rally“ ausreicht.
+
 ## Aktienanalyse: Scoring-Kriterien, Gewichtung und Schwellenwerte
 
 Die Einzelaktien-Bewertung wird in vier Teilbereiche zerlegt und anschließend zu einem Gesamtscore (0–100) zusammengeführt.
