@@ -289,6 +289,7 @@ def _render_private_gate(title: str = "🔐 Privater Bereich") -> bool:
     return False
 
 def _add_recent_ticker(ticker: str) -> None:
+    ticker = _normalize_single_ticker(ticker)
     if not ticker:
         return
     _init_workspace_state()
@@ -297,7 +298,8 @@ def _add_recent_ticker(ticker: str) -> None:
     _sync_workspace()
 
 def _add_watchlist_ticker(ticker: str) -> None:
-    if not ticker:
+    ticker = _normalize_single_ticker(ticker)
+    if not ticker or not _is_valid_ticker(ticker):
         return
     _init_workspace_state()
     cur = [t for t in st.session_state["watchlist"] if t != ticker]
@@ -307,9 +309,254 @@ def _add_watchlist_ticker(ticker: str) -> None:
     _sync_workspace()
 
 def _remove_watchlist_ticker(ticker: str) -> None:
+    ticker = _normalize_single_ticker(ticker)
     _init_workspace_state()
     st.session_state["watchlist"] = [t for t in st.session_state["watchlist"] if t != ticker]
     _sync_workspace()
+
+
+
+def _is_valid_ticker(ticker: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,14}", _normalize_single_ticker(ticker)))
+
+
+def _normalize_ticker_list(values, limit: int = 25) -> list[str]:
+    out = []
+    for value in values or []:
+        ticker = _normalize_single_ticker(value)
+        if ticker and _is_valid_ticker(ticker) and ticker not in out:
+            out.append(ticker)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _set_watchlist_add_mode(enabled: bool) -> None:
+    st.session_state["watchlist_add_mode"] = bool(enabled)
+    if not enabled:
+        st.session_state["watchlist_inline_input"] = ""
+
+
+def _commit_watchlist_inline_input() -> bool:
+    ticker = _normalize_single_ticker(st.session_state.get("watchlist_inline_input", ""))
+    st.session_state["watchlist_inline_input"] = ticker
+    if not ticker or not _is_valid_ticker(ticker):
+        return False
+    before = list(st.session_state.get("watchlist", []))
+    _add_watchlist_ticker(ticker)
+    st.session_state["watchlist_inline_input"] = ""
+    st.session_state["watchlist_add_mode"] = False
+    return before != st.session_state.get("watchlist", [])
+
+
+def _render_watchlist_chips() -> None:
+    watchlist = _normalize_ticker_list(st.session_state.get("watchlist", []), limit=25)
+    if watchlist != st.session_state.get("watchlist", []):
+        st.session_state["watchlist"] = watchlist
+        _sync_workspace()
+    if watchlist:
+        cols = st.columns([1] * min(len(watchlist), 5))
+        for idx, ticker in enumerate(watchlist):
+            with cols[idx % len(cols)]:
+                chip_cols = st.columns([0.72, 0.28], gap="small", vertical_alignment="center")
+                chip_cols[0].markdown(f'<span class="pill workspace-chip">{html.escape(ticker)}</span>', unsafe_allow_html=True)
+                if chip_cols[1].button("×", key=f"watch_chip_remove_{ticker}", help=f"{ticker} entfernen"):
+                    _remove_watchlist_ticker(ticker)
+                    st.rerun()
+    else:
+        st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("watchlist_add_mode"):
+        input_col, ok_col, cancel_col = st.columns([1.0, 0.22, 0.22], vertical_alignment="bottom")
+        with input_col:
+            st.text_input(
+                "Ticker inline hinzufügen",
+                value=st.session_state.get("watchlist_inline_input", ""),
+                placeholder="NVDA",
+                key="watchlist_inline_input",
+                label_visibility="collapsed",
+                on_change=_commit_watchlist_inline_input,
+            )
+        with ok_col:
+            if st.button("✓", key="watch_inline_confirm", help="Ticker speichern"):
+                _commit_watchlist_inline_input()
+                st.rerun()
+        with cancel_col:
+            if st.button("×", key="watch_inline_cancel", help="Abbrechen"):
+                _set_watchlist_add_mode(False)
+                st.rerun()
+        st.caption("Enter speichert. Escape kann Streamlit serverseitig nicht zuverlässig abfangen; nutze das inline × zum Abbrechen.")
+    elif st.button("+", key="watch_inline_add", help="Ticker hinzufügen"):
+        _set_watchlist_add_mode(True)
+        st.rerun()
+
+
+def _workspace_status_badge(status: str) -> str:
+    status = str(status or "").strip()
+    if not status:
+        return "⚪ n/a"
+    lower = status.lower()
+    if lower == "ok":
+        return f"🟢 {status}"
+    if "stop" in lower:
+        return f"🟠 {status}"
+    if "unter" in lower or "keine" in lower:
+        return f"🟡 {status}"
+    return f"⚪ {status}"
+
+
+def _workspace_pnl_label(value) -> str:
+    pnl = _safe_float(value, np.nan)
+    if np.isnan(pnl):
+        return "—"
+    prefix = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+    return f"{prefix} {pnl:+.2f}%"
+
+
+def _position_display_health(position: dict) -> tuple[str, float]:
+    try:
+        health = _simple_position_health(position)
+    except Exception as exc:
+        logger.debug("workspace position health failed for %s: %s", position.get("ticker"), exc)
+        health = None
+    if not health:
+        return "", np.nan
+    return health.get("status", ""), _safe_float(health.get("pnl"), np.nan)
+
+
+def _positions_to_editor_df(positions: list[dict], include_empty: bool = False) -> pd.DataFrame:
+    rows = []
+    for idx, pos in enumerate(positions or []):
+        ticker = _normalize_single_ticker((pos or {}).get("ticker", ""))
+        if not ticker:
+            continue
+        status, pnl = _position_display_health(pos or {})
+        buy_date = (pos or {}).get("buy_date", "")
+        try:
+            buy_date = pd.Timestamp(buy_date).date() if buy_date else None
+        except Exception:
+            buy_date = None
+        rows.append({
+            "_original_ticker": ticker,
+            "Ticker": ticker,
+            "Stück": _safe_float((pos or {}).get("shares"), 0.0),
+            "Kaufdatum": buy_date,
+            "Einstand (€)": _safe_float((pos or {}).get("buy_price"), np.nan),
+            "Währung": str((pos or {}).get("currency", "USD") or "USD").upper(),
+            "Status": _workspace_status_badge(status),
+            "Notiz": str((pos or {}).get("note", "") or ""),
+            "P&L %": _workspace_pnl_label(pnl),
+            "🗑️": False,
+        })
+    if include_empty:
+        rows.append({
+            "_original_ticker": "",
+            "Ticker": "",
+            "Stück": 0.0,
+            "Kaufdatum": datetime.now(timezone.utc).date(),
+            "Einstand (€)": np.nan,
+            "Währung": "USD",
+            "Status": "⚪ Neu",
+            "Notiz": "",
+            "P&L %": "—",
+            "🗑️": False,
+        })
+    return pd.DataFrame(rows, columns=["_original_ticker", "Ticker", "Stück", "Kaufdatum", "Einstand (€)", "Währung", "Status", "Notiz", "P&L %", "🗑️"])
+
+
+def _positions_from_editor_df(editor_df: pd.DataFrame, existing_positions: list[dict]) -> tuple[list[dict], list[str], bool]:
+    existing_by_ticker = {_normalize_single_ticker(p.get("ticker", "")): dict(p) for p in existing_positions or [] if _normalize_single_ticker(p.get("ticker", ""))}
+    cleaned = []
+    seen = set()
+    messages = []
+    deleted = False
+    for _, row in editor_df.iterrows():
+        original = _normalize_single_ticker(row.get("_original_ticker", ""))
+        ticker = _normalize_single_ticker(row.get("Ticker", ""))
+        if bool(row.get("🗑️", False)):
+            deleted = True
+            continue
+        if not ticker:
+            continue
+        if not _is_valid_ticker(ticker):
+            messages.append(f"{ticker} wurde ignoriert: ungültiges Tickerformat.")
+            continue
+        if ticker in seen:
+            messages.append(f"{ticker} wurde ignoriert: Duplikat.")
+            continue
+        seen.add(ticker)
+        base = dict(existing_by_ticker.get(original) or existing_by_ticker.get(ticker) or {})
+        buy_price = _safe_float(row.get("Einstand (€)"), np.nan)
+        shares = _safe_float(row.get("Stück"), 0.0)
+        currency = str(row.get("Währung") or base.get("currency") or "USD").strip().upper()
+        if currency not in {"USD", "EUR"}:
+            currency = "USD"
+        buy_date_raw = row.get("Kaufdatum")
+        try:
+            buy_date = pd.Timestamp(buy_date_raw).strftime("%Y-%m-%d") if pd.notna(buy_date_raw) else ""
+        except Exception:
+            buy_date = str(base.get("buy_date", "") or "")
+        base.update({
+            "ticker": ticker,
+            "shares": float(max(shares, 0.0)),
+            "buy_date": buy_date,
+            "buy_price": float(buy_price) if not np.isnan(buy_price) and buy_price > 0 else 0.0,
+            "currency": currency,
+            "note": str(row.get("Notiz") or ""),
+        })
+        if base["buy_price"] > 0:
+            if currency == "USD":
+                base["buy_price_usd"] = float(base["buy_price"])
+            elif not base.get("buy_price_usd"):
+                converted, rate = _price_to_usd(float(base["buy_price"]), currency, buy_date or datetime.now(timezone.utc).date())
+                base["buy_price_usd"] = float(converted)
+                if rate is not None:
+                    base["eur_usd_rate"] = float(rate)
+        cleaned.append(base)
+    return cleaned[:30], messages, deleted
+
+
+def _render_workspace_positions_editor() -> None:
+    st.markdown('<div class="workspace-card"><div class="card-label">Gespeicherte Positionen</div>', unsafe_allow_html=True)
+    positions = st.session_state.get("positions", [])
+    include_empty = bool(st.session_state.get("workspace_position_new_row"))
+    editor_df = _positions_to_editor_df(positions, include_empty=include_empty)
+    if editor_df.empty and not include_empty:
+        st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Über „+ Position hinzufügen“ startest du direkt eine neue Tabellenzeile.</div>', unsafe_allow_html=True)
+    edited_df = st.data_editor(
+        editor_df,
+        width="stretch",
+        hide_index=True,
+        key="workspace_positions_editor",
+        disabled=["_original_ticker", "Status", "P&L %"],
+        column_order=["Ticker", "Stück", "Kaufdatum", "Einstand (€)", "Währung", "Status", "Notiz", "P&L %", "🗑️"],
+        column_config={
+            "_original_ticker": None,
+            "Ticker": st.column_config.TextColumn("Ticker", width="small", help="Wird automatisch in Großbuchstaben normalisiert."),
+            "Stück": st.column_config.NumberColumn("Stück", min_value=0.0, step=1.0, format="%.4f"),
+            "Kaufdatum": st.column_config.DateColumn("Kaufdatum", format="YYYY-MM-DD"),
+            "Einstand (€)": st.column_config.NumberColumn("Einstand (€)", min_value=0.0, step=0.01, format="%.2f"),
+            "Währung": st.column_config.SelectboxColumn("Währung", options=["USD", "EUR"], width="small"),
+            "Status": st.column_config.TextColumn("Status", disabled=True, width="medium"),
+            "Notiz": st.column_config.TextColumn("Notiz", width="large"),
+            "P&L %": st.column_config.TextColumn("P&L %", disabled=True, width="small"),
+            "🗑️": st.column_config.CheckboxColumn("🗑️", help="Anhaken löscht die Zeile beim nächsten Rerun."),
+        },
+    )
+    new_positions, messages, deleted = _positions_from_editor_df(edited_df, positions)
+    if new_positions != positions:
+        st.session_state["positions"] = new_positions
+        st.session_state["workspace_position_new_row"] = False
+        _sync_workspace()
+        if deleted:
+            st.rerun()
+    for msg in messages[:3]:
+        st.warning(msg)
+    if st.button("+ Position hinzufügen", key="workspace_add_position_row", type="secondary"):
+        st.session_state["workspace_position_new_row"] = True
+        st.rerun()
+    st.caption("Status und P&L werden aus der vorhandenen Aktienanalyse berechnet und sind daher read-only. Direkter Fokus auf eine neue Tabellenzelle ist in Streamlit nicht zuverlässig steuerbar; die neue leere Zeile erscheint sofort zur Eingabe.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 def _upsert_position(position: dict) -> None:
     _init_workspace_state()
@@ -9756,27 +10003,12 @@ def _tab_mein_bereich():
 
         with left:
             st.markdown('<div class="workspace-card"><div class="card-label">Watchlist</div>', unsafe_allow_html=True)
-            watchlist = st.session_state.get("watchlist", [])
-            if watchlist:
-                st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist) + '</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
-            add_watch = st.text_input("Ticker zur Watchlist hinzufügen", value="", placeholder="NVDA", key="watch_add_input").upper().strip()
-            col_add, col_remove = st.columns(2)
-            with col_add:
-                if st.button("Hinzufügen", width="stretch", key="watch_add_btn") and add_watch:
-                    _add_watchlist_ticker(add_watch)
-                    st.rerun()
-            with col_remove:
-                if watchlist:
-                    rem = st.selectbox("Entfernen", options=watchlist, key="watch_remove_sel")
-                    if st.button("Entfernen", width="stretch", key="watch_remove_btn"):
-                        _remove_watchlist_ticker(rem)
-                        st.rerun()
+            _render_watchlist_chips()
             st.markdown("</div>", unsafe_allow_html=True)
 
+        with right:
             st.markdown('<div class="workspace-card"><div class="card-label">Heutige To-dos</div>', unsafe_allow_html=True)
-            todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=220, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
+            todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=170, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
             if st.button("To-dos speichern", width="stretch", key="save_todos"):
                 st.session_state["todos"] = todos
                 _sync_workspace()
@@ -9784,40 +10016,7 @@ def _tab_mein_bereich():
             st.markdown('<div class="workspace-note">Ideal für Tagesplan, offene Fragen und Beobachtungsliste.</div>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-        with right:
-            st.markdown('<div class="workspace-card"><div class="card-label">Schnellzugriff</div>', unsafe_allow_html=True)
-            recents = st.session_state.get("recent_tickers", [])
-            if recents:
-                st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in recents[:12]) + '</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="workspace-note">Noch keine zuletzt genutzten Ticker.</div>', unsafe_allow_html=True)
-            st.markdown('<div class="workspace-note">Nutze diese Liste als tägliches Cockpit für deine wichtigsten Namen.</div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-            st.markdown('<div class="workspace-card"><div class="card-label">Gespeicherte Positionen</div>', unsafe_allow_html=True)
-            positions = st.session_state.get("positions", [])
-            if positions:
-                rows = []
-                for pos in positions[:25]:
-                    health = _simple_position_health(pos)
-                    rows.append({
-                        "Ticker": pos.get("ticker", ""),
-                        "Stück": _safe_float(pos.get("shares"), 0.0),
-                        "Kaufdatum": pos.get("buy_date", ""),
-                        "Einstand": pos.get("buy_price", np.nan),
-                        "Währung": pos.get("currency", "USD"),
-                        "Status": health.get("status", "") if health else "",
-                        "P&L %": round(float(health["pnl"]), 2) if health and health.get("pnl") is not None and not np.isnan(health.get("pnl")) else np.nan,
-                        "Notiz": pos.get("note", ""),
-                    })
-                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True, column_config={"Ticker": st.column_config.TextColumn("Ticker", width="small"), "Stück": st.column_config.NumberColumn("Stück", format="%.2f"), "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f"), "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f%%")})
-                remove_pos = st.selectbox("Position entfernen", options=[""] + [p.get("ticker", "") for p in positions], key="pos_remove_sel")
-                if remove_pos and st.button("Position löschen", width="stretch", key="pos_remove_btn"):
-                    _remove_position(remove_pos)
-                    st.rerun()
-            else:
-                st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Reale Depotpositionen mit Stückzahl pflegst du im Tab „Depot 7.2“.</div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+        _render_workspace_positions_editor()
 
     elif area_view == "💼 Depot 7.2":
         _render_portfolio_72_area()
