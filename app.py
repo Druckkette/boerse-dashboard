@@ -644,8 +644,9 @@ def _render_change_cards(changes):
             detail3_html = ""
             if item.get("detail3"):
                 detail3_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail3"]}</div>'
+            priority_cls = " kpi-priority" if item.get("title") in {"Trendwende-Ampel", "Distribution", "Volatilität"} else ""
             st.markdown(
-                f'<div class="change-card"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}{detail3_html}</div>',
+                f'<div class="change-card{priority_cls}"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}{detail3_html}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -654,7 +655,7 @@ def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, fre
     tone_color = {"good": "#22c55e", "warn": "#f59e0b", "bad": "#ef4444"}.get(tone, "#94a3b8")
     bullets = "".join(f"<li>{r}</li>" for r in reasons)
     st.markdown(
-        f'<div class="summary-hero"><div class="hero-title">Börse ohne Bauchgefühl</div><div class="hero-subtitle">Regelbasiertes Markt-Dashboard für Trend, Breite und Risiko</div><div style="font-size:2rem;font-weight:900;color:{tone_color};letter-spacing:.06em;margin:14px 0 10px 0;text-shadow:0 0 20px {tone_color}40;">{mode}</div><ul style="margin:8px 0 0 1rem;padding:0;line-height:1.5;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
+        f'<div class="summary-hero"><div style="font-size:1.65rem;font-weight:900;color:{tone_color};letter-spacing:.04em;margin:0 0 8px 0;">{mode}</div><ul style="margin:6px 0 0 1rem;padding:0;line-height:1.45;">{bullets}</ul><div class="hero-action {tone_cls}">Konsequenz: {action}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -671,6 +672,17 @@ def _render_dist_tile(label: str, value: str, indicator: str, tone: str, caption
     )
     if caption_text:
         st.caption(caption_text)
+
+
+def _dist_tile_html(label: str, value: str, indicator: str, tone: str) -> str:
+    color = {"good": "#16a34a", "warn": "#ca8a04", "bad": "#dc2626"}.get(tone, "#64748b")
+    return (
+        f'<div style="border:1px solid {color}40;border-radius:8px;padding:9px 10px;background:{color}0d;">'
+        f'<div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px;font-weight:700;">{label}</div>'
+        f'<div style="font-size:1.18rem;font-weight:800;color:#0d1626;line-height:1.15;">{value}</div>'
+        f'<div style="font-size:.72rem;color:{color};font-weight:700;margin-top:4px;">{indicator}</div>'
+        f'</div>'
+    )
 
 
 def _render_market_glossary(keys):
@@ -5936,9 +5948,9 @@ def render_ampel_section(L, history_df=None):
         rule_text = phase_rules.get(phase_for_light, phase_rules.get(key, ""))
         title = "GRÜN / AUFWÄRTSTREND" if phase == "aufwaertstrend" and key == "gruen" else labels[i]
         lights_html += (
-            f'<details style="min-width:88px;max-width:120px;">'
-            f'<summary style="list-style:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;outline:none;">'
-            f'<div style="width:42px;height:42px;border-radius:50%;background:{bg};box-shadow:{glow};border:{border};"></div>'
+            f'<details class="ampel-light">'
+            f'<summary>'
+            f'<div class="ampel-light__dot" style="background:{bg};box-shadow:{glow};border:{border};opacity:{1 if is_active else 0.2};"></div>'
             f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
             f'<div style="font-size:.55rem;color:#64748b;">Tippen für Regel</div>'
             f'</summary>'
@@ -5989,8 +6001,8 @@ def render_ampel_section(L, history_df=None):
         '<div class="info-card" style="padding:20px;">'
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
         '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:16px 20px;border-radius:12px;border:1px solid #e3e8f0;">'
-        f'<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;justify-content:center;">{lights_html}</div>'
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:12px;border-radius:12px;border:1px solid #e3e8f0;flex:1 1 180px;">'
+        f'<div class="ampel-lights">{lights_html}</div>'
         '</div>'
         '<div style="flex:1;min-width:220px;">'
         f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
@@ -6034,7 +6046,8 @@ def render_ampel_section(L, history_df=None):
         st.caption("Diagnose: " + " · ".join(missing_reasons))
 
 def render_check(label,ok,detail="",warn=False):
-    cls="check-warn" if warn else ("check-ok" if ok else "check-fail");icon="⚠" if warn else ("✓" if ok else "✗")
+    critical_fail = (not ok) and str(label).startswith("Warnzeichen")
+    cls="check-warn" if warn else ("check-ok" if ok else ("check-fail check-fail-critical" if critical_fail else "check-fail"));icon="⚠" if warn else ("✓" if ok else "✗")
     st.markdown(f'<div class="check-item"><div class="check-icon {cls}">{icon}</div><div style="flex:1;"><div style="font-size:.85rem;color:#0d1626;">{label}</div><div style="font-size:.7rem;color:#64748b;">{detail}</div></div></div>',unsafe_allow_html=True)
 
 def _check_label(check):
@@ -6206,6 +6219,22 @@ def plot_vix(dv, sd=90, title="VIX", price_color="#ef4444"):
         fig.add_trace(go.Scatter(x=x, y=_y(d[ma_col]), name=ma_name, line=dict(color=CHART_COLORS["secondary"], width=1, dash="dot")))
     apply_consistent_layout(fig, height=180, top_margin=10)
     return fig
+
+def plot_volatility_combo(vix_df, vixy_df, sd=90):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    has_vix = vix_df is not None and len(vix_df)
+    has_vixy = vixy_df is not None and len(vixy_df)
+    if has_vix:
+        d = vix_df.tail(sd)
+        fig.add_trace(go.Scatter(x=_x(d.index), y=_y(d["Close"]), name="VIX", line=dict(color=CHART_COLORS["negative"], width=1.6)), secondary_y=False)
+    if has_vixy:
+        d = vixy_df.tail(sd)
+        fig.add_trace(go.Scatter(x=_x(d.index), y=_y(d["Close"]), name="VIXY", line=dict(color=CHART_COLORS["warning"], width=1.6)), secondary_y=True)
+    apply_consistent_layout(fig, height=240, top_margin=10)
+    fig.update_yaxes(title_text="VIX", secondary_y=False)
+    fig.update_yaxes(title_text="VIXY", secondary_y=True, gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10, color=CHART_COLORS["muted"]))
+    return fig
+
 
 def render_signal_card(title, status, detail, tone="#64748b"):
     st.markdown(
@@ -9251,49 +9280,49 @@ def _tab_marktanalyse(compact: bool = False):
     if np.isnan(d200) and not np.isnan(L["SMA200"]) and L["SMA200"] > 0:
         d200 = (L["Close"] - L["SMA200"]) / L["SMA200"] * 100
 
-    row_ma = st.columns(4)
-    with row_ma[0]:
-        if np.isnan(d21):
-            d21_tone, d21_lbl = "neutral", "—"
-        elif d21 < 0:
-            d21_tone, d21_lbl = "bad", "✗ Darunter"
-        elif d21 > 3.0:
-            d21_tone, d21_lbl = "warn", "⚠ Überdehnt"
-        else:
-            d21_tone, d21_lbl = "good", "✓ OK"
-        _render_dist_tile("21-EMA Abstand", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", d21_lbl, d21_tone, "Kurzfristiger Abstand in ATR-Einheiten")
-    with row_ma[1]:
-        if np.isnan(d10):
-            d10_tone, d10_lbl = "neutral", "—"
-        elif d10 < 0:
-            d10_tone, d10_lbl = "bad", "✗ Darunter"
-        else:
-            d10_tone, d10_lbl = "good", "✓ OK"
-        _render_dist_tile("10-SMA", f"{d10:+.1f}%" if not np.isnan(d10) else "—", d10_lbl, d10_tone, "Sehr kurzfristiger Trendabstand")
-    with row_ma[2]:
-        if np.isnan(d50):
-            d50_tone, d50_lbl = "neutral", "—"
-        elif d50 < 0:
-            d50_tone, d50_lbl = "bad", "✗ Darunter"
-        elif d50 > t50:
-            d50_tone, d50_lbl = "warn", "⚠ Überdehnt"
-        else:
-            d50_tone, d50_lbl = "good", "✓ OK"
-        _render_dist_tile("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", d50_lbl, d50_tone, "Mittelfristiger Trendabstand")
-    with row_ma[3]:
-        if np.isnan(d200):
-            d200_tone, d200_lbl = "neutral", "—"
-        elif d200 < 0:
-            d200_tone, d200_lbl = "bad", "✗ Darunter"
-        else:
-            d200_tone, d200_lbl = "good", "✓ OK"
-        _render_dist_tile("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone, "Langfristiger Trendabstand")
+    if np.isnan(d21):
+        d21_tone, d21_lbl = "neutral", "—"
+    elif d21 < 0:
+        d21_tone, d21_lbl = "bad", "✗ Darunter"
+    elif d21 > 3.0:
+        d21_tone, d21_lbl = "warn", "⚠ Überdehnt"
+    else:
+        d21_tone, d21_lbl = "good", "✓ OK"
+    if np.isnan(d10):
+        d10_tone, d10_lbl = "neutral", "—"
+    elif d10 < 0:
+        d10_tone, d10_lbl = "bad", "✗ Darunter"
+    else:
+        d10_tone, d10_lbl = "good", "✓ OK"
+    if np.isnan(d50):
+        d50_tone, d50_lbl = "neutral", "—"
+    elif d50 < 0:
+        d50_tone, d50_lbl = "bad", "✗ Darunter"
+    elif d50 > t50:
+        d50_tone, d50_lbl = "warn", "⚠ Überdehnt"
+    else:
+        d50_tone, d50_lbl = "good", "✓ OK"
+    if np.isnan(d200):
+        d200_tone, d200_lbl = "neutral", "—"
+    elif d200 < 0:
+        d200_tone, d200_lbl = "bad", "✗ Darunter"
+    else:
+        d200_tone, d200_lbl = "good", "✓ OK"
+    st.markdown(
+        '<div class="mobile-ma-grid">'
+        + _dist_tile_html("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", d21_lbl, d21_tone)
+        + _dist_tile_html("10-SMA", f"{d10:+.1f}%" if not np.isnan(d10) else "—", d10_lbl, d10_tone)
+        + _dist_tile_html("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", d50_lbl, d50_tone)
+        + _dist_tile_html("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone)
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     st.plotly_chart(plot_price_with_volume(df, sd), width="stretch", config={"displayModeBar": False})
 
     if not compact:
       with st.expander("Frühwarnzeichen und Warnzeichen", expanded=True):
-        st.markdown('<div class="info-card"><div class="card-label">Warnlage</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-divider">WARNLAGE</div>', unsafe_allow_html=True)
         for label, ok, detail, warn in warning_items:
             render_check(label, ok, detail, warn=warn)
         if wc == 0:
@@ -9302,13 +9331,13 @@ def _tab_marktanalyse(compact: bool = False):
             st.markdown(f'<div style="text-align:center;padding:8px;color:#f59e0b;">⚠ {wc} Warnzeichen</div>', unsafe_allow_html=True)
         else:
             st.markdown(f'<div style="text-align:center;padding:8px;color:#ef4444;">⚠ {wc} Warnzeichen — Risiko reduzieren</div>', unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+
 
     if not compact:
       with st.expander("Trendcheck, Ordnung und Sektorrotation", expanded=False):
         cl, cr_ = st.columns(2)
         with cl:
-            st.markdown('<div class="info-card"><div class="card-label">Trendprüfung</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-divider">TRENDPRÜFUNG</div>', unsafe_allow_html=True)
             _c = L["Close"]; _l = L["Low"]; _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
             eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
             for nm, mv, ok, hk, ck in [("21-EMA", _e, eo, "EMA21_held", "Consec_Low_above_21"), ("50-SMA", _s5, so, "SMA50_held", "Consec_Low_above_50"), ("200-SMA", _s2, s2o, "SMA200_held", "Consec_Low_above_200")]:
@@ -9317,35 +9346,37 @@ def _tab_marktanalyse(compact: bool = False):
                 render_check(f"{nm} gehalten", bool(L.get(hk, False)), "Schlusskurs darüber" if bool(L.get(hk, False)) else "Darunter")
                 cc = int(L.get(ck, 0))
                 render_check(f"3T Tief>{nm}", cc >= 3, f"{cc} Tage")
-            st.markdown("</div>", unsafe_allow_html=True)
 
-            st.markdown('<div class="info-card"><div class="card-label">Ordnung</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-divider">ORDNUNG</div>', unsafe_allow_html=True)
             render_check("21-EMA > 50-SMA", eo and so and _e > _s5, f"{_e:,.0f} vs {_s5:,.0f}" if eo and so else "")
             render_check("21-EMA > 200-SMA", eo and s2o and _e > _s2, f"{_e:,.0f} vs {_s2:,.0f}" if eo and s2o else "")
             render_check("50-SMA > 200-SMA", so and s2o and _s5 > _s2, f"{_s5:,.0f} vs {_s2:,.0f}" if so and s2o else "")
-            st.markdown("</div>", unsafe_allow_html=True)
 
         with cr_:
             if rot is not None and sd2:
-                st.markdown('<div class="info-card"><div class="card-label">Sektorrotation (10T)</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-divider">SEKTORROTATION (10T)</div>', unsafe_allow_html=True)
+                sector_html = '<div class="sector-grid">'
                 for group, items in sd2.items():
-                    st.markdown(f"**{group}:**")
+                    color = "#dc2626" if group == "Defensiv" else "#16a34a"
+                    sector_html += f'<div><div class="sector-heading">{group}</div>'
                     for name, perf in items:
                         if perf is not None:
-                            c = "#22c55e" if perf > 0 else "#ef4444"
-                            st.markdown(f'<span style="color:{c};font-size:.85rem;">{name}: {perf:+.1f}%</span>', unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
+                            sector_html += f'<div class="sector-badge" style="color:{color};"><span class="sector-dot" style="background:{color};"></span><span>{name} {perf:+.1f}%</span></div>'
+                    sector_html += '</div>'
+                sector_html += '</div>'
+                st.markdown(sector_html, unsafe_allow_html=True)
             if div_r:
-                st.markdown('<div class="info-card"><div class="card-label">Intermarket-Bild</div><div style="font-size:.72rem;color:#94a3b8;margin-bottom:8px;">Anzeige je Index: Tagesveränderung und Abstand zum vorherigen 20-Tage-Hoch. Negative Werte rechts bedeuten nicht zwingend einen negativen Tag, sondern Abstand zum Hoch.</div>', unsafe_allow_html=True)
+                st.markdown('<div class="section-divider">INTERMARKET-BILD</div>', unsafe_allow_html=True)
+                with st.expander("ℹ️ Erklärung", expanded=False):
+                    st.markdown("Tagesveränderung und Abstand zum vorherigen 20-Tage-Hoch zeigen, ob wichtige Indizes gemeinsam Stärke bestätigen.")
                 for r in div_r:
                     dist = r.get("dist_to_20d_high_pct", r.get("pct", np.nan))
                     day = r.get("day_pct", np.nan)
-                    tone_c = "#22c55e" if pd.notna(day) and day >= 0 else "#ef4444"
-                    dist_c = "#22c55e" if pd.notna(dist) and dist >= 0 else "#ef4444"
+                    tone_c = "#16a34a" if pd.notna(day) and day >= 0 else "#dc2626"
+                    dist_c = "#16a34a" if pd.notna(dist) and dist >= 0 else "#dc2626"
                     day_txt = f"{day:+.1f}% Tag" if pd.notna(day) else "n/a"
                     dist_txt = f"{dist:+.1f}% zum 20T-Hoch" if pd.notna(dist) else "n/a"
-                    st.markdown(f'<div style="padding:4px 0;display:flex;justify-content:space-between;gap:12px;"><span style="color:{tone_c};font-weight:600;">{r["name"]}</span><span class="mini-help">{day_txt} · <span style="color:{dist_c};">{dist_txt}</span></span></div>', unsafe_allow_html=True)
-                st.markdown("</div>", unsafe_allow_html=True)
+                    st.markdown(f'<div style="padding:4px 0;display:flex;justify-content:space-between;gap:8px;font-size:14px;"><span style="color:{tone_c};font-weight:700;">{r["name"]}</span><span class="mini-help">{day_txt} · <span style="color:{dist_c};">{dist_txt}</span></span></div>', unsafe_allow_html=True)
 
     if not compact:
       with st.expander("Marktbreite und Volatilität", expanded=True):
@@ -9359,24 +9390,25 @@ def _tab_marktanalyse(compact: bool = False):
                 else:
                     st.info(f"{etf} n/a")
 
-        st.markdown('<div class="card-label">Volatilität und Stimmung</div>', unsafe_allow_html=True)
-        sc1, sc2, sc3, sc4 = st.columns(4)
-        for col, title in zip([sc1, sc2, sc3, sc4], ["VIX Regime", "VIXY Bestätigung", "Vol Regime", "Fragile Rally"]):
-            with col:
-                card = vol_summary[title]
-                render_signal_card(title, card["status"], card["detail"], card["tone"])
+        st.markdown('<div class="section-divider">VOLATILITÄTS-REGIME</div>', unsafe_allow_html=True)
+        vol_card = vol_summary.get("Vol Regime", {"status": "Neutral", "detail": "", "tone": "#ca8a04"})
+        fragile_active = bool(vol_latest.get("Fragile_Rally", False))
+        vol_status = f'{vol_card["status"]} ⚠️' if fragile_active else vol_card["status"]
+        vol_tone = "#ca8a04" if fragile_active else vol_card["tone"]
+        st.markdown(
+            f'<div class="info-card" style="border-left:4px solid {vol_tone};">'
+            f'<div class="card-label">VOLATILITÄTS-REGIME</div>'
+            f'<div style="font-size:1.1rem;font-weight:800;color:{vol_tone};margin-bottom:6px;">{vol_status}</div>'
+            f'<div class="vol-subline">VIX {vol_latest.get("VIX_Close", np.nan):.1f} · {vol_latest.get("VIX_Regime", "n/a")}</div>'
+            f'<div class="vol-subline">VIXY {vol_latest.get("VIXY_Close", np.nan):.1f} · {vol_summary.get("VIXY Bestätigung", {}).get("status", "n/a")}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-        vc1, vc2 = st.columns(2)
-        with vc1:
-            if vix_df is not None:
-                st.plotly_chart(plot_vix(vix_df, sd, title="VIX", price_color=CHART_COLORS["negative"]), width="stretch", config={"displayModeBar": False})
-            else:
-                st.info("Keine VIX-Daten verfügbar")
-        with vc2:
-            if vixy_df is not None:
-                st.plotly_chart(plot_vix(vixy_df, sd, title="VIXY", price_color=CHART_COLORS["warning"]), width="stretch", config={"displayModeBar": False})
-            else:
-                st.info("Keine VIXY-Daten verfügbar")
+        if vix_df is not None or vixy_df is not None:
+            st.plotly_chart(plot_volatility_combo(vix_df, vixy_df, sd), width="stretch", config={"displayModeBar": False})
+        else:
+            st.info("Keine VIX-/VIXY-Daten verfügbar")
 
         if pd.notna(vol_latest.get("VIX_Close")) or pd.notna(vol_latest.get("VIXY_Close")):
             st.caption(
@@ -9401,7 +9433,7 @@ def _tab_marktanalyse(compact: bool = False):
 
     if not compact:
         st.markdown("### 🔎 Tiefenanalyse")
-        load_clicked = st.button("Tiefenanalyse laden", type="primary", key="load_deep_analysis_btn")
+        load_clicked = st.button("🔍 Tiefenanalyse laden", type="primary", key="load_deep_analysis_btn")
         if load_clicked:
             st.session_state["show_deep_analysis"] = True
         if not st.session_state.get("show_deep_analysis", False):
@@ -9785,7 +9817,6 @@ def _render_topbar() -> None:
         """
         <div class="app-topbar">
           <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
-          <p class="app-topbar__eyebrow">Regelbasiert investieren</p>
         </div>
         """,
         unsafe_allow_html=True,
