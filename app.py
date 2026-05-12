@@ -5947,10 +5947,24 @@ def render_ampel_section(L, history_df=None):
         phase_for_light = key if not (phase == "aufwaertstrend" and key == "gruen") else "aufwaertstrend"
         rule_text = phase_rules.get(phase_for_light, phase_rules.get(key, ""))
         title = "GRÜN / AUFWÄRTSTREND" if phase == "aufwaertstrend" and key == "gruen" else labels[i]
+        # Keep all critical dimensions inline. On some Streamlit deployments the
+        # global CSS can be injected late or be overridden, which made the empty
+        # light <div> collapse and left only the rule description visible.
+        dot_style = (
+            "width:48px;height:48px;min-width:48px;min-height:48px;"
+            "border-radius:50%;display:block;margin:0 auto;"
+            f"background:{bg};box-shadow:{glow};border:{border};"
+            f"opacity:{1 if is_active else 0.32};"
+        )
+        light_style = "flex:1 1 0;min-width:76px;max-width:108px;text-align:center;"
+        summary_style = (
+            "list-style:none;cursor:pointer;display:flex;flex-direction:column;"
+            "align-items:center;gap:5px;outline:none;"
+        )
         lights_html += (
-            f'<details class="ampel-light">'
-            f'<summary>'
-            f'<div class="ampel-light__dot" style="background:{bg};box-shadow:{glow};border:{border};opacity:{1 if is_active else 0.2};"></div>'
+            f'<details class="ampel-light" style="{light_style}">'
+            f'<summary style="{summary_style}">'
+            f'<div class="ampel-light__dot" role="img" aria-label="{title} Ampellicht" title="{title}" style="{dot_style}"></div>'
             f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
             f'<div style="font-size:.55rem;color:#64748b;">Tippen für Regel</div>'
             f'</summary>'
@@ -6002,7 +6016,7 @@ def render_ampel_section(L, history_df=None):
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
         '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
         '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:12px;border-radius:12px;border:1px solid #e3e8f0;flex:1 1 180px;">'
-        f'<div class="ampel-lights">{lights_html}</div>'
+        f'<div class="ampel-lights" style="display:flex;gap:12px;align-items:flex-start;justify-content:center;width:100%;flex-wrap:nowrap;">{lights_html}</div>'
         '</div>'
         '<div style="flex:1;min-width:220px;">'
         f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
