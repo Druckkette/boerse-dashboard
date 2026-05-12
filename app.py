@@ -1742,7 +1742,42 @@ def _position_technical_signals(tickers: tuple[str, ...]) -> dict:
     return out
 
 
-def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, summary: dict) -> dict:
+def _position_evaluation_scores(tickers: tuple[str, ...]) -> dict:
+    """Lädt die Aktienbewertungs-Teilscores (Gesamt-, Technisch-, Fundamental-,
+    Trend-, Chart-Score) für eine Liste von Tickern.
+
+    Reuse von `_compute_stock_compare_rows`; die teure Stock-Lade-Arbeit ist
+    über `load_stock_full` (15-Min-Cache) bereits gepuffert.
+    """
+    norm = [t for t in dict.fromkeys(
+        _normalize_single_ticker(x) for x in tickers if _normalize_single_ticker(x)
+    )]
+    if not norm:
+        return {}
+    try:
+        rs_source = _get_rs_rating_source_setting()
+        compare_df = _compute_stock_compare_rows(norm, rs_source)
+    except Exception as exc:
+        logger.debug("Evaluation scores unavailable: %s", exc)
+        return {}
+    if compare_df is None or compare_df.empty:
+        return {}
+    out: dict[str, dict] = {}
+    for _, row in compare_df.iterrows():
+        ticker = str(row.get("Ticker", "")).upper()
+        if not ticker:
+            continue
+        out[ticker] = {
+            "overall": _safe_float(row.get("Gesamt-Score"), np.nan),
+            "technical": _safe_float(row.get("Score Technisch"), np.nan),
+            "fundamental": _safe_float(row.get("Score Fundamental"), np.nan),
+            "ma": _safe_float(row.get("Score Gleitende Durchschnitte"), np.nan),
+            "chart": _safe_float(row.get("Score Chart"), np.nan),
+        }
+    return out
+
+
+def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, summary: dict, evaluation: dict | None = None) -> dict:
     """Aggregiert Aktienbewertungs-Kriterien zu einem Verkaufs-Score (0..100).
 
     Einflussgrößen:
@@ -1752,6 +1787,8 @@ def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, su
       • RS-Rating schwach (< 60) bzw. sehr stark (≥ 85, Bonus)
       • Risikobeitrag deutlich über Zielwert
       • ATR%-Volatilität deutlich über Markt
+      • Aktienbewertungs-Gesamtscore (Schwerpunkt): < 35 sehr schwach,
+        35–54 schwach, 55–74 neutral, ≥ 75 attraktiv (Bonus).
     """
     score = 0.0
     reasons: list[str] = []
@@ -1794,22 +1831,22 @@ def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, su
     ema21 = _safe_float(tech.get("ema21"), np.nan)
     sma50 = _safe_float(tech.get("sma50"), np.nan)
     if not np.isnan(ema21) and not np.isnan(last_close) and last_close < ema21:
-        score += 10
+        score += 8
         reasons.append("Kurs unter 21-EMA")
     if not np.isnan(sma50) and not np.isnan(last_close) and last_close < sma50:
-        score += 15
+        score += 12
         reasons.append("Kurs unter 50-SMA")
 
     rs_rating = _safe_float(tech.get("rs_rating"), np.nan)
     if not np.isnan(rs_rating):
         if rs_rating < 40:
-            score += 15
+            score += 12
             reasons.append(f"RS-Rating {rs_rating:.0f} (<40)")
         elif rs_rating < 60:
-            score += 8
+            score += 6
             reasons.append(f"RS-Rating {rs_rating:.0f} (<60)")
         elif rs_rating >= 85:
-            score -= 5
+            score -= 4
 
     if not np.isnan(risk_contrib) and target_rc > 0 and risk_contrib > target_rc * 1.5:
         score += 10
@@ -1819,6 +1856,19 @@ def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, su
         score += 5
         reasons.append(f"ATR {atr_pct:.1f}% ≥ 1,8× Markt")
 
+    eval_info = evaluation.get(row.get("ticker", ""), {}) if isinstance(evaluation, dict) else {}
+    gesamt_score = _safe_float(eval_info.get("overall"), np.nan)
+    if not np.isnan(gesamt_score):
+        if gesamt_score < 35:
+            score += 25
+            reasons.append(f"Aktienbewertung sehr schwach ({gesamt_score:.0f}/100)")
+        elif gesamt_score < 55:
+            score += 12
+            reasons.append(f"Aktienbewertung schwach ({gesamt_score:.0f}/100)")
+        elif gesamt_score >= 75:
+            score -= 12
+            reasons.append(f"Aktienbewertung attraktiv ({gesamt_score:.0f}/100, Bonus)")
+
     score = float(max(0.0, min(100.0, score)))
     if stop_breached or score >= 60:
         verdict = "Verkaufen"
@@ -1826,7 +1876,11 @@ def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, su
         verdict = "Beobachten"
     else:
         verdict = "Halten"
-    return {"score": score, "verdict": verdict, "reasons": reasons, "stop_breached": stop_breached}
+    return {
+        "score": score, "verdict": verdict, "reasons": reasons,
+        "stop_breached": stop_breached,
+        "gesamt_score": gesamt_score,
+    }
 
 
 def _build_sell_candidates_table(snapshot_df: pd.DataFrame, summary: dict, settings: dict) -> pd.DataFrame:
@@ -1835,12 +1889,15 @@ def _build_sell_candidates_table(snapshot_df: pd.DataFrame, summary: dict, setti
     invested = snapshot_df[snapshot_df.get("is_cash", False) == False].copy() if "is_cash" in snapshot_df else snapshot_df.copy()
     if invested.empty:
         return pd.DataFrame()
-    technicals = _position_technical_signals(tuple(invested["ticker"].astype(str).tolist()))
+    tickers_t = tuple(invested["ticker"].astype(str).tolist())
+    technicals = _position_technical_signals(tickers_t)
+    evaluation = _position_evaluation_scores(tickers_t)
     rows = []
     for _, raw in invested.iterrows():
-        eval_payload = _compute_position_sell_score(raw.to_dict(), technicals, settings, summary)
+        eval_payload = _compute_position_sell_score(raw.to_dict(), technicals, settings, summary, evaluation)
         rows.append({
             "Ticker": raw.get("ticker", ""),
+            "Bewertung": eval_payload.get("gesamt_score", np.nan),
             "P&L %": _safe_float(raw.get("pnl_pct"), np.nan),
             "Abstand Stop %": _safe_float(raw.get("stop_distance_pct"), np.nan),
             "Risikobeitrag": _safe_float(raw.get("risk_contribution"), np.nan),
@@ -1881,18 +1938,78 @@ def _render_depot_overview(state: dict | None = None) -> None:
     summary = state["summary"]
     settings = state["settings"]
 
-    metric_cols = st.columns(6)
-    metric_map = [
-        ("Aktive Positionen", f"{int(summary.get('tracked_count', 0))}"),
-        ("Depotwert", f"{summary.get('total_value', 0):,.0f}" if summary.get("total_value", 0) else "—"),
-        ("Cashquote", f"{summary.get('cash_ratio', 0)*100:.1f}%" if not np.isnan(_safe_float(summary.get("cash_ratio"), np.nan)) else "—"),
-        ("Portfolio ATR", f"{summary.get('portfolio_atr_pct', np.nan):.2f}%" if not np.isnan(_safe_float(summary.get("portfolio_atr_pct"), np.nan)) else "—"),
-        ("Beta Balancer", f"{summary.get('beta_balancer', np.nan):.2f}" if not np.isnan(_safe_float(summary.get("beta_balancer"), np.nan)) else "—"),
-        ("Max. Depotverlust", f"{summary.get('max_depot_loss_pct', np.nan):.2f}%" if not np.isnan(_safe_float(summary.get("max_depot_loss_pct"), np.nan)) else "—"),
-    ]
-    for col, (label, value) in zip(metric_cols, metric_map):
-        with col:
-            st.metric(label, value)
+    total_value = _safe_float(summary.get("total_value"), 0.0)
+    cash_balance = _safe_float(summary.get("cash_balance"), 0.0)
+    invested_value = _safe_float(summary.get("invested_value"), 0.0)
+    tracked_count = int(summary.get("tracked_count", 0) or 0)
+    cash_ratio = _safe_float(summary.get("cash_ratio"), np.nan)
+    pf_atr = _safe_float(summary.get("portfolio_atr_pct"), np.nan)
+    beta_balancer = _safe_float(summary.get("beta_balancer"), np.nan)
+    max_depot_loss = _safe_float(summary.get("max_depot_loss_pct"), np.nan)
+    target_rc = _safe_float(settings.get("target_risk_contribution"), 0.20)
+    risk_idea = _safe_float(settings.get("risk_per_position_pct"), 1.0)
+    loss_low = _safe_float(settings.get("max_depot_loss_low"), 8.0)
+    loss_high = _safe_float(settings.get("max_depot_loss_high"), 12.0)
+
+    total_pnl_abs = 0.0
+    total_pnl_pct = np.nan
+    if snapshot_df is not None and not snapshot_df.empty:
+        invested = snapshot_df[snapshot_df.get("is_cash", False) == False] if "is_cash" in snapshot_df else snapshot_df
+        total_pnl_abs = float(invested["pnl_abs"].sum(skipna=True)) if not invested.empty else 0.0
+        cost_basis = float((invested["entry"] * invested["shares"]).sum(skipna=True)) if not invested.empty else 0.0
+        if cost_basis > 0:
+            total_pnl_pct = total_pnl_abs / cost_basis * 100
+
+    pnl_tone = "#22c55e" if total_pnl_abs >= 0 else "#ef4444"
+    pnl_sign = "+" if total_pnl_abs >= 0 else ""
+    pnl_pct_text = f"{pnl_sign}{total_pnl_pct:.2f}%" if not np.isnan(total_pnl_pct) else "—"
+    st.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg,#f7f6f1 0%,#eeece4 100%); border-radius: 14px; padding: 18px 22px; margin-bottom: 14px;">
+          <div style="display:flex; flex-wrap:wrap; gap: 24px; align-items:flex-end; justify-content:space-between;">
+            <div>
+              <div style="font-size:12px;color:#6b6a64;letter-spacing:.4px;text-transform:uppercase;">Depotwert</div>
+              <div style="font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;">{total_value:,.0f} USD</div>
+              <div style="font-size:12px;color:#6b6a64;margin-top:2px;">
+                {tracked_count} Position{"en" if tracked_count != 1 else ""} · Investiert {invested_value:,.0f} · Cash {cash_balance:,.0f}
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:12px;color:#6b6a64;letter-spacing:.4px;text-transform:uppercase;">Unrealisiert</div>
+              <div style="font-size:24px;font-weight:600;color:{pnl_tone};font-variant-numeric:tabular-nums;">{pnl_sign}{total_pnl_abs:,.0f} USD</div>
+              <div style="font-size:12px;color:#6b6a64;margin-top:2px;">{pnl_pct_text} ggü. Einstand</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("🎛️ Aktive Portfolio-Regler", expanded=False):
+        st.caption(
+            "Diese Werte gelten für Snapshot, Risiko-Ranking, Rechner und Verkaufs-Score. "
+            "Anpassen im Tab „Einstellungen“."
+        )
+        cfg_cols = st.columns(4)
+        cfg_cols[0].metric("Max. Verlust je Idee", f"{risk_idea:.2f}%")
+        cfg_cols[1].metric("Ziel Risikobeitrag", f"{target_rc:.2f}")
+        cfg_cols[2].metric("Cash gesetzt", f"{cash_balance:,.0f} USD")
+        cfg_cols[3].metric("Max.-Depotverlust-Korridor", f"{loss_low:.1f}% – {loss_high:.1f}%")
+
+    k1, k2, k3, k4 = st.columns(4)
+    cash_ratio_text = f"{cash_ratio*100:.1f}%" if not np.isnan(cash_ratio) else "—"
+    pf_atr_text = f"{pf_atr:.2f}%" if not np.isnan(pf_atr) else "—"
+    beta_text = f"{beta_balancer:.2f}" if not np.isnan(beta_balancer) else "—"
+    loss_text = f"{max_depot_loss:.2f}%" if not np.isnan(max_depot_loss) else "—"
+    loss_target = f"Ziel {loss_low:.0f}–{loss_high:.0f}%"
+    with k1:
+        st.metric("Cashquote", cash_ratio_text)
+    with k2:
+        st.metric("Portfolio ATR", pf_atr_text, help="Gewichteter ATR-Mittelwert über alle Positionen.")
+    with k3:
+        st.metric("Beta-Balancer", beta_text, help="Summe der Risikobeiträge (Gewicht × (0,6 Beta + 0,4 ATR/Markt-ATR)).")
+    with k4:
+        st.metric("Max. Depotverlust", loss_text, help=f"Aggregierter Stop-Loss aller Positionen. Korridor laut Regler: {loss_target}.")
 
     for level, msg in _portfolio_health_messages(summary, snapshot_df, settings):
         getattr(st, level)(msg)
@@ -1904,35 +2021,56 @@ def _render_depot_overview(state: dict | None = None) -> None:
         )
         return
 
-    display_df = snapshot_df.copy()
-    display_df["Gewicht %"] = display_df["weight"] * 100
-    display_df["P&L %"] = display_df["pnl_pct"]
-    display_df["P&L $"] = display_df["pnl_abs"]
-    display_df["ATR %"] = display_df["atr_pct"]
-    display_df["Score"] = display_df["score"]
-    display_df["Risikobeitrag"] = display_df["risk_contribution"]
-    display_df["Max. Gewicht %"] = display_df["max_weight"] * 100
-    display_df["Max. Wert"] = display_df["max_position_value"]
-    display_df["Abstand Stop %"] = display_df["stop_distance_pct"]
-    display_df["Positionsrisiko"] = display_df["position_risk_abs"]
-    display_df = display_df[[
-        "ticker", "shares", "entry", "current_price", "current_value", "Gewicht %", "stop_pct", "stop_price",
-        "Abstand Stop %", "P&L %", "P&L $", "ATR %", "beta", "Score", "Risikobeitrag", "Max. Gewicht %", "Max. Wert", "Positionsrisiko", "note"
-    ]].rename(columns={
-        "ticker": "Ticker", "shares": "Stück", "entry": "Einstand",
-        "current_price": "Aktuell", "current_value": "Wert",
-        "stop_pct": "Stopp %", "stop_price": "Stoppkurs", "beta": "Beta", "note": "Notiz",
-    })
-    st.markdown("#### Positionen und Risiko-Ranking")
-    st.dataframe(display_df.round(2), width="stretch", hide_index=True)
+    invested_df = snapshot_df[snapshot_df.get("is_cash", False) == False].copy() if "is_cash" in snapshot_df else snapshot_df.copy()
+    if not invested_df.empty:
+        st.markdown("#### 🥧 Allokation")
+        alloc = invested_df[["ticker", "current_value"]].copy().rename(columns={"ticker": "Ticker", "current_value": "Wert"})
+        if cash_balance > 0:
+            alloc = pd.concat([alloc, pd.DataFrame([{"Ticker": "CASH", "Wert": cash_balance}])], ignore_index=True)
+        alloc = alloc[alloc["Wert"] > 0]
+        if not alloc.empty:
+            fig = go.Figure(data=[go.Pie(
+                labels=alloc["Ticker"], values=alloc["Wert"], hole=0.55, textinfo="label+percent",
+            )])
+            fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
+            st.plotly_chart(fig, width="stretch", key="depot_alloc_pie")
 
-    st.markdown("#### 🎯 Verkaufskandidaten nach Bewertungs-Score")
-    st.caption(
-        "Der Verkaufs-Score 0–100 bündelt die Aktienbewertungs-Kriterien: Stopp-Loss-Status, "
-        "P&L, Trend (21-EMA / 50-SMA), RS-Rating, Risikobeitrag und ATR-Volatilität. "
-        "≥ 60 → Verkaufen · 35–59 → Beobachten · < 35 → Halten."
+    st.markdown("#### 📋 Positionen (kompakt)")
+    display_df = invested_df[[
+        "ticker", "shares", "current_value", "weight", "pnl_pct", "stop_distance_pct", "risk_contribution",
+    ]].copy()
+    display_df["Gewicht %"] = display_df["weight"] * 100
+    display_df = display_df.rename(columns={
+        "ticker": "Ticker",
+        "shares": "Stück",
+        "current_value": "Wert USD",
+        "pnl_pct": "P&L %",
+        "stop_distance_pct": "Abstand Stop %",
+        "risk_contribution": "Risikobeitrag",
+    })[["Ticker", "Stück", "Wert USD", "Gewicht %", "P&L %", "Abstand Stop %", "Risikobeitrag"]]
+    display_df = display_df.sort_values("Wert USD", ascending=False).reset_index(drop=True)
+    st.dataframe(
+        display_df.round(2), width="stretch", hide_index=True,
+        column_config={
+            "Stück": st.column_config.NumberColumn("Stück", format="%.0f"),
+            "Wert USD": st.column_config.NumberColumn("Wert USD", format="%.0f"),
+            "Gewicht %": st.column_config.ProgressColumn("Gewicht %", format="%.1f%%", min_value=0, max_value=100),
+            "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f%%"),
+            "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%+.2f%%"),
+            "Risikobeitrag": st.column_config.NumberColumn("Risikobeitrag", format="%.3f"),
+        },
     )
-    candidates = _build_sell_candidates_table(snapshot_df, summary, settings)
+    st.caption("Vollständiges Risiko-Ranking inkl. Score/ATR/Beta findest du im Tab „Positionen“.")
+
+    st.markdown("#### 🎯 Verkaufskandidaten · kombinierte Empfehlung")
+    st.caption(
+        "Der Verkaufs-Score 0–100 verbindet die Aktienbewertungs-Kriterien mit der Depot-Sicht: "
+        "Aktienbewertung-Gesamtscore (Schwerpunkt), Stopp-Loss-Status, P&L, Trend (21-EMA / 50-SMA), "
+        "RS-Rating, Risikobeitrag und ATR-Volatilität. "
+        "**≥ 60 → Verkaufen · 35–59 → Beobachten · < 35 → Halten.**"
+    )
+    with st.spinner("Berechne Aktienbewertung für deine Positionen …"):
+        candidates = _build_sell_candidates_table(snapshot_df, summary, settings)
     if candidates.empty:
         st.info("Keine Positionen für die Bewertung verfügbar.")
         return
@@ -1941,8 +2079,13 @@ def _render_depot_overview(state: dict | None = None) -> None:
         width="stretch",
         hide_index=True,
         column_config={
+            "Bewertung": st.column_config.ProgressColumn(
+                "Aktienbewertung", format="%.0f", min_value=0, max_value=100,
+                help="Gesamtscore aus der Aktienbewertung (Technisch + Fundamental + MA + Chart).",
+            ),
             "Verkaufs-Score": st.column_config.ProgressColumn(
                 "Verkaufs-Score", format="%.0f", min_value=0, max_value=100,
+                help="Aggregierter Wert aus Aktienbewertung, Stopp-Status, P&L, Trend, RS, Risikobeitrag und ATR.",
             ),
             "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f"),
             "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%.2f"),
@@ -1956,21 +2099,63 @@ def _render_depot_overview(state: dict | None = None) -> None:
 def _render_depot_portfolio_regler(state: dict | None = None) -> None:
     state = state or _depot_state()
     settings = state["settings"]
-    st.caption(
-        "Stellschrauben aus Kapitel 7.2 — wirken auf Snapshot, Risiko-Ranking und Verkaufs-Score."
+
+    st.markdown("#### ⚙️ Einstellungen · Depot-Annahmen")
+    st.markdown(
+        """
+Der Portfolio-Regler legt fest, **wie das Depot gemessen und Positionsgrößen berechnet werden**.
+Die Werte fließen in den Snapshot, das Risiko-Ranking, den Stückzahl-Rechner und den
+Verkaufs-Score ein:
+
+- **Cash / freie Liquidität** — verfügbarer Cashbestand in USD. Wird zum Depotwert addiert,
+  bestimmt damit das Risikobudget und die Cashquote.
+- **Max. Verlust je Idee %** — wie viel Prozent des Depots du pro Idee maximal riskieren willst.
+  → `Risikobudget je Idee = Depotwert × Max. Verlust je Idee %`. Direkt verwendet im Rechner für
+  die maximale Stückzahl.
+- **Ziel Risikobeitrag** — obere Schranke für den marktrisiko-gewichteten Anteil einer Position
+  (Beta-Balancer). Beispiel: 0,20 = eine Idee soll höchstens 0,20 Risiko-Punkte beitragen.
+  → `Max. Gewicht = Ziel Risikobeitrag / Balancer-Score`.
+- **Untergrenze / Obergrenze Max.-Depotverlust %** — Korridor für den aggregierten Stop-Loss
+  aller Positionen. Wird in der Übersicht als KPI „Max. Depotverlust" angezeigt und löst
+  Warnungen aus, wenn der Korridor verlassen wird.
+        """
     )
-    set_cols = st.columns(5)
+
+    set_cols = st.columns(2)
     with set_cols[0]:
-        cash_balance = st.number_input("Cash / freie Liquidität", min_value=0.0, value=float(settings.get("cash_balance", 0.0)), step=100.0, key="pf_cash_balance")
+        cash_balance = st.number_input(
+            "Cash / freie Liquidität (USD)", min_value=0.0,
+            value=float(settings.get("cash_balance", 0.0)), step=100.0,
+            key="pf_cash_balance",
+            help="Wird automatisch durch Käufe/Verkäufe und Cash-Flows angepasst.",
+        )
+        risk_per_position_pct = st.number_input(
+            "Max. Verlust je Idee %", min_value=0.1, max_value=5.0,
+            value=float(settings.get("risk_per_position_pct", 1.0)), step=0.1,
+            key="pf_risk_pct",
+            help="Buch-Empfehlung: meist 1 %. Höher = größere Positionen und höheres Idee-Risiko.",
+        )
+        target_risk_contribution = st.number_input(
+            "Ziel Risikobeitrag (Balancer)", min_value=0.05, max_value=0.50,
+            value=float(settings.get("target_risk_contribution", 0.20)), step=0.01,
+            key="pf_target_rc",
+            help="Niedriger = strengere Begrenzung auf hoch-Beta- und hoch-ATR-Aktien.",
+        )
     with set_cols[1]:
-        risk_per_position_pct = st.number_input("Max. Verlust je Idee %", min_value=0.1, max_value=5.0, value=float(settings.get("risk_per_position_pct", 1.0)), step=0.1, key="pf_risk_pct")
-    with set_cols[2]:
-        target_risk_contribution = st.number_input("Ziel Risikobeitrag", min_value=0.05, max_value=0.50, value=float(settings.get("target_risk_contribution", 0.20)), step=0.01, key="pf_target_rc")
-    with set_cols[3]:
-        max_loss_low = st.number_input("Untergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0, value=float(settings.get("max_depot_loss_low", 8.0)), step=0.5, key="pf_max_loss_low")
-    with set_cols[4]:
-        max_loss_high = st.number_input("Obergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0, value=float(settings.get("max_depot_loss_high", 12.0)), step=0.5, key="pf_max_loss_high")
-    if st.button("Portfolio-Regler speichern", width="stretch", key="pf_save_settings"):
+        max_loss_low = st.number_input(
+            "Untergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0,
+            value=float(settings.get("max_depot_loss_low", 8.0)), step=0.5,
+            key="pf_max_loss_low",
+            help="Unter diesem Wert nutzt du das Risikobudget möglicherweise zu wenig aus.",
+        )
+        max_loss_high = st.number_input(
+            "Obergrenze Max.-Depotverlust %", min_value=1.0, max_value=30.0,
+            value=float(settings.get("max_depot_loss_high", 12.0)), step=0.5,
+            key="pf_max_loss_high",
+            help="Über diesem Wert wird das Gesamtrisiko zu aggressiv.",
+        )
+
+    if st.button("💾 Einstellungen speichern", width="stretch", key="pf_save_settings", type="primary"):
         _save_portfolio_settings({
             "cash_balance": float(cash_balance),
             "risk_per_position_pct": float(risk_per_position_pct),
@@ -1978,7 +2163,7 @@ def _render_depot_portfolio_regler(state: dict | None = None) -> None:
             "max_depot_loss_low": float(min(max_loss_low, max_loss_high)),
             "max_depot_loss_high": float(max(max_loss_low, max_loss_high)),
         })
-        st.success("Portfolio-Regler gespeichert.")
+        st.success("Einstellungen gespeichert. Snapshot, Rechner und Verkaufs-Score nutzen jetzt die neuen Werte.")
         st.rerun()
 
 
@@ -1987,44 +2172,101 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
     state = state or _depot_state()
     settings = state["settings"]
     all_positions = state["positions"]
+    snapshot_df = state["snapshot_df"]
     tracked_positions = _portfolio_positions_only(all_positions)
-    st.caption(
-        "Positionen erfassen oder aktualisieren · Verkäufe buchen · Ein- und Auszahlungen erfassen. "
-        "Stückzahl vorab im Tab „Rechner“ kalkulieren."
-    )
 
-    edit_col, sell_col = st.columns([1.15, 1.0])
-    with edit_col:
-        st.markdown("#### Position erfassen oder aktualisieren")
-        pos_ticker = _render_ticker_picker("portfolio_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
-        selected_pos = next((p for p in all_positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
-        entry_default = float((selected_pos or {}).get("buy_price", 1.0) or 1.0)
-        shares_default = float((selected_pos or {}).get("shares", 0.0) or 0.0)
-        stop_pct_default = float((selected_pos or {}).get("stop_pct", 7.0) or 7.0)
-        price_col, shares_col, stop_col = st.columns(3)
-        with price_col:
-            buy_price = st.number_input("Einstand", min_value=0.01, value=entry_default, step=0.01, key="pf_buy_price")
-        with shares_col:
-            shares = st.number_input("Stückzahl", min_value=0.0, value=shares_default, step=1.0, key="pf_shares")
-        with stop_col:
-            stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=stop_pct_default, step=0.1, key="pf_stop_pct")
-        date_col, curr_col, note_col = st.columns([1, 0.8, 1.4])
-        with date_col:
-            try:
-                default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.now(timezone.utc).date()
-            except Exception:
-                default_date = datetime.now(timezone.utc).date()
-            buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
-        with curr_col:
-            curr_default = (selected_pos or {}).get("currency", "USD")
-            currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if curr_default == "USD" else 1, key="pf_currency")
-        with note_col:
-            note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="pf_note")
+    st.markdown("#### 📋 Gesamtübersicht")
+    if snapshot_df is None or snapshot_df.empty:
+        st.info("Noch keine Positionen. Lege unten eine neue Idee an.")
+    else:
+        invested_df = snapshot_df[snapshot_df.get("is_cash", False) == False].copy() if "is_cash" in snapshot_df else snapshot_df.copy()
+        if not invested_df.empty:
+            overview = invested_df[[
+                "ticker", "shares", "entry", "current_price", "current_value",
+                "pnl_pct", "stop_pct", "stop_price", "stop_distance_pct",
+                "atr_pct", "beta", "risk_contribution", "max_position_value",
+            ]].copy().rename(columns={
+                "ticker": "Ticker", "shares": "Stück", "entry": "Einstand",
+                "current_price": "Aktuell", "current_value": "Wert USD",
+                "pnl_pct": "P&L %", "stop_pct": "Stopp %", "stop_price": "Stoppkurs",
+                "stop_distance_pct": "Abstand Stop %", "atr_pct": "ATR %",
+                "beta": "Beta", "risk_contribution": "Risikobeitrag",
+                "max_position_value": "Max. Wert",
+            }).sort_values("Wert USD", ascending=False)
+            st.dataframe(
+                overview.round(2), width="stretch", hide_index=True,
+                column_config={
+                    "Stück": st.column_config.NumberColumn("Stück", format="%.0f"),
+                    "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f"),
+                    "Aktuell": st.column_config.NumberColumn("Aktuell", format="%.2f"),
+                    "Wert USD": st.column_config.NumberColumn("Wert USD", format="%.0f"),
+                    "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f"),
+                    "Stopp %": st.column_config.NumberColumn("Stopp %", format="%.1f"),
+                    "Stoppkurs": st.column_config.NumberColumn("Stoppkurs", format="%.2f"),
+                    "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%+.2f"),
+                    "ATR %": st.column_config.NumberColumn("ATR %", format="%.2f"),
+                    "Beta": st.column_config.NumberColumn("Beta", format="%.2f"),
+                    "Risikobeitrag": st.column_config.NumberColumn("Risikobeitrag", format="%.3f"),
+                    "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f"),
+                },
+            )
 
-        stop_price_preview = float(buy_price) * (1 - float(stop_pct) / 100)
-        st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
+        st.markdown("##### 🗑️ Position entfernen")
+        del_options = [p.get("ticker", "") for p in all_positions if p.get("ticker")]
+        if del_options:
+            del_c1, del_c2 = st.columns([2, 1])
+            with del_c1:
+                del_ticker = st.selectbox(
+                    "Ticker auswählen",
+                    options=[""] + del_options,
+                    key="pf_quick_delete_ticker",
+                    label_visibility="collapsed",
+                )
+            with del_c2:
+                if st.button("Komplett entfernen", width="stretch", key="pf_quick_delete_btn", disabled=not bool(del_ticker), type="secondary"):
+                    _remove_position(del_ticker)
+                    st.success(f"{del_ticker} aus dem Depot entfernt.")
+                    st.rerun()
+            st.caption("Entfernt die Position ohne Cash-Verbuchung. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
 
-        if st.button("Depotposition speichern", width="stretch", key="pf_save_position", disabled=not bool(pos_ticker)):
+    st.markdown("---")
+    st.markdown("#### ➕ Neue Position erfassen oder bestehende aktualisieren")
+    pos_ticker = _render_ticker_picker("portfolio_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
+    selected_pos = next((p for p in all_positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
+    entry_default = float((selected_pos or {}).get("buy_price", 1.0) or 1.0)
+    shares_default = float((selected_pos or {}).get("shares", 0.0) or 0.0)
+    stop_pct_default = float((selected_pos or {}).get("stop_pct", 7.0) or 7.0)
+
+    if selected_pos:
+        st.info(f"Bestehende Position {pos_ticker} wird befüllt — Speichern überschreibt die Daten.")
+
+    price_col, shares_col, stop_col = st.columns(3)
+    with price_col:
+        buy_price = st.number_input("Einstand", min_value=0.01, value=entry_default, step=0.01, key="pf_buy_price")
+    with shares_col:
+        shares = st.number_input("Stückzahl", min_value=0.0, value=shares_default, step=1.0, key="pf_shares",
+                                 help="Tipp: Stückzahl im Tab „Rechner“ vorab kalkulieren.")
+    with stop_col:
+        stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=stop_pct_default, step=0.1, key="pf_stop_pct")
+    date_col, curr_col, note_col = st.columns([1, 0.8, 1.4])
+    with date_col:
+        try:
+            default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.now(timezone.utc).date()
+        except Exception:
+            default_date = datetime.now(timezone.utc).date()
+        buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
+    with curr_col:
+        curr_default = (selected_pos or {}).get("currency", "USD")
+        currency = st.selectbox("Währung", ["USD", "EUR"], index=0 if curr_default == "USD" else 1, key="pf_currency")
+    with note_col:
+        note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="pf_note")
+
+    stop_price_preview = float(buy_price) * (1 - float(stop_pct) / 100)
+    st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
+
+    save_col, _spacer = st.columns([1, 3])
+    with save_col:
+        if st.button("💾 Speichern", width="stretch", key="pf_save_position", type="primary", disabled=not bool(pos_ticker)):
             buy_price_usd, eur_usd_rate = _price_to_usd(float(buy_price), currency, buy_date)
             previous_shares = _safe_float((selected_pos or {}).get("shares"), 0.0) if selected_pos else 0.0
             delta_shares = max(float(shares) - previous_shares, 0.0)
@@ -2047,9 +2289,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             st.success(f"{pos_ticker} gespeichert.")
             st.rerun()
 
-    with sell_col:
-        st.markdown("#### Verkauf buchen")
-        st.caption("Verkaufserlöse werden automatisch dem Cash gutgeschrieben.")
+    with st.expander("💸 Verkauf buchen (mit Cash-Gutschrift)", expanded=False):
         sell_options = [p.get("ticker", "") for p in tracked_positions if p.get("ticker")]
         sell_ticker = st.selectbox("Position verkaufen", options=[""] + sell_options, key="pf_sell_ticker")
         selected_sell = next((p for p in tracked_positions if p.get("ticker") == sell_ticker), None) if sell_ticker else None
@@ -2083,7 +2323,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                 st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} USD.")
                 st.rerun()
 
-    st.markdown("#### Cash-Flows")
+    st.markdown("#### 💵 Cash-Flows")
     st.caption("Ein- und Auszahlungen wirken zeitgewichtet auf den Depotindex.")
     flow_form_col, flow_log_col = st.columns([1.1, 1.2])
     with flow_form_col:
@@ -2222,12 +2462,11 @@ def _render_depot_curve_only(state: dict | None = None) -> None:
 
 
 def _render_stueckzahl_rechner_page() -> None:
-    """Standalone-Rechner: unabhängig vom Depot, ideal zur Vorab-Kalkulation."""
-    st.markdown("### 🧮 Stückzahl- und Positionsgrößen-Rechner")
+    """Stückzahl- und Positionsgrößen-Rechner — unabhängiges Pre-Trade-Werkzeug."""
+    st.markdown("#### 🧮 Stückzahl- und Positionsgrößen-Rechner")
     st.caption(
-        "Eigenständiges Werkzeug nach Kapitel 7.2. Berechnet die maximale Stückzahl je Idee "
-        "aus Depotwert · max. Verlust je Idee · Stoppabstand. "
-        "Optional liefert der Beta-Balancer eine zweite Obergrenze über Marktrisiko."
+        "Eigenständiges Werkzeug nach Kapitel 7.2. Vorgaben aus dem Portfolio-Regler werden "
+        "vorbelegt, lassen sich aber für Was-wäre-wenn-Szenarien überschreiben — gespeichert wird hier nichts."
     )
 
     _init_workspace_state()
@@ -2246,36 +2485,70 @@ def _render_stueckzahl_rechner_page() -> None:
         depot_default = float(settings.get("cash_balance", 0.0) or 0.0)
         spx_atr_pct = _sp500_atr_reference()
 
+    with st.expander("📐 Berechnungsgrundlagen anzeigen", expanded=False):
+        st.markdown(
+            """
+**Verlust-Budget-Logik (Hauptberechnung):**
+
+```
+Risikobudget je Idee     = Depotwert × (Max. Verlust je Idee % / 100)
+Risiko pro Aktie         = Einstand   × (Stoppabstand %        / 100)
+Maximale Stückzahl       = floor(Risikobudget / Risiko pro Aktie)
+Maximaler Positionswert  = Maximale Stückzahl × Einstand
+Abgeleiteter Stoppkurs   = Einstand × (1 − Stoppabstand % / 100)
+```
+
+Der Rechner ermittelt also, wie viele Aktien du **maximal** kaufen kannst, ohne im
+schlimmsten Fall (Stopp ausgelöst) mehr als das Risikobudget zu verlieren.
+
+**Beta-Balancer-Sicht (Marktrisiko-Begrenzung):**
+
+```
+Balancer-Score    = 0,60 × Beta_Aktie + 0,40 × (ATR%_Aktie / ATR%_S&P 500)
+Max. Gewicht      = Ziel Risikobeitrag / Balancer-Score
+Max. Wert via BB  = Depotwert × Max. Gewicht
+Max. Stück via BB = floor(Max. Wert / aktueller Kurs)
+```
+
+Der **Ziel Risikobeitrag** ist die obere Schranke für `Gewicht × Balancer-Score`
+pro Idee. Eine hoch-Beta- bzw. hoch-ATR-Aktie bekommt automatisch ein
+kleineres Maximalgewicht. **Praxis:** Vergleiche beide Resultate
+(Verlust-Budget vs. Beta-Balancer) — der **kleinere Wert gewinnt**.
+            """
+        )
+
     cfg1, cfg2, cfg3 = st.columns(3)
     with cfg1:
         depot_value = st.number_input(
-            "Depotwert (modelliert)", min_value=0.0,
+            "Depotwert (modelliert) — USD", min_value=0.0,
             value=float(depot_default), step=500.0, key="rechner_depot_value",
-            help="Aus dem gespeicherten Depot vorbelegt, lässt sich aber frei überschreiben.",
+            help="Vorbelegt aus dem gespeicherten Depot (inkl. Cash). Frei überschreibbar.",
         )
     with cfg2:
         risk_pct = st.number_input(
             "Max. Verlust je Idee %", min_value=0.1, max_value=5.0,
             value=float(settings.get("risk_per_position_pct", 1.0)),
             step=0.1, key="rechner_risk_pct",
+            help="Aus dem Portfolio-Regler vorbelegt. Buch-Empfehlung: 1 %.",
         )
     with cfg3:
         target_rc = st.number_input(
             "Ziel Risikobeitrag (Balancer)", min_value=0.05, max_value=0.50,
             value=float(settings.get("target_risk_contribution", 0.20)),
             step=0.01, key="rechner_target_rc",
+            help="Nur für die Beta-Balancer-Sicht relevant.",
         )
 
-    st.markdown("#### Idee")
+    st.markdown("##### Idee")
     p1, p2, p3 = st.columns([1.2, 1.0, 1.0])
     with p1:
         ticker_input = _render_ticker_picker(
             "rechner", "Ticker oder Firmenname (optional)",
-            "z. B. NVDA — für ATR/Beta-Auto-Befüllung",
+            "z. B. NVDA — für Beta-Balancer-Sicht",
             show_quick=False,
         )
     with p2:
-        buy_price = st.number_input("Einstand", min_value=0.01, value=1.00, step=0.01, key="rechner_buy_price")
+        buy_price = st.number_input("Einstand (USD)", min_value=0.01, value=1.00, step=0.01, key="rechner_buy_price")
     with p3:
         stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=7.0, step=0.5, key="rechner_stop_pct")
 
@@ -2285,17 +2558,23 @@ def _render_stueckzahl_rechner_page() -> None:
     max_shares = int(np.floor(risk_budget / risk_per_share)) if not np.isnan(risk_budget) and not np.isnan(risk_per_share) and risk_per_share > 0 else 0
     max_position_value = max_shares * float(buy_price) if max_shares > 0 else np.nan
 
+    st.markdown("##### Ergebnis · Verlust-Budget")
     m1, m2, m3, m4, m5 = st.columns(5)
     with m1:
-        st.metric("Maximale Stückzahl", f"{max_shares:,}" if max_shares else "—")
+        st.metric("Maximale Stückzahl", f"{max_shares:,}" if max_shares else "—",
+                  help="floor(Risikobudget / Risiko pro Aktie)")
     with m2:
-        st.metric("Risikobudget / Idee", f"{risk_budget:,.0f}" if not np.isnan(risk_budget) else "—")
+        st.metric("Risikobudget / Idee", f"{risk_budget:,.0f}" if not np.isnan(risk_budget) else "—",
+                  help="Depotwert × (Max. Verlust je Idee % / 100)")
     with m3:
-        st.metric("Risiko pro Aktie", f"{risk_per_share:,.2f}" if not np.isnan(risk_per_share) else "—")
+        st.metric("Risiko pro Aktie", f"{risk_per_share:,.2f}" if not np.isnan(risk_per_share) else "—",
+                  help="Einstand × (Stoppabstand % / 100)")
     with m4:
-        st.metric("Maximaler Positionswert", f"{max_position_value:,.0f}" if not np.isnan(max_position_value) else "—")
+        st.metric("Maximaler Positionswert", f"{max_position_value:,.0f}" if not np.isnan(max_position_value) else "—",
+                  help="Maximale Stückzahl × Einstand")
     with m5:
-        st.metric("Abgeleiteter Stoppkurs", f"{stop_price:,.2f}")
+        st.metric("Abgeleiteter Stoppkurs", f"{stop_price:,.2f}",
+                  help="Einstand × (1 − Stoppabstand % / 100)")
 
     if ticker_input:
         metrics = _portfolio_symbol_metrics(ticker_input)
@@ -2308,26 +2587,34 @@ def _render_stueckzahl_rechner_page() -> None:
         balancer_value = float(depot_value) * balancer_weight if depot_value > 0 and not np.isnan(balancer_weight) else np.nan
         balancer_shares = int(np.floor(balancer_value / _safe_float(metrics.get("price"), np.nan))) if not np.isnan(balancer_value) and _safe_float(metrics.get("price"), np.nan) > 0 else 0
 
-        st.markdown("#### Beta-Balancer-Sicht")
-        b1, b2, b3, b4 = st.columns(4)
+        st.markdown("##### Ergebnis · Beta-Balancer")
+        spx_label = f"S&P 500 ATR%: {spx_atr_pct:.2f}%" if not np.isnan(spx_atr_pct) else "S&P 500 ATR% n/a"
+        st.caption(f"Markt-Referenz: {spx_label}")
+        b1, b2, b3, b4, b5 = st.columns(5)
         with b1:
             st.metric("ATR % der Aktie", f"{atr_pct:.2f}%" if not np.isnan(atr_pct) else "—")
         with b2:
             st.metric("Beta", f"{beta:.2f}" if not np.isnan(beta) else "—")
         with b3:
-            st.metric("Max. Gewicht via Balancer", f"{balancer_weight*100:.1f}%" if not np.isnan(balancer_weight) else "—")
+            st.metric("Balancer-Score", f"{score:.2f}" if not np.isnan(score) else "—",
+                      help="0,60 × Beta + 0,40 × (ATR%-Aktie / ATR%-S&P 500)")
         with b4:
-            st.metric("Max. Stück via Balancer", f"{balancer_shares:,}" if balancer_shares else "—")
-        st.caption(
-            "Der Beta-Balancer dimensioniert die Idee nach dem Marktrisiko (Beta × ATR%). "
-            "Wenn er weniger Stück vorgibt als das Verlust-Budget, gewinnt der kleinere Wert."
-        )
+            st.metric("Max. Gewicht", f"{balancer_weight*100:.1f}%" if not np.isnan(balancer_weight) else "—",
+                      help="Ziel Risikobeitrag / Balancer-Score")
+        with b5:
+            st.metric("Max. Stück (BB)", f"{balancer_shares:,}" if balancer_shares else "—",
+                      help="floor(Depotwert × Max. Gewicht / aktueller Kurs)")
+
+        if balancer_shares and max_shares:
+            smaller = min(int(balancer_shares), int(max_shares))
+            source = "Verlust-Budget" if smaller == max_shares else "Beta-Balancer"
+            st.info(f"**Empfehlung:** maximal **{smaller:,} Stück** (begrenzt durch {source}).")
 
     st.markdown(
         """
         <div style="background: #f5f4ef; border-radius: 8px; padding: 12px; margin-top: 16px; font-size: 13px;">
             ℹ️ Kapitel 7.2 empfiehlt, pro Idee meist nicht mehr als 1 % des Depots zu riskieren.
-            Erfasste Käufe trägst du anschließend im Tab „Mein Depot → Positionen“ ein.
+            Erfasste Käufe trägst du anschließend im Tab „Positionen" ein.
         </div>
         """,
         unsafe_allow_html=True,
@@ -10059,10 +10346,10 @@ def _render_arbeitsbereich() -> None:
 
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
-        st.markdown("## ⭐ Workspace")
+        st.markdown("#### ⭐ Watchlist und Aufgaben")
         st.caption(
-            f"Watchlist und Aufgaben · letzte Speicherung {last_save.strftime('%d.%m.%Y · %H:%M UTC')}. "
-            "Depot-Positionen findest du jetzt ausschließlich unter „Mein Depot“."
+            f"Letzte Speicherung {last_save.strftime('%d.%m.%Y · %H:%M UTC')}. "
+            "Depot-Positionen findest du im Tab „Positionen“."
         )
     with col_h2:
         c1, c2 = st.columns(2)
@@ -10141,13 +10428,13 @@ def _render_arbeitsbereich() -> None:
 
     st.markdown("<div style='height: 12px'></div>", unsafe_allow_html=True)
     st.caption(
-        "👉 Depot-Übersicht, Verkaufskandidaten, Portfolio-Regler und Depotkurve liegen jetzt unter "
-        "**„Mein Depot“**. Der Stückzahl-Rechner ist als eigenständiges Werkzeug unter **„Rechner“** zu finden."
+        "👉 Depot-Übersicht, Verkaufskandidaten, Positionen, Depotkurve, Rechner und "
+        "Einstellungen liegen jeweils als eigene Tabs unter „Mein Depot“."
     )
 
 
 def _tab_mein_depot():
-    """Mein Depot: alle depot-bezogenen Funktionen an einem Ort."""
+    """Mein Depot: alle depot-bezogenen Funktionen inkl. Rechner und Workspace."""
     if not _render_private_gate("🔐 Mein Depot"):
         return
     inject_workspace_css()
@@ -10155,42 +10442,35 @@ def _tab_mein_depot():
     st.markdown("### 💼 Mein Depot")
     st.caption(
         "Nach Kapitel 7.2 · Korridor 8–12 Aktien · Positionsgröße über max. Verlust · "
-        "Verkaufs-Score nach Kriterien der Aktienbewertung."
+        "Verkaufs-Score kombiniert Aktienbewertung mit Depot-Risiko."
     )
     tabs = st.tabs([
         "📋 Übersicht",
-        "📈 Depotkurve",
         "✏️ Positionen",
-        "🎛️ Portfolio-Regler",
+        "📈 Depotkurve",
         "🎯 Nach-Kauf-Check",
+        "🧮 Rechner",
+        "⭐ Workspace",
+        "⚙️ Einstellungen",
     ])
     with tabs[0]:
         _render_depot_overview(state)
     with tabs[1]:
-        _render_depot_curve_only(state)
-    with tabs[2]:
         _render_depot_positions_manager(state)
+    with tabs[2]:
+        _render_depot_curve_only(state)
     with tabs[3]:
-        _render_depot_portfolio_regler(state)
-    with tabs[4]:
         _tab_nach_kauf()
-
-
-def _tab_workspace():
-    """Workspace: persönlicher Bereich für Watchlist und Aufgaben."""
-    if not _render_private_gate("🔐 Workspace"):
-        return
-    _init_workspace_state()
-    inject_workspace_css()
-    st.caption(
-        f"Persistent über {_workspace_backend_label()} · Workspace: {_workspace_scope()}"
-    )
-    _render_arbeitsbereich()
-
-
-def _tab_rechner():
-    """Stückzahl- und Positionsgrößen-Rechner — bewusst unabhängig vom Depot."""
-    _render_stueckzahl_rechner_page()
+    with tabs[4]:
+        _render_stueckzahl_rechner_page()
+    with tabs[5]:
+        _init_workspace_state()
+        st.caption(
+            f"Persistent über {_workspace_backend_label()} · Workspace: {_workspace_scope()}"
+        )
+        _render_arbeitsbereich()
+    with tabs[6]:
+        _render_depot_portfolio_regler(state)
 
 
 def _tab_einstellungen():
@@ -10222,9 +10502,7 @@ def main():
         st.Page(_tab_marktanalyse, title="Marktanalyse", icon="📈", url_path="analyse"),
         st.Page(_tab_sektoranalyse, title="Sektoren", icon="🏭", url_path="sektoren"),
         st.Page(_tab_aktienbewertung, title="Aktienbewertung", icon="📋", url_path="aktie"),
-        st.Page(_tab_rechner, title="Rechner", icon="🧮", url_path="rechner"),
         st.Page(_tab_mein_depot, title="Mein Depot", icon="💼", url_path="depot"),
-        st.Page(_tab_workspace, title="Workspace", icon="⭐", url_path="workspace"),
         st.Page(_tab_einstellungen, title="Einstellungen", icon="⚙️", url_path="einstellungen"),
     ]
     navigation = st.navigation(pages, position="top")
