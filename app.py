@@ -75,6 +75,44 @@ METRIC_GLOSSARY = {
 def inject_css() -> None:
     st.markdown(APP_CSS, unsafe_allow_html=True)
 
+
+def inject_workspace_css():
+    st.markdown("""
+        <style>
+        .ws-card { background: #ffffff; border: 0.5px solid rgba(0,0,0,0.12); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+        .ws-card-muted { background: #f5f4ef; border-radius: 8px; padding: 12px 14px; }
+        .ws-label { font-size: 12px; font-weight: 500; color: #5f5e5a; letter-spacing: 0.4px; text-transform: uppercase; margin-bottom: 8px; }
+        .ws-kpi { background: #f5f4ef; border-radius: 8px; padding: 12px 14px; }
+        .ws-kpi-label { font-size: 12px; color: #5f5e5a; margin-bottom: 4px; }
+        .ws-kpi-value { font-size: 22px; font-weight: 500; line-height: 1.2; }
+        .ws-kpi-value.success { color: #0f6e56; }
+        .ws-kpi-value.danger { color: #a32d2d; }
+        .ws-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; padding: 4px 10px; border: 0.5px solid rgba(0,0,0,0.12); border-radius: 999px; font-family: 'SF Mono', Monaco, Consolas, monospace; margin: 0 4px 6px 0; }
+        .ws-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+        .ws-badge.ok { background: #e1f5ee; color: #0f6e56; }
+        .ws-badge.stop { background: #fcebeb; color: #a32d2d; }
+        .ws-hero { background: #e6f1fb; border-radius: 12px; padding: 18px 20px; margin-bottom: 12px; }
+        .ws-hero-label { font-size: 11px; font-weight: 500; color: #0c447c; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .ws-hero-value { font-size: 44px; font-weight: 500; color: #0c447c; line-height: 1; }
+        .ws-hero-sub { font-size: 12px; color: #185fa5; margin-top: 6px; }
+        .ws-hint { background: #faeeda; color: #854f0b; border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+        .ws-positions-table tr.stop-row td { background: rgba(226, 75, 74, 0.03); border-left: 3px solid #a32d2d; }
+        .ws-positions-table td { padding: 10px 14px; font-size: 13px; border-top: 0.5px solid rgba(0,0,0,0.08); font-variant-numeric: tabular-nums; }
+        .ws-positions-table th { padding: 10px 14px; font-size: 12px; font-weight: 500; color: #5f5e5a; background: #f5f4ef; text-align: left; }
+        .ws-mono { font-family: 'SF Mono', Monaco, Consolas, monospace; font-weight: 500; }
+        .ws-num-pos { color: #0f6e56; font-weight: 500; }
+        .ws-num-neg { color: #a32d2d; font-weight: 500; }
+        .stButton > button[kind="primary"] { background: #e6f1fb; color: #0c447c; border: 0.5px solid #185fa5; font-weight: 500; }
+        div[data-testid="column"] .stButton > button { width: 100%; font-size: 12px; padding: 4px 10px; min-height: 32px; }
+        @media (prefers-color-scheme: dark) {
+            .ws-card { background: #161616; border-color: rgba(255,255,255,0.16); }
+            .ws-card-muted, .ws-kpi, .ws-positions-table th { background: #262520; }
+            .ws-label, .ws-kpi-label { color: #b8b5aa; }
+            .ws-pill { border-color: rgba(255,255,255,0.18); }
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
 def _safe_json_load(path: Path, default):
     try:
         if path.exists():
@@ -136,7 +174,7 @@ def _workspace_payload():
         "watchlist": list(dict.fromkeys(st.session_state.get("watchlist", []))),
         "recent_tickers": list(dict.fromkeys(st.session_state.get("recent_tickers", [])))[:12],
         "positions": st.session_state.get("positions", []),
-        "todos": st.session_state.get("todos", ""),
+        "todos": _normalize_workspace_todos(st.session_state.get("todos", [])),
         "portfolio_history": st.session_state.get("portfolio_history", []),
         "portfolio_cash_flows": st.session_state.get("portfolio_cash_flows", []),
         "portfolio_settings": settings,
@@ -150,7 +188,7 @@ def _load_workspace_from_store():
         "watchlist": [],
         "recent_tickers": [],
         "positions": [],
-        "todos": "",
+        "todos": [],
         "portfolio_history": [],
         "portfolio_cash_flows": [],
         "portfolio_settings": _default_portfolio_settings(),
@@ -215,7 +253,7 @@ def _init_workspace_state():
                 st.session_state["watchlist"] = stored.get("watchlist", [])
                 st.session_state["recent_tickers"] = stored.get("recent_tickers", [])
                 st.session_state["positions"] = stored.get("positions", [])
-                st.session_state["todos"] = stored.get("todos", "")
+                st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", []))
                 st.session_state["portfolio_history"] = stored.get("portfolio_history", [])
                 st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", [])
                 migrated_settings = dict(_default_portfolio_settings())
@@ -228,13 +266,16 @@ def _init_workspace_state():
     st.session_state["watchlist"] = stored.get("watchlist", []) if isinstance(stored, dict) else []
     st.session_state["recent_tickers"] = stored.get("recent_tickers", []) if isinstance(stored, dict) else []
     st.session_state["positions"] = stored.get("positions", []) if isinstance(stored, dict) else []
-    st.session_state["todos"] = stored.get("todos", "") if isinstance(stored, dict) else ""
+    st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", [])) if isinstance(stored, dict) else []
     st.session_state["portfolio_history"] = stored.get("portfolio_history", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_history", []), list) else []
     st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_cash_flows", []), list) else []
     base_settings = dict(_default_portfolio_settings())
     if isinstance(stored, dict) and isinstance(stored.get("portfolio_settings"), dict):
         base_settings.update(stored.get("portfolio_settings", {}))
     st.session_state["portfolio_settings"] = base_settings
+    st.session_state.setdefault("pos_filter", "alle")
+    st.session_state.setdefault("show_add_ticker", False)
+    st.session_state.setdefault("show_add_todo", False)
     st.session_state["_workspace_initialized"] = True
 
 def _get_private_password_hash() -> str:
@@ -316,6 +357,112 @@ def _remove_watchlist_ticker(ticker: str) -> None:
 
 
 
+
+
+def _normalize_workspace_todos(raw) -> list[dict]:
+    if raw is None:
+        items = []
+    elif isinstance(raw, str):
+        items = [line.strip() for line in raw.splitlines() if line.strip()]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = []
+
+    normalized = []
+    for idx, item in enumerate(items):
+        if isinstance(item, dict):
+            text_value = str(item.get("text", "") or "").strip()
+            done = bool(item.get("done", False))
+            todo_id = str(item.get("id") or "").strip()
+        else:
+            text_value = str(item or "").strip()
+            done = False
+            todo_id = ""
+        if not text_value:
+            continue
+        normalized.append({
+            "id": todo_id or hashlib.sha1(f"{idx}:{text_value}".encode("utf-8")).hexdigest()[:12],
+            "text": text_value,
+            "done": done,
+        })
+    return normalized[:50]
+
+
+def _set_workspace_todos(todos: list[dict]) -> None:
+    st.session_state["todos"] = _normalize_workspace_todos(todos)
+    _sync_workspace()
+
+
+def _add_todo(text_value: str) -> None:
+    text_value = str(text_value or "").strip()
+    if not text_value:
+        return
+    todos = _normalize_workspace_todos(st.session_state.get("todos", []))
+    todos.append({"id": uuid.uuid4().hex[:12], "text": text_value, "done": False})
+    _set_workspace_todos(todos)
+
+
+def _update_todo_status(todo_id: str, done: bool) -> None:
+    todos = _normalize_workspace_todos(st.session_state.get("todos", []))
+    for todo in todos:
+        if todo.get("id") == todo_id:
+            todo["done"] = bool(done)
+            break
+    _set_workspace_todos(todos)
+
+
+def _workspace_last_save() -> datetime:
+    raw = _get_cache_metadata(_get_price_store(), _workspace_meta_key("updated_at"), "")
+    parsed = pd.to_datetime(raw, utc=True, errors="coerce") if raw else pd.NaT
+    if pd.notna(parsed):
+        return parsed.to_pydatetime()
+    return datetime.now(timezone.utc)
+
+
+def _workspace_positions_df(positions: list[dict], settings: dict | None = None) -> pd.DataFrame:
+    settings = settings or _get_portfolio_settings()
+    snapshot_df, _summary = _build_portfolio_snapshot(
+        positions,
+        cash_balance=_safe_float(settings.get("cash_balance"), 0.0),
+        target_risk_contribution=_safe_float(settings.get("target_risk_contribution"), 0.20),
+    )
+    rows = []
+    if snapshot_df is not None and not snapshot_df.empty:
+        for _, row in snapshot_df.iterrows():
+            if bool(row.get("is_cash", False)):
+                continue
+            pnl_pct = _safe_float(row.get("pnl_pct"), np.nan)
+            status = "Stop-Loss" if (not np.isnan(pnl_pct) and pnl_pct < -7) else "OK"
+            buy_date = pd.to_datetime(row.get("buy_date"), errors="coerce")
+            rows.append({
+                "ticker": _normalize_single_ticker(row.get("ticker", "")),
+                "stueck": _safe_float(row.get("shares"), 0.0),
+                "einstand": _safe_float(row.get("entry"), 0.0),
+                "kaufdatum": buy_date.to_pydatetime() if pd.notna(buy_date) else datetime.now(timezone.utc),
+                "status": status,
+                "pnl_pct": pnl_pct if not np.isnan(pnl_pct) else 0.0,
+                "wert": _safe_float(row.get("current_value"), 0.0),
+                "currency": str(row.get("currency", "USD") or "USD").upper(),
+            })
+    return pd.DataFrame(rows, columns=["ticker", "stueck", "einstand", "kaufdatum", "status", "pnl_pct", "wert", "currency"])
+
+
+def _usd_eur_rate() -> float:
+    try:
+        fx = yf.Ticker("EURUSD=X").history(period="5d")
+        if fx is not None and len(fx) > 0:
+            eur_usd = float(fx["Close"].dropna().iloc[-1])
+            if eur_usd > 0:
+                return 1.0 / eur_usd
+    except Exception as exc:
+        logger.debug("USD/EUR rate lookup failed: %s", exc)
+    return 0.9259
+
+
+def _format_eur(value: float) -> str:
+    return f"{float(value or 0):,.0f} €".replace(",", ".")
+
 def _is_valid_ticker(ticker: str) -> bool:
     return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9.-]{0,14}", _normalize_single_ticker(ticker)))
 
@@ -342,238 +489,6 @@ def _normalize_workspace_ticker_list(values, limit: int = 25) -> list[str]:
             break
     return out
 
-
-def _set_watchlist_add_mode(enabled: bool) -> None:
-    st.session_state["watchlist_add_mode"] = bool(enabled)
-    if not enabled:
-        st.session_state["watchlist_inline_input"] = ""
-
-
-def _commit_watchlist_inline_input() -> bool:
-    ticker = _normalize_single_ticker(st.session_state.get("watchlist_inline_input", ""))
-    st.session_state["watchlist_inline_input"] = ticker
-    if not ticker or not _is_valid_ticker(ticker):
-        return False
-    before = list(st.session_state.get("watchlist", []))
-    _add_watchlist_ticker(ticker)
-    st.session_state["watchlist_inline_input"] = ""
-    st.session_state["watchlist_add_mode"] = False
-    return before != st.session_state.get("watchlist", [])
-
-
-def _render_watchlist_chips() -> None:
-    raw_watchlist = st.session_state.get("watchlist", [])
-    watchlist = _normalize_workspace_ticker_list(raw_watchlist, limit=25)
-    try:
-        needs_sync = not isinstance(raw_watchlist, list) or raw_watchlist != watchlist
-    except Exception:
-        needs_sync = True
-    if needs_sync:
-        st.session_state["watchlist"] = watchlist
-        _sync_workspace()
-    if watchlist:
-        cols = st.columns([1] * min(len(watchlist), 5))
-        for idx, ticker in enumerate(watchlist):
-            with cols[idx % len(cols)]:
-                chip_cols = st.columns([0.72, 0.28], gap="small")
-                chip_cols[0].markdown(f'<span class="pill workspace-chip">{html.escape(ticker)}</span>', unsafe_allow_html=True)
-                if chip_cols[1].button("×", key=f"watch_chip_remove_{ticker}", help=f"{ticker} entfernen"):
-                    _remove_watchlist_ticker(ticker)
-                    st.rerun()
-    else:
-        st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
-
-    if st.session_state.get("watchlist_add_mode"):
-        input_col, ok_col, cancel_col = st.columns([1.0, 0.22, 0.22])
-        with input_col:
-            st.text_input(
-                "Ticker inline hinzufügen",
-                value=st.session_state.get("watchlist_inline_input", ""),
-                placeholder="NVDA",
-                key="watchlist_inline_input",
-                label_visibility="collapsed",
-                on_change=_commit_watchlist_inline_input,
-            )
-        with ok_col:
-            if st.button("✓", key="watch_inline_confirm", help="Ticker speichern"):
-                _commit_watchlist_inline_input()
-                st.rerun()
-        with cancel_col:
-            if st.button("×", key="watch_inline_cancel", help="Abbrechen"):
-                _set_watchlist_add_mode(False)
-                st.rerun()
-        st.caption("Enter speichert. Escape kann Streamlit serverseitig nicht zuverlässig abfangen; nutze das inline × zum Abbrechen.")
-    elif st.button("+", key="watch_inline_add", help="Ticker hinzufügen"):
-        _set_watchlist_add_mode(True)
-        st.rerun()
-
-
-def _workspace_status_badge(status: str) -> str:
-    status = str(status or "").strip()
-    if not status:
-        return "⚪ n/a"
-    lower = status.lower()
-    if lower == "ok":
-        return f"🟢 {status}"
-    if "stop" in lower:
-        return f"🟠 {status}"
-    if "unter" in lower or "keine" in lower:
-        return f"🟡 {status}"
-    return f"⚪ {status}"
-
-
-def _workspace_pnl_label(value) -> str:
-    pnl = _safe_float(value, np.nan)
-    if np.isnan(pnl):
-        return "—"
-    prefix = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
-    return f"{prefix} {pnl:+.2f}%"
-
-
-def _position_display_health(position: dict) -> tuple[str, float]:
-    try:
-        health = _simple_position_health(position)
-    except Exception as exc:
-        logger.debug("workspace position health failed for %s: %s", position.get("ticker"), exc)
-        health = None
-    if not health:
-        return "", np.nan
-    return health.get("status", ""), _safe_float(health.get("pnl"), np.nan)
-
-
-def _positions_to_editor_df(positions: list[dict], include_empty: bool = False) -> pd.DataFrame:
-    rows = []
-    for idx, pos in enumerate(positions or []):
-        ticker = _normalize_single_ticker((pos or {}).get("ticker", ""))
-        if not ticker:
-            continue
-        status, pnl = _position_display_health(pos or {})
-        buy_date = (pos or {}).get("buy_date", "")
-        try:
-            buy_date = pd.Timestamp(buy_date).date() if buy_date else None
-        except Exception:
-            buy_date = None
-        rows.append({
-            "_original_ticker": ticker,
-            "Ticker": ticker,
-            "Stück": _safe_float((pos or {}).get("shares"), 0.0),
-            "Kaufdatum": buy_date,
-            "Einstand (€)": _safe_float((pos or {}).get("buy_price"), np.nan),
-            "Währung": str((pos or {}).get("currency", "USD") or "USD").upper(),
-            "Status": _workspace_status_badge(status),
-            "Notiz": str((pos or {}).get("note", "") or ""),
-            "P&L %": _workspace_pnl_label(pnl),
-            "🗑️": False,
-        })
-    if include_empty:
-        rows.append({
-            "_original_ticker": "",
-            "Ticker": "",
-            "Stück": 0.0,
-            "Kaufdatum": datetime.now(timezone.utc).date(),
-            "Einstand (€)": np.nan,
-            "Währung": "USD",
-            "Status": "⚪ Neu",
-            "Notiz": "",
-            "P&L %": "—",
-            "🗑️": False,
-        })
-    return pd.DataFrame(rows, columns=["_original_ticker", "Ticker", "Stück", "Kaufdatum", "Einstand (€)", "Währung", "Status", "Notiz", "P&L %", "🗑️"])
-
-
-def _positions_from_editor_df(editor_df: pd.DataFrame, existing_positions: list[dict]) -> tuple[list[dict], list[str], bool]:
-    existing_by_ticker = {_normalize_single_ticker(p.get("ticker", "")): dict(p) for p in existing_positions or [] if _normalize_single_ticker(p.get("ticker", ""))}
-    cleaned = []
-    seen = set()
-    messages = []
-    deleted = False
-    for _, row in editor_df.iterrows():
-        original = _normalize_single_ticker(row.get("_original_ticker", ""))
-        ticker = _normalize_single_ticker(row.get("Ticker", ""))
-        if bool(row.get("🗑️", False)):
-            deleted = True
-            continue
-        if not ticker:
-            continue
-        if not _is_valid_ticker(ticker):
-            messages.append(f"{ticker} wurde ignoriert: ungültiges Tickerformat.")
-            continue
-        if ticker in seen:
-            messages.append(f"{ticker} wurde ignoriert: Duplikat.")
-            continue
-        seen.add(ticker)
-        base = dict(existing_by_ticker.get(original) or existing_by_ticker.get(ticker) or {})
-        buy_price = _safe_float(row.get("Einstand (€)"), np.nan)
-        shares = _safe_float(row.get("Stück"), 0.0)
-        currency = str(row.get("Währung") or base.get("currency") or "USD").strip().upper()
-        if currency not in {"USD", "EUR"}:
-            currency = "USD"
-        buy_date_raw = row.get("Kaufdatum")
-        try:
-            buy_date = pd.Timestamp(buy_date_raw).strftime("%Y-%m-%d") if pd.notna(buy_date_raw) else ""
-        except Exception:
-            buy_date = str(base.get("buy_date", "") or "")
-        base.update({
-            "ticker": ticker,
-            "shares": float(max(shares, 0.0)),
-            "buy_date": buy_date,
-            "buy_price": float(buy_price) if not np.isnan(buy_price) and buy_price > 0 else 0.0,
-            "currency": currency,
-            "note": str(row.get("Notiz") or ""),
-        })
-        if base["buy_price"] > 0:
-            if currency == "USD":
-                base["buy_price_usd"] = float(base["buy_price"])
-            elif not base.get("buy_price_usd"):
-                converted, rate = _price_to_usd(float(base["buy_price"]), currency, buy_date or datetime.now(timezone.utc).date())
-                base["buy_price_usd"] = float(converted)
-                if rate is not None:
-                    base["eur_usd_rate"] = float(rate)
-        cleaned.append(base)
-    return cleaned[:30], messages, deleted
-
-
-def _render_workspace_positions_editor() -> None:
-    st.markdown('<div class="workspace-card"><div class="card-label">Gespeicherte Positionen</div>', unsafe_allow_html=True)
-    positions = st.session_state.get("positions", [])
-    include_empty = bool(st.session_state.get("workspace_position_new_row"))
-    editor_df = _positions_to_editor_df(positions, include_empty=include_empty)
-    if editor_df.empty and not include_empty:
-        st.markdown('<div class="workspace-note">Noch keine Positionen gespeichert. Über „+ Position hinzufügen“ startest du direkt eine neue Tabellenzeile.</div>', unsafe_allow_html=True)
-    edited_df = st.data_editor(
-        editor_df,
-        width="stretch",
-        hide_index=True,
-        key="workspace_positions_editor",
-        disabled=["_original_ticker", "Status", "P&L %"],
-        column_order=["Ticker", "Stück", "Kaufdatum", "Einstand (€)", "Währung", "Status", "Notiz", "P&L %", "🗑️"],
-        column_config={
-            "_original_ticker": None,
-            "Ticker": st.column_config.TextColumn("Ticker", width="small", help="Wird automatisch in Großbuchstaben normalisiert."),
-            "Stück": st.column_config.NumberColumn("Stück", min_value=0.0, step=1.0, format="%.4f"),
-            "Kaufdatum": st.column_config.DateColumn("Kaufdatum", format="YYYY-MM-DD"),
-            "Einstand (€)": st.column_config.NumberColumn("Einstand (€)", min_value=0.0, step=0.01, format="%.2f"),
-            "Währung": st.column_config.SelectboxColumn("Währung", options=["USD", "EUR"], width="small"),
-            "Status": st.column_config.TextColumn("Status", disabled=True, width="medium"),
-            "Notiz": st.column_config.TextColumn("Notiz", width="large"),
-            "P&L %": st.column_config.TextColumn("P&L %", disabled=True, width="small"),
-            "🗑️": st.column_config.CheckboxColumn("🗑️", help="Anhaken löscht die Zeile beim nächsten Rerun."),
-        },
-    )
-    new_positions, messages, deleted = _positions_from_editor_df(edited_df, positions)
-    if new_positions != positions:
-        st.session_state["positions"] = new_positions
-        st.session_state["workspace_position_new_row"] = False
-        _sync_workspace()
-        if deleted:
-            st.rerun()
-    for msg in messages[:3]:
-        st.warning(msg)
-    if st.button("+ Position hinzufügen", key="workspace_add_position_row", type="secondary"):
-        st.session_state["workspace_position_new_row"] = True
-        st.rerun()
-    st.caption("Status und P&L werden aus der vorhandenen Aktienanalyse berechnet und sind daher read-only. Direkter Fokus auf eine neue Tabellenzelle ist in Streamlit nicht zuverlässig steuerbar; die neue leere Zeile erscheint sofort zur Eingabe.")
-    st.markdown("</div>", unsafe_allow_html=True)
 
 def _upsert_position(position: dict) -> None:
     _init_workspace_state()
@@ -1783,7 +1698,7 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
         curve["sp500_index"] = np.nan
     return curve
 
-def _render_portfolio_72_area():
+def _render_portfolio_curve_area():
     _init_workspace_state()
     settings = _get_portfolio_settings()
     all_positions = st.session_state.get("positions", [])
@@ -2113,6 +2028,205 @@ def _render_portfolio_72_area():
             st.rerun()
 
 
+
+def _render_portfolio_72_area():
+    _init_workspace_state()
+    settings = _get_portfolio_settings()
+    all_positions = st.session_state.get("positions", [])
+    snapshot_df, summary = _build_portfolio_snapshot(
+        all_positions,
+        cash_balance=_safe_float(settings.get("cash_balance"), 0.0),
+        target_risk_contribution=_safe_float(settings.get("target_risk_contribution"), 0.20),
+    )
+    current_total_value_usd = _safe_float(summary.get("total_value"), 0.0)
+    fx_rate_usd_eur = _usd_eur_rate()
+
+    st.markdown("## Depot nach Kapitel 7.2")
+    st.caption(
+        "Korridor 8–12 Aktien · Positionsgröße über max. Verlust · "
+        "ATR-gewichtetes Portfolio · Beta Balancer · max. Depotverlust"
+    )
+    st.markdown("<div style='height: 12px'></div>", unsafe_allow_html=True)
+
+    total_for_cash = max(current_total_value_usd, _safe_float(settings.get("cash_balance"), 0.0), 1.0)
+    default_cash_pct = int(round(min(max(_safe_float(settings.get("cash_pct"), (_safe_float(settings.get("cash_balance"), 0.0) / total_for_cash) * 100), 0.0), 100.0)))
+
+    st.markdown('<div class="ws-card-muted">', unsafe_allow_html=True)
+    h1, h2 = st.columns([3, 1])
+    with h1:
+        st.markdown('<div class="ws-label">Portfolio-Regler</div>', unsafe_allow_html=True)
+    with h2:
+        save_regler = st.button("💾 Speichern", key="save_regler", use_container_width=True)
+
+    r1, r2, r3, r4, r5 = st.columns(5)
+    with r1:
+        cash_pct = st.slider("Cash / Liquidität (%)", min_value=0, max_value=100, value=default_cash_pct, key="slider_cash")
+    with r2:
+        risk_per_position_pct = st.slider(
+            "Max. Verlust / Idee (%)",
+            min_value=0.0,
+            max_value=20.0,
+            step=0.5,
+            value=float(settings.get("risk_per_position_pct", 1.0)),
+            key="slider_max_verlust",
+        )
+    with r3:
+        target_risk_contribution = st.slider(
+            "Ziel Risikobeitrag",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            value=float(settings.get("target_risk_contribution", 0.20)),
+            key="slider_ziel_risiko",
+        )
+    with r4:
+        max_loss_low = st.slider(
+            "Untergrenze Verlust (%)",
+            min_value=0.0,
+            max_value=20.0,
+            step=0.5,
+            value=float(settings.get("max_depot_loss_low", 8.0)),
+            key="slider_untergrenze",
+        )
+    with r5:
+        max_loss_high = st.slider(
+            "Obergrenze Verlust (%)",
+            min_value=0.0,
+            max_value=30.0,
+            step=0.5,
+            value=float(settings.get("max_depot_loss_high", 12.0)),
+            key="slider_obergrenze",
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if save_regler:
+        updated = dict(settings)
+        updated.update({
+            "cash_pct": float(cash_pct),
+            "risk_per_position_pct": float(risk_per_position_pct),
+            "target_risk_contribution": float(target_risk_contribution),
+            "max_depot_loss_low": float(min(max_loss_low, max_loss_high)),
+            "max_depot_loss_high": float(max(max_loss_low, max_loss_high)),
+        })
+        _save_portfolio_settings(updated)
+        st.toast("Portfolio-Regler gespeichert")
+        st.rerun()
+
+    live_settings = dict(settings)
+    live_settings.update({
+        "cash_pct": float(cash_pct),
+        "risk_per_position_pct": float(risk_per_position_pct),
+        "target_risk_contribution": float(target_risk_contribution),
+        "max_depot_loss_low": float(min(max_loss_low, max_loss_high)),
+        "max_depot_loss_high": float(max(max_loss_low, max_loss_high)),
+    })
+    st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown(
+                '<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">'
+                '<span style="font-size: 16px;">✏️</span>'
+                '<span style="font-size: 14px; font-weight: 500;">Position erfassen</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            ticker = st.text_input("Ticker", placeholder="z. B. NVDA", key="pos_ticker")
+            c1, c2 = st.columns(2)
+            with c1:
+                einstand = st.number_input("Einstand", min_value=0.0, value=1.00, step=0.01, key="pos_einstand")
+            with c2:
+                stoppabstand = st.number_input("Stoppabstand (%)", min_value=0.0, max_value=50.0, value=7.00, step=0.5, key="pos_stopp_pct")
+            c3, c4 = st.columns(2)
+            with c3:
+                kaufdatum = st.date_input("Kaufdatum", key="pos_datum")
+            with c4:
+                waehrung = st.selectbox("Währung", options=["USD", "EUR"], key="pos_waehrung")
+            notiz = st.text_input("Notiz", placeholder="optional", key="pos_notiz")
+            stoppkurs = float(einstand) * (1 - float(stoppabstand) / 100)
+            st.markdown(f"""
+                <div style="background: #f5f4ef; padding: 8px 12px; border-radius: 8px; margin: 12px 0; display: flex; justify-content: space-between; font-size: 12px;">
+                    <span style="color: #5f5e5a;">Abgeleiteter Stoppkurs</span>
+                    <span style="font-weight: 500; font-variant-numeric: tabular-nums;">{stoppkurs:.2f}</span>
+                </div>
+            """, unsafe_allow_html=True)
+            save_position_clicked = st.button("➕ Position speichern", key="save_position", type="primary", use_container_width=True, disabled=not bool(_normalize_single_ticker(ticker)))
+
+    modelliertes_depot_usd = current_total_value_usd if current_total_value_usd > 0 else _safe_float(settings.get("cash_balance"), 0.0)
+    modelliertes_depot_eur = modelliertes_depot_usd * fx_rate_usd_eur
+    risikobudget_eur = modelliertes_depot_eur * (float(risk_per_position_pct) / 100)
+    risiko_pro_aktie = float(einstand) * (float(stoppabstand) / 100) if float(einstand) > 0 else 0
+    risiko_pro_aktie_eur = risiko_pro_aktie * fx_rate_usd_eur if waehrung == "USD" else risiko_pro_aktie
+    max_stueckzahl = int(risikobudget_eur / risiko_pro_aktie_eur) if risiko_pro_aktie_eur > 0 else 0
+    max_position_eur = max_stueckzahl * float(einstand)
+    if waehrung == "USD":
+        max_position_eur *= fx_rate_usd_eur
+
+    if save_position_clicked:
+        pos_ticker = _normalize_single_ticker(ticker)
+        buy_price_usd, eur_usd_rate = _price_to_usd(float(einstand), waehrung, kaufdatum)
+        _upsert_position({
+            "ticker": pos_ticker,
+            "buy_price": float(einstand),
+            "buy_price_usd": float(buy_price_usd),
+            "buy_date": str(kaufdatum),
+            "currency": waehrung,
+            "shares": float(max_stueckzahl),
+            "stop_pct": float(stoppabstand),
+            "stop_price": float(stoppkurs),
+            "note": notiz,
+            "eur_usd_rate": float(eur_usd_rate) if eur_usd_rate is not None else None,
+        })
+        st.success("Position gespeichert")
+        st.rerun()
+
+    with right:
+        st.markdown(f"""
+            <div class="ws-hero">
+                <div class="ws-hero-label">🧮 Maximale Stückzahl</div>
+                <div class="ws-hero-value">{max_stueckzahl:,.0f}</div>
+                <div class="ws-hero-sub">Positionsgröße: {max_position_eur:,.0f} € · max. {risk_per_position_pct:.1f} % Depotrisiko</div>
+            </div>
+        """.replace(",", "."), unsafe_allow_html=True)
+        s1, s2 = st.columns(2)
+        s3, s4 = st.columns(2)
+        for col, label, value in [
+            (s1, "Modelliertes Depot", f"{modelliertes_depot_eur:,.0f} €".replace(",", ".")),
+            (s2, "Risikobudget / Idee", f"{risikobudget_eur:,.0f} €".replace(",", ".")),
+            (s3, "Risiko pro Aktie", f"{risiko_pro_aktie:.2f}"),
+            (s4, "Stoppkurs", f"{stoppkurs:.2f}"),
+        ]:
+            with col:
+                st.markdown(f"""
+                    <div style="background: #f5f4ef; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;">
+                        <div style="font-size: 11px; color: #5f5e5a; margin-bottom: 2px;">{label}</div>
+                        <div style="font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums;">{value}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+        st.markdown("""
+            <div class="ws-hint">
+                ℹ️ Kapitel 7.2 empfiehlt, pro Idee meist nicht mehr als 1 % des Depots zu riskieren.
+            </div>
+        """, unsafe_allow_html=True)
+
+    if snapshot_df is not None and not snapshot_df.empty:
+        st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+        st.markdown('<div class="ws-label">Portfolio-Snapshot</div>', unsafe_allow_html=True)
+        display_df = snapshot_df.copy()
+        display_df = display_df[display_df.get("is_cash", False) == False] if "is_cash" in display_df else display_df
+        if not display_df.empty:
+            table = display_df[["ticker", "shares", "current_value", "pnl_pct", "atr_pct", "beta", "risk_contribution", "max_position_value"]].rename(columns={
+                "ticker": "Ticker",
+                "shares": "Stück",
+                "current_value": "Wert USD",
+                "pnl_pct": "P&L %",
+                "atr_pct": "ATR %",
+                "beta": "Beta",
+                "risk_contribution": "Risikobeitrag",
+                "max_position_value": "Max. Positionswert",
+            })
+            st.dataframe(table.round(2), width="stretch", hide_index=True)
 def _render_workspace_sidebar():
     with st.sidebar:
         st.markdown("### Arbeitsbereich")
@@ -9786,7 +9900,7 @@ def _tab_marktanalyse(compact: bool = False):
                     st.info(
                         f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
                         f"{neon_auto_text} "
-                        "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
+                        "Prüfe den Worker-Status in den App-Logs und starte bei Bedarf den Aktualisierungs-Workflow manuell."
                     )
             else:
                 br = _render_deep_analysis_content(component_bundle, sd, data)
@@ -9809,7 +9923,7 @@ def _tab_marktanalyse(compact: bool = False):
                             st.info(
                                 f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
                                 f"{neon_auto_text} "
-                                "Im Bereich „Technisches Setup“ siehst du den letzten Job-Status und kannst bei Bedarf manuell starten."
+                                "Prüfe den Worker-Status in den App-Logs und starte bei Bedarf den Aktualisierungs-Workflow manuell."
                             )
                     elif breadth_last < benchmark_last and refresh_matches_cache:
                         st.info(
@@ -9830,223 +9944,187 @@ def _tab_dashboard():
 
 
 
-def _render_technical_setup_area():
-    st.markdown("### ⚙️ Technisches Setup")
-    st.caption("Privater Wartungsbereich für Datenbankaktualisierung, Worker-Status und Diagnose.")
-    store = _get_price_store()
-    settings_preview = _get_portfolio_settings()
-    pref_auto = settings_preview.get("neon_auto_update_preference", "on")
-    pref_enabled = str(pref_auto).strip().lower() == "on"
-    runtime_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else pref_enabled
-    if runtime_enabled:
-        st.caption("Automatische Neon-Aktualisierung: Montag bis Freitag um 22:30 Uhr (Europe/Berlin). Manueller Start bleibt verfügbar.")
-    else:
-        st.caption("Automatische Neon-Aktualisierung ist deaktiviert. Manueller Start bleibt verfügbar.")
-    st.caption(f"Persistenter Datenspeicher: {_get_store_label(store)}")
-    if store["backend"] != "neon":
-        st.warning("Neon ist aktuell nicht konfiguriert. Die App nutzt daher nur den lokalen SQLite-Cache. Für Streamlit Cloud ist Neon meist stabiler.")
+def _render_arbeitsbereich() -> None:
+    _init_workspace_state()
+    settings = _get_portfolio_settings()
+    positions_df = _workspace_positions_df(st.session_state.get("positions", []), settings)
+    watchlist = _normalize_workspace_ticker_list(st.session_state.get("watchlist", []), limit=25)
+    todos = _normalize_workspace_todos(st.session_state.get("todos", []))
+    last_save = _workspace_last_save()
 
-    current_refresh_at = _get_cache_metadata(store, "last_refresh_at", "")
-    live_status = get_live_universe_store_status(store["backend"], _get_store_label(store), str(current_refresh_at or ""))
-    live_cols = st.columns(5)
-    live_cols[0].metric("Universe live", int(live_status.get("requested", 0)))
-    live_cols[1].metric("Im Cache", int(live_status.get("loaded", 0)))
-    live_cols[2].metric("Abdeckung", f"{float(live_status.get('coverage', 0.0) or 0.0):.0%}")
-    live_cols[3].metric("Mappings", int(live_status.get("mapped", 0)))
-    live_cols[4].metric("Ungeklärt", int(live_status.get("not_found", 0)) + int(live_status.get("no_history", 0)))
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown("## Arbeitsbereich")
+        st.caption(f"Letzte Speicherung: {last_save.strftime('%d.%m.%Y · %H:%M UTC')}")
+    with col_h2:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔒 Sperren", key="ws_lock", use_container_width=True):
+                _lock_private_area()
+                st.rerun()
+        with c2:
+            st.button("↗ Teilen", key="ws_share", use_container_width=True)
 
-    active_job = _get_active_refresh_job(store)
-    latest_jobs = _list_recent_refresh_jobs(store, limit=6)
-    latest_job = latest_jobs[0] if latest_jobs else None
-    if latest_job:
+    n_pos = len(positions_df)
+    depot_wert = positions_df["wert"].sum() * _usd_eur_rate() if not positions_df.empty else 0
+    n_plus = int((positions_df["pnl_pct"] > 0).sum()) if not positions_df.empty else 0
+    n_stop = int((positions_df["status"] == "Stop-Loss").sum()) if not positions_df.empty else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    for col, label, value, css_class in [
+        (k1, "Positionen", f"{n_pos}", ""),
+        (k2, "Depotwert", _format_eur(depot_wert), ""),
+        (k3, "Im Plus", f"{n_plus}", "success"),
+        (k4, "Stop-Loss", f"{n_stop}", "danger"),
+    ]:
+        with col:
+            st.markdown(f"""
+                <div class="ws-kpi">
+                    <div class="ws-kpi-label">{html.escape(label)}</div>
+                    <div class="ws-kpi-value {css_class}">{html.escape(value)}</div>
+                </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+    wl_col, td_col = st.columns([1.5, 1])
+
+    with wl_col:
         with st.container(border=True):
-            st.markdown(f"**Letzter Job:** {_job_type_label(latest_job.get('job_type'))} · **Status:** {_job_status_badge(latest_job.get('status'))}")
-            st.caption(f"Job-ID: {latest_job.get('job_id', '—')} · Schritt: {latest_job.get('current_step') or '—'}")
-            if st.button("Status neu laden", width="stretch", key="tech_status_reload"):
+            wl_h1, wl_h2 = st.columns([3, 1])
+            with wl_h1:
+                st.markdown(f'<div class="ws-label">Watchlist · {len(watchlist)}</div>', unsafe_allow_html=True)
+            with wl_h2:
+                if st.button("+ Ticker", key="add_ticker", use_container_width=True):
+                    st.session_state.show_add_ticker = True
+            pills_html = '<div style="display: flex; flex-wrap: wrap;">'
+            if watchlist:
+                for ticker in watchlist:
+                    pills_html += f'<span class="ws-pill">{html.escape(ticker)} ✕</span>'
+            else:
+                pills_html += '<span style="font-size: 13px; color: #888780;">Noch keine Ticker in der Watchlist.</span>'
+            pills_html += '</div>'
+            st.markdown(pills_html, unsafe_allow_html=True)
+            if st.session_state.get("show_add_ticker"):
+                new_ticker = st.text_input("Neuer Ticker", key="new_ticker_input")
+                c_ok, c_cancel = st.columns(2)
+                with c_ok:
+                    if new_ticker and st.button("Hinzufügen", key="confirm_add_ticker", use_container_width=True):
+                        _add_watchlist_ticker(new_ticker.upper())
+                        st.session_state.show_add_ticker = False
+                        st.rerun()
+                with c_cancel:
+                    if st.button("Abbrechen", key="cancel_add_ticker", use_container_width=True):
+                        st.session_state.show_add_ticker = False
+                        st.rerun()
+
+    with td_col:
+        with st.container(border=True):
+            td_h1, td_h2 = st.columns([3, 1])
+            with td_h1:
+                st.markdown('<div class="ws-label">Heute</div>', unsafe_allow_html=True)
+            with td_h2:
+                if st.button("+", key="add_todo", use_container_width=True):
+                    st.session_state.show_add_todo = True
+            if todos:
+                for todo in todos:
+                    col_cb, col_txt = st.columns([0.1, 0.9])
+                    with col_cb:
+                        done = st.checkbox("", value=bool(todo["done"]), key=f"todo_{todo['id']}", label_visibility="collapsed")
+                        if done != bool(todo["done"]):
+                            _update_todo_status(todo["id"], done)
+                            st.rerun()
+                    with col_txt:
+                        style = "text-decoration: line-through; color: #888780;" if todo["done"] else ""
+                        st.markdown(f'<div style="font-size: 13px; padding-top: 4px; {style}">{html.escape(todo["text"])}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="font-size: 13px; color: #888780;">Keine Aufgaben für heute.</div>', unsafe_allow_html=True)
+            if st.session_state.get("show_add_todo"):
+                new_todo = st.text_input("Neue Aufgabe", key="new_todo_input")
+                c_ok, c_cancel = st.columns(2)
+                with c_ok:
+                    if new_todo and st.button("Hinzufügen", key="confirm_add_todo", use_container_width=True):
+                        _add_todo(new_todo)
+                        st.session_state.show_add_todo = False
+                        st.rerun()
+                with c_cancel:
+                    if st.button("Abbrechen", key="cancel_add_todo", use_container_width=True):
+                        st.session_state.show_add_todo = False
+                        st.rerun()
+
+    st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
+    pos_h1, pos_h2 = st.columns([2, 2])
+    with pos_h1:
+        st.markdown('<div class="ws-label">Gespeicherte Positionen</div>', unsafe_allow_html=True)
+    with pos_h2:
+        f1, f2, f3 = st.columns(3)
+        active_filter = st.session_state.get("pos_filter", "alle")
+        with f1:
+            if st.button(f"Alle · {n_pos}", key="filter_all", type="primary" if active_filter == "alle" else "secondary", use_container_width=True):
+                st.session_state.pos_filter = "alle"
+                st.rerun()
+        with f2:
+            if st.button(f"Stop-Loss · {n_stop}", key="filter_stop", type="primary" if active_filter == "stop" else "secondary", use_container_width=True):
+                st.session_state.pos_filter = "stop"
+                st.rerun()
+        with f3:
+            if st.button(f"OK · {n_pos - n_stop}", key="filter_ok", type="primary" if active_filter == "ok" else "secondary", use_container_width=True):
+                st.session_state.pos_filter = "ok"
                 st.rerun()
 
-    settings = _get_portfolio_settings()
-    saved_neon_pref = settings.get("neon_auto_update_preference", "on")
-    if saved_neon_pref not in {"on", "off"}:
-        saved_neon_pref = "on"
-    # If Neon is active, the runtime metadata is authoritative for actual job execution.
-    # Otherwise use the stored user preference preview.
-    neon_auto_enabled = _is_neon_auto_update_enabled(store) if store.get("backend") == "neon" else (saved_neon_pref == "on")
-    auto_cols = st.columns([1, 1.6])
-    with auto_cols[0]:
-        neon_auto_choice = st.selectbox(
-            "Neon Auto-Update",
-            options=["on", "off"],
-            index=0 if neon_auto_enabled else 1,
-            format_func=lambda value: "Aktiviert" if value == "on" else "Deaktiviert",
-            key="tech_neon_auto_update_select",
-        )
-    with auto_cols[1]:
-        if store.get("backend") == "neon":
-            runtime_flag = "Aktiviert" if _is_neon_auto_update_enabled(store) else "Deaktiviert"
-            st.caption(f"Aktiver Rhythmus: Montag–Freitag um 22:30 Uhr (Europe/Berlin) via GitHub Actions · Laufzeitstatus: {runtime_flag}.")
-        else:
-            st.caption("Neon ist nicht aktiv. Du kannst die Auto-Update-Präferenz trotzdem schon speichern.")
-        if st.button("Auto-Update speichern", key="tech_neon_auto_update_save"):
-            settings["neon_auto_update_preference"] = neon_auto_choice
-            _save_portfolio_settings(settings)
-            if store.get("backend") == "neon":
-                _set_neon_auto_update_enabled(store, neon_auto_choice == "on")
-            st.rerun()
+    df = positions_df.copy()
+    if not df.empty:
+        df_stop = df[df["status"] == "Stop-Loss"].sort_values("pnl_pct", ascending=True)
+        df_ok = df[df["status"] == "OK"].sort_values("pnl_pct", ascending=False)
+        df = pd.concat([df_stop, df_ok], ignore_index=True)
+        if active_filter == "stop":
+            df = df[df["status"] == "Stop-Loss"]
+        elif active_filter == "ok":
+            df = df[df["status"] == "OK"]
 
-    current_rs_source = _get_rs_rating_source_setting()
-    rs_source_options = list(RS_SOURCE_LABELS.keys())
-    rs_source_choice = st.selectbox(
-        "RS-Rating Quelle",
-        options=rs_source_options,
-        index=rs_source_options.index(current_rs_source) if current_rs_source in rs_source_options else 0,
-        format_func=lambda key: RS_SOURCE_LABELS.get(key, key),
-        key="tech_rs_source_select",
-        help="Du kannst zwischen deiner eigenen Repo-CSV, Freds RS-CSV und der DB-/Live-Berechnung umschalten. Die Auswahl wird dauerhaft gespeichert.",
-    )
-    if st.button("RS-Quelle speichern", width="content", key="tech_rs_source_save"):
-        settings["rs_rating_source"] = rs_source_choice if rs_source_choice in RS_SOURCE_LABELS else RS_SOURCE_CSV_LATEST
-        _save_portfolio_settings(settings)
-        st.success("RS-Quelle gespeichert. Die Auswahl bleibt auch nach Neustart erhalten.")
-
-    backend_options = ["sqlite", "neon"]
-    backend_labels = {
-        "sqlite": "SQLite (Standard)",
-        "neon": "Neon Postgres",
-    }
-    current_backend = settings.get("db_backend_preference", "sqlite")
-    if current_backend not in backend_options:
-        current_backend = "sqlite"
-    backend_choice = st.selectbox(
-        "Datenbank-Backend",
-        options=backend_options,
-        index=backend_options.index(current_backend),
-        format_func=lambda key: backend_labels.get(key, key),
-        key="tech_db_backend_select",
-        help="SQLite ist der Standard. Neon wird nur genutzt, wenn konfiguriert und erreichbar.",
-    )
-    if st.button("Backend speichern", width="content", key="tech_db_backend_save"):
-        settings["db_backend_preference"] = backend_choice if backend_choice in backend_options else "sqlite"
-        _save_portfolio_settings(settings)
-        st.rerun()
-
-    rs_csv_info = _load_selected_rs_ratings_map(rs_source_choice)
-    if rs_csv_info.get("ok"):
-        csv_caption_parts = [
-            f"Quelle: {RS_SOURCE_LABELS.get(rs_source_choice, rs_source_choice)}",
-            f"CSV: {rs_csv_info.get('file')}",
-            f"{int(rs_csv_info.get('count', 0) or 0)} Ratings",
-        ]
-        if rs_csv_info.get("as_of_date"):
-            csv_caption_parts.append(f"Stand {rs_csv_info.get('as_of_date')}")
-        if rs_csv_info.get("generated_at_utc"):
-            csv_caption_parts.append(f"Erzeugt {rs_csv_info.get('generated_at_utc')} UTC")
-        st.caption(" · ".join(csv_caption_parts))
-    elif rs_source_choice != RS_SOURCE_COMPUTED:
-        st.warning(rs_csv_info.get("error") or "Die gewählte RS-CSV ist noch nicht verfügbar. Die App fällt bis dahin auf die interne Berechnung zurück.")
+    table_html = '<div class="ws-card" style="padding: 0; overflow: hidden;">'
+    table_html += '<table class="ws-positions-table" style="width: 100%; border-collapse: collapse;">'
+    table_html += '<thead><tr><th>Ticker</th><th style="text-align: right;">Stück</th><th style="text-align: right;">Einstand</th><th>Kauf</th><th style="text-align: center;">Status</th><th style="text-align: right;">P&L</th></tr></thead><tbody>'
+    if df.empty:
+        table_html += '<tr><td colspan="6" style="color: #888780;">Noch keine gespeicherten Positionen.</td></tr>'
     else:
-        st.caption("Die DB-Variante nutzt den internen Snapshot bzw. die Live-Berechnung aus dem Datenspeicher.")
-
-    btn_refresh, btn_rescue, btn_remap, btn_export, btn_diag = st.columns(5)
-    with btn_refresh:
-        refresh_clicked = st.button("Aktienuniversum aktualisieren", width="stretch", disabled=bool(active_job), key="tech_refresh_universe")
-    with btn_rescue:
-        rescue_clicked = st.button("Fehlende nachladen", width="stretch", disabled=bool(active_job), key="tech_rescue_missing")
-    with btn_remap:
-        remap_clicked = st.button("Automatisch remappen", width="stretch", disabled=bool(active_job), key="tech_auto_remap")
-    with btn_export:
-        export_clicked = st.button("RS-CSV erzeugen", width="stretch", disabled=bool(active_job), key="tech_export_rs_csv")
-    with btn_diag:
-        diagnose_clicked = st.button("Yahoo-Diagnose", width="stretch", key="tech_yahoo_diag")
-
-    if refresh_clicked:
-        result = _request_external_refresh_job("refresh_universe", payload={"trigger": "streamlit_private_tech"})
-        if result.get("ok"):
-            st.success(f"✓ Refresh-Job angelegt: {result['job']['job_id']}.")
-        else:
-            st.error(result.get("error") or "Der Refresh-Job konnte nicht gestartet werden.")
-    if rescue_clicked:
-        result = _request_external_refresh_job("rescue_missing", payload={"trigger": "streamlit_private_tech"})
-        if result.get("ok"):
-            st.success(f"✓ Rescue-Job angelegt: {result['job']['job_id']}.")
-        else:
-            st.error(result.get("error") or "Der Rescue-Job konnte nicht gestartet werden.")
-    if remap_clicked:
-        result = _request_external_refresh_job("auto_remap", payload={"trigger": "streamlit_private_tech"})
-        if result.get("ok"):
-            st.success(f"✓ Auto-Remap-Job angelegt: {result['job']['job_id']}.")
-        else:
-            st.error(result.get("error") or "Der Auto-Remap-Job konnte nicht gestartet werden.")
-    if export_clicked:
-        result = _request_external_refresh_job("export_rs_csv", payload={"trigger": "streamlit_private_tech", "rs_source": "github_csv"})
-        if result.get("ok"):
-            st.success(f"✓ RS-CSV-Job angelegt: {result['job']['job_id']}.")
-        else:
-            st.error(result.get("error") or "Der RS-CSV-Job konnte nicht gestartet werden.")
-    if diagnose_clicked:
-        with st.spinner("Teste eine Stichprobe der noch fehlenden Ticker im NYSE/Nasdaq-Aktienuniversum direkt gegen Yahoo …"):
-            diag_stats = diagnose_missing_nyse_yahoo()
-            st.cache_data.clear()
-        if diag_stats.get("ok"):
-            st.success(diag_stats.get("message", "Yahoo-Diagnose abgeschlossen."))
-            results_df = diag_stats.get("results_df")
-            if results_df is not None and not results_df.empty:
-                st.dataframe(results_df, width="stretch", hide_index=True)
-        else:
-            st.error(diag_stats.get("error", "Die Yahoo-Diagnose ist fehlgeschlagen."))
+        for _, row in df.iterrows():
+            is_stop = row["status"] == "Stop-Loss"
+            row_class = "stop-row" if is_stop else ""
+            badge_class = "stop" if is_stop else "ok"
+            pnl_class = "ws-num-neg" if row["pnl_pct"] < 0 else "ws-num-pos"
+            pnl_sign = "+" if row["pnl_pct"] > 0 else ""
+            currency = "€" if row.get("currency") == "EUR" else "$"
+            kaufdatum = pd.Timestamp(row["kaufdatum"]).strftime("%d.%m.%y")
+            table_html += f'''
+                <tr class="{row_class}">
+                    <td><span class="ws-mono">{html.escape(str(row['ticker']))}</span></td>
+                    <td style="text-align: right;">{row['stueck']:.0f}</td>
+                    <td style="text-align: right;">{row['einstand']:.2f} {currency}</td>
+                    <td style="color: #888780;">{kaufdatum}</td>
+                    <td style="text-align: center;"><span class="ws-badge {badge_class}">{row['status']}</span></td>
+                    <td style="text-align: right;" class="{pnl_class}">{pnl_sign}{row['pnl_pct']:.2f} %</td>
+                </tr>
+            '''
+    table_html += '</tbody></table></div>'
+    st.markdown(table_html, unsafe_allow_html=True)
+    if st.button("+ Position hinzufügen", key="add_position"):
+        st.info("Öffne den Tab „Depot 7.2“, um eine neue Position zu erfassen.")
 
 
 def _tab_mein_bereich():
     if not _render_private_gate("🔐 Mein Bereich"):
         return
     _init_workspace_state()
+    inject_workspace_css()
 
     st.markdown("### 🔐 Mein Bereich")
     st.caption(f"Persönlicher Arbeitsbereich mit persistentem Speicher über {_workspace_backend_label()} · Workspace: {_workspace_scope()}")
 
-    top_left, top_right = st.columns([1.4, 0.8])
-    with top_left:
-        updated_at = _get_cache_metadata(_get_price_store(), _workspace_meta_key("updated_at"), "")
-        if updated_at:
-            st.caption(f"Letzte Speicherung: {updated_at} UTC")
-    with top_right:
-        if _private_area_enabled() and st.button("🔒 Bereich sperren", width="stretch", key="private_lock_btn"):
-            _lock_private_area()
-            st.rerun()
-
-    area_view = st.segmented_control(
-        "Bereich",
-        options=["📝 Arbeitsbereich", "💼 Depot 7.2", "⚙️ Technisches Setup"],
-        default="📝 Arbeitsbereich",
-        key="mein_bereich_view",
-        label_visibility="collapsed",
-    )
-
-    if area_view == "📝 Arbeitsbereich":
-        left, right = st.columns([1.0, 1.0])
-
-        with left:
-            st.markdown('<div class="workspace-card"><div class="card-label">Watchlist</div>', unsafe_allow_html=True)
-            _render_watchlist_chips()
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        with right:
-            st.markdown('<div class="workspace-card"><div class="card-label">Heutige To-dos</div>', unsafe_allow_html=True)
-            todos = st.text_area("Notizen", value=st.session_state.get("todos", ""), height=170, key="todos_area", label_visibility="collapsed", placeholder="Zum Beispiel\nNVDA nach Earnings prüfen\nWatchlist nach Breakouts filtern")
-            if st.button("To-dos speichern", width="stretch", key="save_todos"):
-                st.session_state["todos"] = todos
-                _sync_workspace()
-                st.success("To-dos gespeichert.")
-            st.markdown('<div class="workspace-note">Ideal für Tagesplan, offene Fragen und Beobachtungsliste.</div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        _render_workspace_positions_editor()
-
-    elif area_view == "💼 Depot 7.2":
+    tabs = st.tabs(["Arbeitsbereich", "Depot 7.2"])
+    with tabs[0]:
+        _render_arbeitsbereich()
+    with tabs[1]:
         _render_portfolio_72_area()
-
-    elif area_view == "⚙️ Technisches Setup":
-        _render_technical_setup_area()
 
 def _tab_mein_depot():
     """Depot: Nach-Kauf-Analyse und Portfolio-Kurve kombiniert."""
@@ -10061,22 +10139,21 @@ def _tab_mein_depot():
         if not _render_private_gate("🔐 Portfolio-Kurve"):
             return
         _init_workspace_state()
-        _render_portfolio_72_area()
+        _render_portfolio_curve_area()
     else:
         _tab_nach_kauf()
 
 
 def _tab_workspace():
-    """Persönlicher Arbeitsbereich: Watchlist, Notizen und Workspace-Einstellungen."""
-    st.session_state.setdefault("mein_bereich_view", "📝 Arbeitsbereich")
+    """Persönlicher Arbeitsbereich: Watchlist, To-dos und Depot 7.2."""
     _tab_mein_bereich()
 
 
 def _tab_einstellungen():
-    """Systemeinstellungen: Datenbankpflege, Worker-Status und technische Konfiguration."""
+    """Systemeinstellungen sind nicht mehr als eigener UI-Bereich verfügbar."""
     if not _render_private_gate("🔐 Einstellungen"):
         return
-    _render_technical_setup_area()
+    st.info("Das technische Setup wurde aus dem Workspace entfernt. Persistenz, Datenbank-Backend und Aktualisierungsjobs laufen weiterhin über die bestehende Konfiguration.")
 
 
 def _render_topbar() -> None:
