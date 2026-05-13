@@ -761,6 +761,144 @@ def _build_market_reasons(L, warning_count: int, breadth_mode: str, vol_latest: 
         reasons.append(f"VIX-Regime: {vix_regime}")
     return reasons[:4]
 
+
+def _fmt_num(value, suffix: str = "") -> str:
+    try:
+        if pd.isna(value):
+            return "—"
+        return f"{float(value):,.2f}{suffix}"
+    except Exception:
+        return "—"
+
+
+def _fmt_pct(value) -> str:
+    try:
+        if pd.isna(value):
+            return "—"
+        return f"{float(value):+.1f}%"
+    except Exception:
+        return "—"
+
+
+def render_haltung_banner(haltung, warnzeichen, abstand_50sma, equal_weight):
+    """Render the defensive/offensive recommendation as a product-style banner."""
+    is_defensive = str(haltung or "").strip().lower() == "defensiv"
+    bg = "#FAEEDA" if is_defensive else "#EAF3DE"
+    icon_color = "#854F0B" if is_defensive else "#3B6D11"
+    body_color = "#412402" if is_defensive else "#173404"
+    icon = "⚠" if is_defensive else "↗"
+    title = f"{'Defensiv' if is_defensive else 'Offensiv'} — {int(warnzeichen or 0)} Warnzeichen aktiv"
+    distance = _fmt_pct(abstand_50sma)
+    equal_weight_text = html.escape(str(equal_weight or "—"))
+    if is_defensive:
+        body = (
+            f"Die Marktampel fordert Risikokontrolle, weil {int(warnzeichen or 0)} Warnzeichen aktiv sind und der Abstand zur 50-SMA bei {distance} liegt. "
+            f"Der Equal-Weight-Modus steht auf {equal_weight_text}; neue Käufe bleiben selektiv und Positionsgrößen defensiv."
+        )
+    else:
+        body = (
+            f"Das Marktbild erlaubt eine offensivere Haltung, weil die Ampel konstruktiv ist und der Abstand zur 50-SMA bei {distance} liegt. "
+            f"Der Equal-Weight-Modus steht auf {equal_weight_text}; führende Aktien können schrittweise höher gewichtet werden."
+        )
+    st.markdown(
+        f"""
+        <div class="haltung-banner" style="background:{bg}; color:{body_color};">
+          <div class="haltung-banner__icon" style="color:{icon_color};">{icon}</div>
+          <div>
+            <div class="eyebrow" style="color:{icon_color};">Empfohlene Haltung</div>
+            <div class="haltung-banner__title" style="color:{body_color};">{html.escape(title)}</div>
+            <div class="haltung-banner__body" style="color:{body_color};">{body}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_dashboard_kpi_card(label, value, unit, trend_text, trend_color, trend_icon, footnote):
+    """Render a fixed-height KPI card with custom HTML instead of st.metric."""
+    value_html = str(value) if str(value).lstrip().startswith("<") else html.escape(str(value))
+    unit_html = f'<span class="dash-kpi-card__unit">{html.escape(str(unit))}</span>' if unit else ""
+    trend = html.escape(str(trend_text or "—"))
+    icon = html.escape(str(trend_icon or ""))
+    st.markdown(
+        f"""
+        <div class="dash-kpi-card">
+          <div>
+            <div class="eyebrow">{html.escape(str(label))}</div>
+            <div class="dash-kpi-card__value">{value_html}{unit_html}</div>
+            <div class="dash-kpi-card__trend" style="color:{trend_color};">{icon} {trend}</div>
+          </div>
+          <div class="dash-kpi-card__footnote">{html.escape(str(footnote or ""))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _phase_to_active_index(active_phase: str) -> int:
+    phase = str(active_phase or "").lower()
+    if phase == "rot":
+        return 0
+    if phase == "gelb":
+        return 1
+    if phase in {"gruen", "aufwaertstrend"}:
+        return 2
+    return -1
+
+
+def render_ampel(active_phase, ankertag, bodenmarke, startschuss_tief):
+    """Render the Trendwende-Ampel as a compact horizontal phase stepper."""
+    active_idx = _phase_to_active_index(active_phase)
+    status_label = "Aufwärtstrend aktiv" if str(active_phase).lower() == "aufwaertstrend" else _ampel_phase_label(active_phase) or "Neutral"
+    phases = [
+        ("Rot", "Abwärts / Distribution", "Substanzielle Korrektur oder institutioneller Abgabedruck."),
+        ("Gelb", "Bodenbildung", "Ankertag und Startschuss werden als frühe Stabilisierung geprüft."),
+        ("Grün", "Aufwärtstrend bestätigt", "Startschuss hält, Trendstruktur und MA-Ordnung bestätigen den Zyklus."),
+    ]
+    dot_colors = ["#A32D2D", "#854F0B", "#639922"]
+    phase_html = ""
+    for i, (name, label, desc) in enumerate(phases):
+        active_cls = " is-active" if i == active_idx else ""
+        phase_html += (
+            f'<div class="ampel-phase{active_cls}">'
+            f'<div class="ampel-phase__top"><span class="dash-ampel-dot" style="background:{dot_colors[i]};"></span>'
+            f'<span class="eyebrow">{html.escape(name)}</span></div>'
+            f'<div class="ampel-phase__desc"><strong>{html.escape(label)}</strong><br>{html.escape(desc)}</div>'
+            f'</div>'
+        )
+    anchor_txt = html.escape(str(ankertag)) if ankertag else "—"
+    floor_txt = _fmt_num(bodenmarke)
+    ss_txt = _fmt_num(startschuss_tief)
+    st.markdown(
+        f"""
+        <div class="ampel-card">
+          <div class="ampel-card__header">
+            <div class="eyebrow">Trendwende-Ampel</div>
+            <div class="ampel-pill">↗ {html.escape(status_label)}</div>
+          </div>
+          <div class="ampel-stepper">{phase_html}</div>
+          <div class="ampel-details">
+            <div class="ampel-detail">
+              <div class="ampel-detail__icon">✓</div>
+              <div>
+                <div class="ampel-detail__title">MA-Ordnung bestätigt</div>
+                <div class="ampel-detail__body ampel-detail__mono">21-EMA &gt; 50-SMA &gt; 200-SMA</div>
+              </div>
+            </div>
+            <div class="ampel-detail">
+              <div class="ampel-detail__icon">⚑</div>
+              <div>
+                <div class="ampel-detail__title">Letzter Startschuss</div>
+                <div class="ampel-detail__body">Ankertag {anchor_txt} · Boden {floor_txt} · Startschuss-Tief {ss_txt}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboard: pd.DataFrame | None = None, breadth_label: str = ""):
     changes = []
     if df is None or len(df) < 2:
@@ -770,19 +908,20 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
     price_delta = latest.get("Pct_Change", np.nan)
     if not np.isnan(price_delta):
         arrow = "▲" if price_delta >= 0 else "▼"
-        arrow_color = "#22c55e" if price_delta >= 0 else "#ef4444"
+        arrow_color = "#27500A" if price_delta >= 0 else "#A32D2D"
         dd_val = latest.get("Dist_52w_pct", np.nan)
         dd_txt = f"52W-Hoch: {dd_val:.1f}%" if not np.isnan(dd_val) else ""
         idx_date = pd.Timestamp(df.index[-1]).strftime("%d.%m.%Y") if len(df) > 0 else "—"
         idx_stand = f"Index Stand: {idx_date}"
-        changes.append({"title": "Heute S&P 500", "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "detail2": idx_stand, "detail3": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
+        display_selected = "Nasdaq" if "Nasdaq" in selected else selected
+        changes.append({"title": display_selected, "value": f"{price_delta:+.2f}%", "detail": f"Schlusskurs {latest['Close']:,.2f}", "detail2": idx_stand, "detail3": dd_txt, "arrow": arrow, "arrow_color": arrow_color})
     dist_prev = int(prev.get("Dist_Count_25", 0))
     dist_now = int(latest.get("Dist_Count_25", 0))
     delta = dist_now - dist_prev
     delta_txt = f"{delta:+d}" if delta else "unverändert"
     dist_quality = "✓ Gut" if dist_now < 4 else ("⚠ Häufung" if dist_now < 6 else "✗ Kritisch")
-    dist_quality_color = "#22c55e" if dist_now < 4 else ("#f59e0b" if dist_now < 6 else "#ef4444")
-    changes.append({"title": "Distribution", "value": f"{dist_now} aktive Dist.-Tage", "detail": f"Gegenüber gestern: {delta_txt}", "quality": dist_quality, "quality_color": dist_quality_color})
+    dist_quality_color = "#27500A" if dist_now < 4 else ("#854F0B" if dist_now < 6 else "#A32D2D")
+    changes.append({"title": "Distribution", "value": str(dist_now), "unit": "Tage", "detail": f"Gegenüber gestern: {delta_txt}", "quality": dist_quality, "quality_color": dist_quality_color})
     prev_phase = _ampel_phase_label(prev.get("Ampel_Phase", ""))
     phase = _ampel_phase_label(latest.get("Ampel_Phase", ""))
     if str(latest.get("Ampel_Phase", "")).lower() == "gelb":
@@ -812,26 +951,37 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
 def _render_change_cards(changes):
     if not changes:
         return
-    cols = st.columns(len(changes))
-    for col, item in zip(cols, changes):
+    cols = st.columns(4)
+    for col, item in zip(cols, changes[:4]):
         with col:
-            arrow_html = ""
-            if "arrow" in item:
-                arrow_html = f'<span style="color:{item["arrow_color"]};font-size:1.5rem;line-height:1;margin-right:4px;">{item["arrow"]}</span>'
-            quality_html = ""
-            if "quality" in item:
-                quality_html = f'<div style="font-size:.7rem;font-weight:700;color:{item["quality_color"]};margin-top:2px;">{item["quality"]}</div>'
-            detail2_html = ""
-            if item.get("detail2"):
-                detail2_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail2"]}</div>'
-            detail3_html = ""
-            if item.get("detail3"):
-                detail3_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail3"]}</div>'
-            priority_cls = " kpi-priority" if item.get("title") in {"Trendwende-Ampel", "Distribution", "Volatilität"} else ""
-            st.markdown(
-                f'<div class="change-card{priority_cls}"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}{detail3_html}</div>',
-                unsafe_allow_html=True,
-            )
+            title = str(item.get("title", ""))
+            value = str(item.get("value", "—"))
+            trend_text = item.get("detail", "—")
+            trend_icon = item.get("arrow") or "→"
+            trend_color = item.get("arrow_color") or "#5F5E5A"
+            footnote = item.get("detail2") or item.get("detail3") or ""
+            unit = item.get("unit", "")
+
+            if title == "Distribution":
+                trend_color = item.get("quality_color", "#5F5E5A")
+                trend_icon = "✓" if "Gut" in str(item.get("quality", "")) else "⚠"
+                trend_text = item.get("quality") or trend_text
+                footnote = item.get("detail", "25-Tage-Fenster")
+            elif title == "Trendwende-Ampel":
+                phase_value = html.escape(value or "—")
+                value = f'<span class="dash-ampel-dot" style="background:#639922;margin-right:8px;vertical-align:middle;"></span>{phase_value}'
+                trend_color = "#27500A"
+                trend_icon = "↗"
+                footnote = item.get("detail", "Aktuelle Ampelphase")
+            elif title == "Volatilität":
+                trend_color = "#5F5E5A"
+                trend_icon = "→"
+                footnote = item.get("detail2") or "VIX-Regime"
+            elif title in {"S&P 500", "Nasdaq", "Russell 2000", "Nasdaq Composite"}:
+                footnote = item.get("detail2") or item.get("detail3") or item.get("detail", "")
+
+            render_dashboard_kpi_card(title, value, unit, trend_text, trend_color, trend_icon, footnote)
+
 
 def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, freshness: dict):
     tone_cls = {"good": "hero-good", "warn": "hero-warn", "bad": "hero-bad"}.get(tone, "hero-warn")
@@ -6789,7 +6939,7 @@ def detect_failing_rally(df):
     rec=(df["Close"].iloc[-1]-lv);return round(rec/drop*100,1),round(drop/hv*100,1)
 
 def render_ampel_section(L, history_df=None):
-    """Render the full Trendwende-Ampel section with clickable inline rule explanations."""
+    """Render the Trendwende-Ampel with the current market-cycle markers."""
     phase = L["Ampel_Phase"]
     anchor = L["Anchor_Date"]
     floor = L["Floor_Mark"]
@@ -6810,202 +6960,7 @@ def render_ampel_section(L, history_df=None):
             if len(ss_candidates):
                 ss_low = float(ss_candidates.iloc[-1])
 
-    phase_info = {
-        "rot": {
-            "active": 0, "label": "ROT — Abwarten",
-            "reason": "Substanzielle Korrektur läuft." + (
-                f" Ankertag: {anchor}. Bodenmarke: {floor:.0f}." if anchor and floor else
-                " Warte auf Ankertag (erster positiver Schluss)."
-            ),
-            "action": "Nicht kaufen. Beobachte den Markt auf Stabilisierung.",
-        },
-        "gelb": {
-            "active": 1, "label": "GELB — Startschuss",
-            "reason": f"Startschuss erkannt! Ankertag: {anchor}. Validierungslinie (Startschuss-Tief): {ss_low:.0f}." if anchor and ss_low else "Startschuss aktiv.",
-            "action": "Erste Position(en) eröffnen (10–30% Kapital). Nur mit klarem Setup.",
-        },
-        "gruen": {
-            "active": 2, "label": "GRÜN — Bestätigung",
-            "reason": f"Startschuss hält. Kurs über Startschuss-Tief ({ss_low:.0f})." if ss_low else "Startschuss bestätigt.",
-            "action": "Frühe Bestätigungsphase. Vorsichtig Exponierung aufbauen.",
-        },
-        "aufwaertstrend": {
-            "active": 2, "label": "AUFWÄRTSTREND ↑",
-            "reason": "MA-Ordnung bestätigt (21-EMA > 50-SMA > 200-SMA). Ampel-Zyklus abgeschlossen.",
-            "action": "Offensiv handeln. Gießkannenmodus: viele kleine Positionen, beste Läufer aufstocken.",
-        },
-        "neutral": {
-            "active": -1, "label": "NEUTRAL",
-            "reason": "Keine substanzielle Korrektur erkannt. Trendwende-Ampel ist nicht aktiv.",
-            "action": "Normale Marktbeobachtung. Ampel greift erst bei Drawdown > 10%.",
-        },
-    }
-    info = phase_info.get(phase, phase_info["neutral"])
-
-    colors_off = ["#3b1111", "#3b2d11", "#112b11"]
-    colors_on = ["#ef4444", "#f59e0b", "#22c55e"]
-    labels = ["ROT", "GELB", "GRÜN"]
-    glow_on = ["0 0 20px #ef444480, 0 0 40px #ef444440", "0 0 20px #f59e0b80, 0 0 40px #f59e0b40", "0 0 20px #22c55e80, 0 0 40px #22c55e40"]
-    phase_rules = {
-        "rot": "ROT wird aktiv, wenn eine substanzielle Korrektur erkannt wird. Aktuell heißt das im Code: Drawdown von mehr als 10% vom jüngsten Hoch (Buch: Korrekturschwelle) oder Schlusskurs unter der 50-SMA bei mindestens 4 Distribution Days im 25-Tage-Fenster.",
-        "gelb": "GELB wird aktiv, wenn nach einem Ankertag frühestens ab Tag 5 ein Startschuss auftritt: mindestens +1,0% zum Vortag, Volumen über Vortag und kein Unterschreiten der Bodenmarke intraday.",
-        "gruen": "GRÜN wird aktiv, wenn der Startschuss hält und nach GELB mehr als 2 weitere Handelstage vergehen, ohne dass das Startschuss-Tief per Schlusskurs gebrochen wird.",
-        "aufwaertstrend": "AUFWÄRTSTREND wird aktiv, wenn die grüne Phase mindestens 10 Tage Bestand hatte, der Index über der 200-SMA liegt und die MA-Ordnung 21-EMA > 50-SMA > 200-SMA bestätigt ist.",
-    }
-
-    light_keys = ["rot", "gelb", "gruen"]
-    lights_html = ""
-    for i, key in enumerate(light_keys):
-        is_active = i == info["active"]
-        if phase == "aufwaertstrend" and i == 2:
-            # The traffic light itself stays green. The confirmed uptrend is
-            # communicated separately below, so the green light does not turn
-            # blue and remains visually consistent with the ampelsystem.
-            bg = colors_on[i]
-            glow = glow_on[i]
-            is_active = True
-        else:
-            bg = colors_on[i] if is_active else colors_off[i]
-            glow = glow_on[i] if is_active else "none"
-        border = f"2px solid {colors_on[i]}60" if is_active else "2px solid #e3e8f0"
-        lbl_c = "#0d1626" if is_active else "#94a3b8"
-        fw = "700" if is_active else "400"
-        phase_for_light = key if not (phase == "aufwaertstrend" and key == "gruen") else "aufwaertstrend"
-        rule_text = phase_rules.get(phase_for_light, phase_rules.get(key, ""))
-        title = "GRÜN / AUFWÄRTSTREND" if phase == "aufwaertstrend" and key == "gruen" else labels[i]
-        # Keep all critical dimensions inline. On some Streamlit deployments the
-        # global CSS can be injected late or be overridden, which made the empty
-        # light <div> collapse and left only the rule description visible.
-        dot_style = (
-            "width:48px;height:48px;min-width:48px;min-height:48px;"
-            "border-radius:50%;display:block;margin:0 auto;"
-            f"background:{bg};box-shadow:{glow};border:{border};"
-            f"opacity:{1 if is_active else 0.32};"
-        )
-        light_style = "flex:1 1 0;min-width:76px;max-width:108px;text-align:center;"
-        summary_style = (
-            "list-style:none;cursor:pointer;display:flex;flex-direction:column;"
-            "align-items:center;gap:5px;outline:none;"
-        )
-        lights_html += (
-            f'<details class="ampel-light" style="{light_style}">'
-            f'<summary style="{summary_style}">'
-            f'<div class="ampel-light__dot" role="img" aria-label="{title} Ampellicht" title="{title}" style="{dot_style}"></div>'
-            f'<div style="font-size:.6rem;color:{lbl_c};font-weight:{fw};letter-spacing:.05em;">{labels[i]}</div>'
-            f'<div style="font-size:.55rem;color:#64748b;">Tippen für Regel</div>'
-            f'</summary>'
-            f'<div style="margin-top:6px;padding:8px;border:1px solid #e3e8f0;border-radius:8px;background:#f7f9fc;">'
-            f'<div style="font-size:.62rem;color:#64748b;text-transform:uppercase;letter-spacing:.06em;">{title}</div>'
-            f'<div style="font-size:.68rem;color:#0d1626;line-height:1.45;margin-top:4px;">{rule_text}</div>'
-            f'</div>'
-            f'</details>'
-        )
-
-    ss_low_valid = pd.notna(ss_low)
-    floor_valid = pd.notna(floor)
-    anchor_valid = bool(anchor)
-
-    if phase in ("gelb", "gruen") and ss_low_valid and anchor_valid:
-        bonus = L.get("Startschuss_Bonus")
-        if bonus is True:
-            bonus_html = '<span style="font-size:.65rem;color:#22c55e;margin-left:6px;">✓ Bonus: Schluss über 21-EMA</span>'
-        elif bonus is False:
-            bonus_html = '<span style="font-size:.65rem;color:#64748b;margin-left:6px;">Kein Bonus (unter 21-EMA)</span>'
-        else:
-            bonus_html = ""
-        startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
-            f'<span style="font-size:1.4rem;">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv{bonus_html}</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
-        )
-    else:
-        if phase == "rot" and anchor:
-            ss_detail = f"Ankertag: {anchor} · Warte auf Tag ≥5 mit ≥1% Gewinn + Vol. > Vortag"
-        elif phase == "aufwaertstrend" and anchor_valid:
-            anchor_txt = anchor
-            floor_txt = f"{floor:,.2f}" if floor_valid else "—"
-            ss_txt = f"{ss_low:,.2f}" if ss_low_valid else "—"
-            ss_detail = f"Letzter Zyklus · Ankertag: {anchor_txt} · Bodenmarke: {floor_txt} · Startschuss-Tief: {ss_txt}"
-        elif phase == "rot":
-            ss_detail = "Warte auf Ankertag, dann frühestens am 5. Tag möglich"
-        else:
-            ss_detail = "Kein aktiver Ampel-Zyklus"
-        startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f0f2f740;border:1px solid #e3e8f0;border-radius:8px;opacity:0.6;">'
-            f'<span style="font-size:1.4rem;filter:grayscale(1);">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#94a3b8;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#94a3b8;">{ss_detail}</div></div></div>'
-        )
-
-    active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#22c55e","neutral":"#64748b"}.get(phase,"#64748b")
-    uptrend_confirmed = phase == "aufwaertstrend"
-    confirmation_color = "#3b82f6" if uptrend_confirmed else "#94a3b8"
-    confirmation_bg = "#eff6ff" if uptrend_confirmed else "#f8fafc"
-    confirmation_border = "#93c5fd" if uptrend_confirmed else "#e3e8f0"
-    confirmation_icon = "✓" if uptrend_confirmed else "—"
-    confirmation_state = "Aktiv" if uptrend_confirmed else "Noch nicht aktiv"
-    confirmation_detail = (
-        "MA-Ordnung bestätigt: 21-EMA > 50-SMA > 200-SMA."
-        if uptrend_confirmed else
-        "Separate Bestätigung erscheint, sobald die Aufwärtstrend-Regel erfüllt ist."
-    )
-    confirmation_html = (
-        f'<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 12px;'
-        f'background:{confirmation_bg};border:1px solid {confirmation_border};border-radius:8px;">'
-        f'<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;'
-        f'border-radius:999px;background:{confirmation_color}18;color:{confirmation_color};font-weight:900;">{confirmation_icon}</span>'
-        f'<div style="min-width:0;">'
-        f'<div style="font-size:.78rem;font-weight:800;color:{confirmation_color};letter-spacing:.03em;">Aufwärtstrend-Bestätigung: {confirmation_state}</div>'
-        f'<div style="font-size:.68rem;color:#64748b;line-height:1.35;margin-top:2px;">{confirmation_detail}</div>'
-        f'</div></div>'
-    )
-    html = (
-        '<div class="info-card" style="padding:20px;">'
-        '<div class="card-label">TRENDWENDE-AMPEL</div>'
-        '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:12px;border-radius:12px;border:1px solid #e3e8f0;flex:1 1 180px;">'
-        f'<div class="ampel-lights" style="display:flex;gap:12px;align-items:flex-start;justify-content:center;width:100%;flex-wrap:nowrap;">{lights_html}</div>'
-        '</div>'
-        '<div style="flex:1;min-width:220px;">'
-        f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
-        f'<div style="font-size:.8rem;color:#0d1626;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
-        f'<div style="font-size:.75rem;color:#5e6e89;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
-        f'{startschuss_html}'
-        f'{confirmation_html}'
-        '</div></div></div>'
-    )
-    st.markdown(html, unsafe_allow_html=True)
-
-    _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
-    eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
-    _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
-    _close = float(L["Close"]) if not np.isnan(L["Close"]) else None
-    floor_pct = (_close - float(floor)) / float(floor) * 100 if floor_valid and _close and float(floor) > 0 else None
-    ss_low_pct = (_close - float(ss_low)) / float(ss_low) * 100 if ss_low_valid and _close and float(ss_low) > 0 else None
-    floor_pct_color = "#22c55e" if floor_pct is not None and floor_pct >= 0 else "#ef4444"
-    ss_low_pct_color = "#22c55e" if ss_low_pct is not None and ss_low_pct >= 0 else "#ef4444"
-    floor_val = f"{floor:,.2f}" + (f' <span style="font-size:.7rem;color:{floor_pct_color};">({floor_pct:+.1f}%)</span>' if floor_pct is not None else "") if floor_valid else "—"
-    ss_low_val = f"{ss_low:,.2f}" + (f' <span style="font-size:.7rem;color:{ss_low_pct_color};">({ss_low_pct:+.1f}%)</span>' if ss_low_pct is not None else "") if ss_low_valid else "—"
-    details = {
-        "Ankertag": (anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase == "neutral" else "Warte auf Ankertag", None),
-        "Bodenmarke": (floor_val, None),
-        "Startschuss-Tief": (ss_low_val, None),
-        "MA-Ordnung (21>50>200)": ("Korrekt ✓" if _mao else "Gestört ✗", "#22c55e" if _mao else "#ef4444"),
-    }
-    cols = st.columns(4)
-    for i, (k, (v, vc)) in enumerate(details.items()):
-        with cols[i]:
-            val_color = vc if vc else "#0d1626"
-            st.markdown(f'<div style="background:#f7f9fc;border:1px solid #e3e8f0;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:{val_color};font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
-
-    missing_reasons = []
-    if not anchor_valid:
-        missing_reasons.append("Kein aktiver Ankertag")
-    if not floor_valid:
-        missing_reasons.append("Bodenmarke noch nicht gesetzt")
-    if not ss_low_valid:
-        missing_reasons.append("Startschuss-Tief noch nicht gesetzt")
-    if missing_reasons:
-        st.caption("Diagnose: " + " · ".join(missing_reasons))
+    render_ampel(phase, anchor, floor, ss_low)
 
 def render_check(label,ok,detail="",warn=False):
     critical_fail = (not ok) and str(label).startswith("Warnzeichen")
@@ -10117,6 +10072,57 @@ def _tab_sektoranalyse():
 
 
 
+
+def _render_market_dashboard_header(available):
+    """Render dashboard header and return selected data key plus chart window."""
+    label_to_key = {
+        "S&P 500": "S&P 500",
+        "Nasdaq": "Nasdaq Composite",
+        "Russell 2000": "Russell 2000",
+    }
+    display_options = [label for label, key in label_to_key.items() if key in available]
+    if not display_options:
+        display_options = list(available)
+        label_to_key = {key: key for key in available}
+
+    left, right = st.columns([1.4, 1], vertical_alignment="center")
+    with left:
+        st.markdown(
+            '<div class="eyebrow">Regelbasiertes Markt-Dashboard</div>'
+            '<div class="h-title">Börse ohne Bauchgefühl</div>',
+            unsafe_allow_html=True,
+        )
+    with right:
+        control_cols = st.columns([1.35, 1])
+        with control_cols[0]:
+            try:
+                selected_label = st.segmented_control(
+                    "Index",
+                    display_options,
+                    default=display_options[0],
+                    label_visibility="collapsed",
+                    key="market_index_segmented",
+                )
+            except AttributeError:
+                selected_label = st.radio(
+                    "Index",
+                    display_options,
+                    horizontal=True,
+                    label_visibility="collapsed",
+                    key="market_index_radio",
+                )
+        with control_cols[1]:
+            period_options = {"30 Tage": 30, "90 Tage": 90, "180 Tage": 180, "1 Jahr": 252}
+            period_label = st.selectbox(
+                "Zeitraum",
+                list(period_options.keys()),
+                index=1,
+                label_visibility="collapsed",
+                key="market_period_select",
+            )
+    st.markdown('<div class="dashboard-header-line"></div>', unsafe_allow_html=True)
+    return label_to_key.get(selected_label, selected_label), period_options[period_label]
+
 def _tab_marktanalyse(compact: bool = False):
     """Marktanalyse mit optional kompakter Dashboard-Ansicht."""
     _init_workspace_state()
@@ -10144,11 +10150,7 @@ def _tab_marktanalyse(compact: bool = False):
         st.error("Keine Index-Daten.")
         return
 
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        selected = st.radio("Index", available, horizontal=True, label_visibility="collapsed")
-    with c2:
-        sd = st.selectbox("Zeitraum", [60, 90, 130, 200], index=1, format_func=lambda x: f"{x} Tage")
+    selected, sd = _render_market_dashboard_header(available)
 
     df = add_indicators(data[selected].copy())
     df = detect_distribution_days(df)
@@ -10212,7 +10214,7 @@ def _tab_marktanalyse(compact: bool = False):
     reasons = _build_market_reasons(L, wc, breadth_label, vol_latest)
     freshness = _format_data_freshness(selected, df, vol_dashboard)
     changes = _build_market_changes(df, selected, wc, vol_dashboard, breadth_label)
-    _render_hero_card(mode, tone, reasons, action, freshness)
+    render_haltung_banner(mode, wc, L.get("Dist_50SMA_pct", np.nan), breadth_label)
     _render_change_cards(changes)
 
     # Trendwende-Ampel wieder als zentrales Element sichtbar machen
@@ -10752,8 +10754,6 @@ def main():
     configure_page()
     inject_css()
     _render_workspace_sidebar()
-    _render_topbar()
-
     pages = [
         st.Page(_tab_dashboard, title="Marktampel", icon="🚦", url_path="marktampel", default=True),
         st.Page(_tab_marktanalyse, title="Marktanalyse", icon="📈", url_path="analyse"),

@@ -42,18 +42,21 @@ APP_CSS = """<style>
   --shadow-soft: 0 4px 18px rgba(15,25,50,.10), 0 2px 6px rgba(15,25,50,.06);
 }
 
-html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; font-size: 14px; }
+html, body, [class*="css"] { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+#MainMenu, footer { visibility: hidden; }
+[data-testid="stHeader"] { background: transparent; }
 
 /* ── App shell ── */
 .stApp {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
 }
+.block-container,
 .main .block-container {
-  max-width: 1280px;
-  padding-top: 1.2rem;
-  padding-bottom: 2.4rem;
+  max-width: 1120px;
+  padding-top: 1.5rem;
+  padding-bottom: 3rem;
 }
 
 /* ── Top bar ── */
@@ -125,11 +128,11 @@ html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; font-s
 }
 
 /* ── Typography ── */
-h1, h2, h3 { font-family: 'Inter', system-ui, sans-serif !important; letter-spacing: -0.02em; color: var(--text); }
+h1, h2, h3 { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif !important; letter-spacing: -0.02em; color: var(--text); }
 h1 { font-size: 1.85rem !important; font-weight: 800 !important; line-height: 1.14; }
 h2 { font-size: 1.26rem !important; font-weight: 700 !important; }
 h3 { font-size: 1.04rem !important; font-weight: 700 !important; }
-p, li, label, .stMarkdown, .stCaption { font-family: 'Inter', system-ui, sans-serif !important; color: var(--text); }
+p, li, label, .stMarkdown, .stCaption { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif !important; color: var(--text); }
 code, pre { font-family: 'JetBrains Mono', monospace !important; }
 
 hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
@@ -216,7 +219,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 /* ── Streamlit Metrics ── */
 .card-label,
 [data-testid="stMetricLabel"],
-[data-testid="stMetricValue"] { font-family: 'Inter', system-ui, sans-serif !important; }
+[data-testid="stMetricValue"] { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif !important; }
 
 [data-testid="stMetric"] {
   background: var(--panel);
@@ -539,4 +542,184 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   [data-testid="stDataFrame"] { overflow-x: auto; }
   [data-testid="stPlotlyChart"] > div { min-height: 260px; }
 }
+
+/* ── Product dashboard refinements ── */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5F5E5A;
+  margin: 0;
+}
+.h-title {
+  font-size: 20px;
+  font-weight: 500;
+  color: #1a1a1a;
+  line-height: 1.2;
+  margin: 2px 0 0 0;
+}
+.dashboard-header-line {
+  border-bottom: 0.5px solid rgba(0,0,0,0.12);
+  margin: 0.35rem 0 1rem 0;
+}
+.haltung-banner {
+  display: flex;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+.haltung-banner__icon {
+  font-size: 22px;
+  line-height: 1;
+  margin-top: 2px;
+}
+.haltung-banner__title {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.25;
+  margin-top: 2px;
+}
+.haltung-banner__body {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 5px;
+}
+.dash-kpi-card {
+  background: #F5F4EF;
+  border-radius: 8px;
+  padding: 14px 16px;
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.dash-kpi-card__value {
+  font-size: 22px;
+  font-weight: 500;
+  color: #1a1a1a;
+  line-height: 1.2;
+  margin-top: 7px;
+}
+.dash-kpi-card__unit {
+  font-size: 13px;
+  color: #5F5E5A;
+  margin-left: 4px;
+  font-weight: 500;
+}
+.dash-kpi-card__trend {
+  font-size: 13px;
+  line-height: 1.25;
+  margin-top: 8px;
+}
+.dash-kpi-card__footnote {
+  font-size: 11px;
+  color: #5F5E5A;
+  line-height: 1.35;
+  margin-top: 7px;
+}
+.ampel-card {
+  background: #ffffff;
+  border: 0.5px solid rgba(0,0,0,0.12);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+.ampel-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ampel-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #EAF3DE;
+  color: #27500A;
+  white-space: nowrap;
+}
+.ampel-stepper {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin-bottom: 14px;
+}
+.ampel-phase {
+  background: #F1EFE8;
+  border-left: 3px solid #D3D1C7;
+  padding: 12px 14px;
+  opacity: 0.55;
+  min-height: 92px;
+}
+.ampel-phase + .ampel-phase { margin-left: 8px; }
+.ampel-phase.is-active {
+  background: #EAF3DE;
+  border-left-color: #639922;
+  opacity: 1;
+}
+.ampel-phase__top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+}
+.dash-ampel-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.ampel-phase__desc {
+  font-size: 13px;
+  color: #1a1a1a;
+  line-height: 1.4;
+}
+.ampel-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ampel-detail {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: #F5F4EF;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.ampel-detail__icon {
+  color: #3B6D11;
+  font-size: 16px;
+  line-height: 1.2;
+}
+.ampel-detail__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1a1a1a;
+  line-height: 1.35;
+}
+.ampel-detail__body {
+  font-size: 12px;
+  color: #5F5E5A;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+.ampel-detail__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+@media (max-width: 900px) {
+  .ampel-stepper, .ampel-details { grid-template-columns: 1fr; }
+  .ampel-phase + .ampel-phase { margin-left: 0; margin-top: 8px; }
+}
+
 </style>"""
