@@ -6959,13 +6959,13 @@ def render_ampel_section(L, history_df=None):
         f'</div></div>'
     )
     html = (
-        '<div class="info-card" style="padding:20px;">'
+        '<div class="info-card ampel-card" style="padding:20px;">'
         '<div class="card-label">TRENDWENDE-AMPEL</div>'
-        '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:12px;border-radius:12px;border:1px solid #e3e8f0;flex:1 1 180px;">'
+        '<div class="ampel-layout" style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
+        '<div class="ampel-visual" style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:12px;border-radius:12px;border:1px solid #e3e8f0;flex:0 1 520px;">'
         f'<div class="ampel-lights" style="display:flex;gap:12px;align-items:flex-start;justify-content:center;width:100%;flex-wrap:nowrap;">{lights_html}</div>'
         '</div>'
-        '<div style="flex:1;min-width:220px;">'
+        '<div class="ampel-copy" style="flex:1 1 320px;min-width:220px;">'
         f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
         f'<div style="font-size:.8rem;color:#0d1626;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
         f'<div style="font-size:.75rem;color:#5e6e89;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
@@ -7028,7 +7028,7 @@ def render_breadth(mode,dist_pct):
     c={"rueckenwind":"#22c55e","wachsam":"#f59e0b","schutz":"#ef4444"}.get(mode,"#64748b")
     lbl,desc={"rueckenwind":("Rückenwind","≤4%. Breite Stärke."),"wachsam":("Wachsam","4–8%. Strenger auswählen."),"schutz":("Schutz",">8%. Kapitalschutz.")}.get(mode,("—",""))
     fp=min(100,abs(dist_pct)/12*100)
-    st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div style="display:flex;justify-content:space-between;font-size:.65rem;color:#64748b;"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div class="breadth-card__header"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div class="breadth-scale"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
 
 
 def _render_deep_analysis_content(component_bundle, sd, data):
@@ -10736,7 +10736,10 @@ def _render_topbar() -> None:
     st.markdown(
         """
         <div class="app-topbar">
-          <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
+          <div class="app-topbar__brand">
+            <p class="app-topbar__eyebrow">Markt-Dashboard</p>
+            <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
