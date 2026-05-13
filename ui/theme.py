@@ -587,7 +587,7 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   line-height: 1.5;
   margin-top: 5px;
 }
-.kpi-card {
+.dash-kpi-card {
   background: #F5F4EF;
   border-radius: 8px;
   padding: 14px 16px;
@@ -596,25 +596,25 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   flex-direction: column;
   justify-content: space-between;
 }
-.kpi-card__value {
+.dash-kpi-card__value {
   font-size: 22px;
   font-weight: 500;
   color: #1a1a1a;
   line-height: 1.2;
   margin-top: 7px;
 }
-.kpi-card__unit {
+.dash-kpi-card__unit {
   font-size: 13px;
   color: #5F5E5A;
   margin-left: 4px;
   font-weight: 500;
 }
-.kpi-card__trend {
+.dash-kpi-card__trend {
   font-size: 13px;
   line-height: 1.25;
   margin-top: 8px;
 }
-.kpi-card__footnote {
+.dash-kpi-card__footnote {
   font-size: 11px;
   color: #5F5E5A;
   line-height: 1.35;
@@ -672,7 +672,7 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   gap: 7px;
   margin-bottom: 7px;
 }
-.ampel-dot {
+.dash-ampel-dot {
   width: 9px;
   height: 9px;
   border-radius: 999px;

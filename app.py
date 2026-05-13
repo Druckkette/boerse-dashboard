@@ -815,21 +815,21 @@ def render_haltung_banner(haltung, warnzeichen, abstand_50sma, equal_weight):
     )
 
 
-def render_kpi_card(label, value, unit, trend_text, trend_color, trend_icon, footnote):
+def render_dashboard_kpi_card(label, value, unit, trend_text, trend_color, trend_icon, footnote):
     """Render a fixed-height KPI card with custom HTML instead of st.metric."""
     value_html = str(value) if str(value).lstrip().startswith("<") else html.escape(str(value))
-    unit_html = f'<span class="kpi-card__unit">{html.escape(str(unit))}</span>' if unit else ""
+    unit_html = f'<span class="dash-kpi-card__unit">{html.escape(str(unit))}</span>' if unit else ""
     trend = html.escape(str(trend_text or "—"))
     icon = html.escape(str(trend_icon or ""))
     st.markdown(
         f"""
-        <div class="kpi-card">
+        <div class="dash-kpi-card">
           <div>
             <div class="eyebrow">{html.escape(str(label))}</div>
-            <div class="kpi-card__value">{value_html}{unit_html}</div>
-            <div class="kpi-card__trend" style="color:{trend_color};">{icon} {trend}</div>
+            <div class="dash-kpi-card__value">{value_html}{unit_html}</div>
+            <div class="dash-kpi-card__trend" style="color:{trend_color};">{icon} {trend}</div>
           </div>
-          <div class="kpi-card__footnote">{html.escape(str(footnote or ""))}</div>
+          <div class="dash-kpi-card__footnote">{html.escape(str(footnote or ""))}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -862,7 +862,7 @@ def render_ampel(active_phase, ankertag, bodenmarke, startschuss_tief):
         active_cls = " is-active" if i == active_idx else ""
         phase_html += (
             f'<div class="ampel-phase{active_cls}">'
-            f'<div class="ampel-phase__top"><span class="ampel-dot" style="background:{dot_colors[i]};"></span>'
+            f'<div class="ampel-phase__top"><span class="dash-ampel-dot" style="background:{dot_colors[i]};"></span>'
             f'<span class="eyebrow">{html.escape(name)}</span></div>'
             f'<div class="ampel-phase__desc"><strong>{html.escape(label)}</strong><br>{html.escape(desc)}</div>'
             f'</div>'
@@ -969,7 +969,7 @@ def _render_change_cards(changes):
                 footnote = item.get("detail", "25-Tage-Fenster")
             elif title == "Trendwende-Ampel":
                 phase_value = html.escape(value or "—")
-                value = f'<span class="ampel-dot" style="background:#639922;margin-right:8px;vertical-align:middle;"></span>{phase_value}'
+                value = f'<span class="dash-ampel-dot" style="background:#639922;margin-right:8px;vertical-align:middle;"></span>{phase_value}'
                 trend_color = "#27500A"
                 trend_icon = "↗"
                 footnote = item.get("detail", "Aktuelle Ampelphase")
@@ -980,7 +980,7 @@ def _render_change_cards(changes):
             elif title in {"S&P 500", "Nasdaq", "Russell 2000", "Nasdaq Composite"}:
                 footnote = item.get("detail2") or item.get("detail3") or item.get("detail", "")
 
-            render_kpi_card(title, value, unit, trend_text, trend_color, trend_icon, footnote)
+            render_dashboard_kpi_card(title, value, unit, trend_text, trend_color, trend_icon, footnote)
 
 
 def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, freshness: dict):
