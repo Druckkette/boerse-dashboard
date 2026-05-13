@@ -7028,7 +7028,7 @@ def render_breadth(mode,dist_pct):
     c={"rueckenwind":"#22c55e","wachsam":"#f59e0b","schutz":"#ef4444"}.get(mode,"#64748b")
     lbl,desc={"rueckenwind":("Rückenwind","≤4%. Breite Stärke."),"wachsam":("Wachsam","4–8%. Strenger auswählen."),"schutz":("Schutz",">8%. Kapitalschutz.")}.get(mode,("—",""))
     fp=min(100,abs(dist_pct)/12*100)
-    st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div style="display:flex;justify-content:space-between;font-size:.65rem;color:#64748b;"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="info-card" style="background:{c}12;border-color:{c}30;"><div class="breadth-card__header"><div style="width:12px;height:12px;border-radius:50%;background:{c};"></div><span style="font-weight:700;color:{c};">Modus: {lbl}</span><span style="font-size:.75rem;color:#94a3b8;">{dist_pct:.1f}% vom 52W-Hoch</span></div><div style="font-size:.75rem;color:#94a3b8;margin-bottom:8px;">{desc}</div><div class="breadth-track"><div class="breadth-fill" style="width:{fp}%;"></div></div><div class="breadth-scale"><span style="color:#22c55e;">Rückenwind</span><span style="color:#f59e0b;">Wachsam</span><span style="color:#ef4444;">Schutz</span></div></div>',unsafe_allow_html=True)
 
 
 def _render_deep_analysis_content(component_bundle, sd, data):
@@ -10736,7 +10736,12 @@ def _render_topbar() -> None:
     st.markdown(
         """
         <div class="app-topbar">
-          <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
+          <div class="app-topbar__brand">
+            <p class="app-topbar__eyebrow">Regelbasiertes Markt-Dashboard</p>
+            <h1 class="app-topbar__title">Börse ohne Bauchgefühl</h1>
+            <div class="app-topbar__subtitle">Kompakte Desktop-Ansicht für Ampel, Breite und Depot-Risiko</div>
+          </div>
+          <div class="app-topbar__meta"><span class="app-topbar__meta-dot"></span>Desktop optimiert</div>
         </div>
         """,
         unsafe_allow_html=True,
