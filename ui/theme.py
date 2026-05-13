@@ -59,13 +59,20 @@ html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; font-s
 /* ── Top bar ── */
 .app-topbar {
   margin: 0 0 .7rem 0;
-  padding: 10px 14px;
+  padding: 12px 16px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.app-topbar__brand {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 .app-topbar__eyebrow {
   margin: 0;
@@ -85,6 +92,36 @@ html, body, [class*="css"] { font-family: 'Inter', system-ui, sans-serif; font-s
   text-overflow: ellipsis;
   font-weight: 800 !important;
   color: var(--text) !important;
+}
+.app-topbar__subtitle {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: .78rem;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app-topbar__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: .75rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.app-topbar__meta-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .12);
 }
 
 /* ── Typography ── */
@@ -302,8 +339,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 .check-warn { background: var(--warn-bg); border: 1.5px solid var(--warn-border); color: var(--warn); }
 
 /* ── Breadth track ── */
-.breadth-track { height: 8px; border-radius: 4px; background: var(--border); position: relative; overflow: hidden; margin: 8px 0; }
+.breadth-track { height: 8px; border-radius: 4px; background: var(--border); position: relative; overflow: hidden; margin: 8px 0; width: 100%; }
 .breadth-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: linear-gradient(90deg, var(--good), var(--warn), var(--bad)); transition: width .5s; }
+.breadth-scale { display:flex; justify-content:space-between; gap:10px; font-size:.65rem; color:#64748b; width:100%; }
+.breadth-card__header { display:flex; align-items:center; gap:10px; margin-bottom:8px; flex-wrap:wrap; }
 
 /* ── Score card ── */
 .score-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; }
@@ -429,6 +468,42 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   border-right: 1px solid var(--border);
 }
 
+
+@media (min-width: 981px) {
+  .main .block-container {
+    max-width: 1160px;
+    padding-left: 2.25rem;
+    padding-right: 2.25rem;
+  }
+  .summary-hero {
+    padding: 22px 26px;
+  }
+  .change-card,
+  [data-testid="stMetric"],
+  .info-card,
+  .kpi-card,
+  .portfolio-health-card {
+    max-width: 100%;
+  }
+  .mobile-ma-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .breadth-track,
+  .breadth-scale {
+    max-width: 380px;
+  }
+  .breadth-card__header {
+    max-width: 520px;
+  }
+  .app-topbar {
+    display: inline-flex;
+    width: auto;
+    min-width: min(560px, 100%);
+    max-width: 760px;
+  }
+}
+
 /* ── Responsive ── */
 @media (max-width: 980px) {
   .main .block-container { padding-top: 1rem; }
@@ -441,8 +516,10 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
 
 @media (max-width: 640px) {
   .main .block-container { padding-top: .85rem; padding-bottom: 1.4rem; }
-  .app-topbar { padding: 8px 10px; }
+  .app-topbar { padding: 8px 10px; align-items:flex-start; }
   .app-topbar__title { font-size: 1.05rem !important; }
+  .app-topbar__subtitle { font-size: .72rem; white-space: normal; }
+  .app-topbar__meta { display: none; }
   .stTabs [data-baseweb="tab-list"] { gap: 5px; }
   .stTabs [data-baseweb="tab"] { flex: 1 1 calc(50% - 6px); justify-content: center; text-align: center; padding: 8px 10px; }
   [data-testid="stNavigation"] [data-baseweb="tab"] { flex: 1 1 calc(33% - 5px); justify-content: center; text-align: center; padding: 6px 6px; font-size: .77rem; }
