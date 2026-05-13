@@ -868,6 +868,268 @@ def _dist_tile_html(label: str, value: str, indicator: str, tone: str) -> str:
     )
 
 
+# ── Marktampel Cockpit & Friends ─────────────────────────────────────────
+
+_PHASE_PALETTE = {
+    "rot":            {"color": "#ef4444", "rgb": "239,68,68",   "active": 0, "label": "ROT — Abwarten"},
+    "gelb":           {"color": "#f59e0b", "rgb": "245,158,11",  "active": 1, "label": "GELB — Startschuss"},
+    "gruen":          {"color": "#22c55e", "rgb": "34,197,94",   "active": 2, "label": "GRÜN — Bestätigung"},
+    "aufwaertstrend": {"color": "#22c55e", "rgb": "34,197,94",   "active": 2, "label": "AUFWÄRTSTREND ↑"},
+    "neutral":        {"color": "#94a3b8", "rgb": "148,163,184", "active": -1,"label": "NEUTRAL"},
+}
+
+
+def _resolve_cycle_markers(L, history_df=None):
+    """Return (anchor, floor, ss_low) using history_df fallback when latest bar is blank."""
+    anchor = L.get("Anchor_Date")
+    floor = L.get("Floor_Mark")
+    ss_low = L.get("Startschuss_Low")
+    if history_df is not None and isinstance(history_df, pd.DataFrame):
+        if not anchor and "Anchor_Date" in history_df:
+            anchor_candidates = history_df["Anchor_Date"].dropna()
+            if len(anchor_candidates):
+                anchor = anchor_candidates.iloc[-1]
+        if pd.isna(floor) and "Floor_Mark" in history_df:
+            floor_candidates = pd.to_numeric(history_df["Floor_Mark"], errors="coerce").dropna()
+            if len(floor_candidates):
+                floor = float(floor_candidates.iloc[-1])
+        if pd.isna(ss_low) and "Startschuss_Low" in history_df:
+            ss_candidates = pd.to_numeric(history_df["Startschuss_Low"], errors="coerce").dropna()
+            if len(ss_candidates):
+                ss_low = float(ss_candidates.iloc[-1])
+    return anchor, floor, ss_low
+
+
+def _render_market_cockpit(L, history_df, mode, tone, reasons, action, freshness):
+    """Combined hero + Trendwende-Ampel cockpit card."""
+    phase_key = str(L.get("Ampel_Phase", "") or "neutral").lower()
+    palette = _PHASE_PALETTE.get(phase_key, _PHASE_PALETTE["neutral"])
+    phase_color = palette["color"]
+    phase_rgb = palette["rgb"]
+    phase_label = palette["label"]
+    active_idx = palette["active"]
+
+    anchor, floor, ss_low = _resolve_cycle_markers(L, history_df)
+
+    # Vertical traffic light
+    light_classes = ["red", "yellow", "green"]
+    lights_html = ""
+    for i, cls in enumerate(light_classes):
+        is_on = (i == active_idx) or (phase_key == "aufwaertstrend" and i == 2)
+        active_cls = " is-active" if is_on else ""
+        lights_html += f'<div class="cockpit__light cockpit__light--{cls}{active_cls}"></div>'
+
+    # Filter the reasons: drop the line that just repeats the phase (we already show it as chip + verdict)
+    filtered_reasons = []
+    for r in reasons or []:
+        rs = str(r)
+        if rs.lower().startswith("trendwende-ampel"):
+            continue
+        filtered_reasons.append(rs)
+    if not filtered_reasons:
+        filtered_reasons = list(reasons or [])
+    reason_items = "".join(f"<li>{html.escape(r)}</li>" for r in filtered_reasons[:4])
+
+    # Cycle stats
+    _close = float(L["Close"]) if not np.isnan(L.get("Close", np.nan)) else None
+    floor_valid = pd.notna(floor)
+    ss_low_valid = pd.notna(ss_low)
+    anchor_valid = bool(anchor)
+
+    def _delta_html(value, ref):
+        if value is None or ref is None or not ref:
+            return ""
+        pct = (value - float(ref)) / float(ref) * 100
+        cls = "up" if pct >= 0 else "down"
+        return f' <em class="{cls}">{pct:+.1f}%</em>'
+
+    anchor_val = anchor if anchor_valid else ("—" if phase_key == "neutral" else "Warte")
+    floor_val = (
+        f"{float(floor):,.2f}{_delta_html(_close, floor)}"
+        if floor_valid else "—"
+    )
+    ss_val = (
+        f"{float(ss_low):,.2f}{_delta_html(_close, ss_low)}"
+        if ss_low_valid else "—"
+    )
+
+    cycle_html = (
+        '<div class="cockpit__cycle">'
+        f'<div class="cockpit__cycle-stat"><span class="lbl">Ankertag</span><span class="val">{html.escape(str(anchor_val))}</span></div>'
+        f'<div class="cockpit__cycle-stat"><span class="lbl">Bodenmarke</span><span class="val">{floor_val}</span></div>'
+        f'<div class="cockpit__cycle-stat"><span class="lbl">Startschuss-Tief</span><span class="val">{ss_val}</span></div>'
+        '</div>'
+    )
+
+    # Eyebrow line
+    idx_name = freshness.get("index_name", "Index") if isinstance(freshness, dict) else "Index"
+    idx_date = freshness.get("index_date", "") if isinstance(freshness, dict) else ""
+    eyebrow = f"Marktampel · {html.escape(idx_name)}"
+    freshness_chip = (
+        f'<span class="cockpit__freshness">Stand {html.escape(idx_date)}</span>'
+        if idx_date else ""
+    )
+
+    cockpit_html = (
+        f'<section class="cockpit" style="--phase-color:{phase_color};--phase-rgb:{phase_rgb};">'
+        # Pole
+        '<div class="cockpit__pole">'
+        '<div class="cockpit__pole-eyebrow">Trendwende-Ampel</div>'
+        f'<div class="cockpit__lights">{lights_html}</div>'
+        f'<div class="cockpit__phase-chip">{html.escape(phase_label)}</div>'
+        '</div>'
+        # Body
+        '<div class="cockpit__body">'
+        '<div class="cockpit__topline">'
+        f'<div class="cockpit__eyebrow">{eyebrow}</div>'
+        f'{freshness_chip}'
+        '</div>'
+        f'<div class="cockpit__verdict">{html.escape(mode or "—")}'
+        f'<span class="cockpit__verdict-tag">{html.escape(phase_label)}</span></div>'
+        f'<ul class="cockpit__reasons">{reason_items}</ul>'
+        '<div class="cockpit__action">'
+        '<span class="cockpit__action-arrow">→</span>'
+        '<div class="cockpit__action-body">'
+        '<span class="cockpit__action-label">Konsequenz</span>'
+        f'<span class="cockpit__action-text">{html.escape(action or "—")}</span>'
+        '</div>'
+        '</div>'
+        f'{cycle_html}'
+        '</div>'
+        '</section>'
+    )
+    st.markdown(cockpit_html, unsafe_allow_html=True)
+
+    # Inline rule disclosures (kept as a tight expander row, no extra boxes)
+    phase_rules = {
+        "rot": "ROT wird aktiv bei substanzieller Korrektur: Drawdown > 10% vom jüngsten Hoch oder Schluss unter 50-SMA bei ≥4 Distribution Days im 25-Tage-Fenster.",
+        "gelb": "GELB wird aktiv, wenn nach einem Ankertag frühestens ab Tag 5 ein Startschuss auftritt: ≥+1,0% zum Vortag, Volumen > Vortag und kein Unterschreiten der Bodenmarke intraday.",
+        "gruen": "GRÜN wird aktiv, wenn der Startschuss hält und nach GELB > 2 Handelstage vergehen, ohne dass das Startschuss-Tief per Schluss gebrochen wird.",
+        "aufwaertstrend": "AUFWÄRTSTREND wird aktiv, wenn die grüne Phase ≥10 Tage hielt, der Index über der 200-SMA liegt und 21-EMA > 50-SMA > 200-SMA gilt.",
+        "neutral": "NEUTRAL: Keine substanzielle Korrektur; die Ampel greift erst ab > 10% Drawdown.",
+    }
+    rule_text = phase_rules.get(phase_key, "")
+    missing = []
+    if not anchor_valid: missing.append("Kein aktiver Ankertag")
+    if not floor_valid:  missing.append("Bodenmarke noch nicht gesetzt")
+    if not ss_low_valid: missing.append("Startschuss-Tief noch nicht gesetzt")
+    diag = " · ".join(missing)
+    with st.expander("Wie wird diese Ampelphase ausgelöst?", expanded=False):
+        st.markdown(rule_text)
+        if diag:
+            st.caption(f"Diagnose: {diag}")
+
+
+def _render_signal_strip(changes):
+    """Modular KPI tile strip — replacement for _render_change_cards on Marktampel."""
+    if not changes:
+        return
+    tone_to_color = {
+        "good": ("#16a34a", "22,163,74"),
+        "warn": ("#ca8a04", "202,138,4"),
+        "bad":  ("#dc2626", "220,38,38"),
+    }
+    items_html = ""
+    for item in changes[:4]:
+        # Derive a tone from quality/arrow if available
+        signal_color = "#2563eb"; signal_rgb = "37,99,235"
+        if "quality_color" in item:
+            signal_color = item["quality_color"]
+            qc = signal_color.lstrip("#")
+            try:
+                signal_rgb = ",".join(str(int(qc[i:i+2], 16)) for i in (0, 2, 4))
+            except Exception:
+                signal_rgb = "37,99,235"
+        elif "arrow_color" in item:
+            signal_color = item["arrow_color"]
+            qc = signal_color.lstrip("#")
+            try:
+                signal_rgb = ",".join(str(int(qc[i:i+2], 16)) for i in (0, 2, 4))
+            except Exception:
+                signal_rgb = "37,99,235"
+
+        arrow_html = ""
+        if "arrow" in item:
+            arrow_html = f'<span class="signal-tile__arrow" style="color:{item.get("arrow_color", signal_color)};">{html.escape(str(item["arrow"]))}</span>'
+
+        quality_html = ""
+        if "quality" in item:
+            quality_html = (
+                f'<div class="signal-tile__quality" style="color:{item.get("quality_color", signal_color)};">'
+                f'{html.escape(str(item["quality"]))}</div>'
+            )
+
+        sub_html = ""
+        if item.get("detail2"):
+            sub_html += f'<div class="signal-tile__sub">{html.escape(str(item["detail2"]))}</div>'
+        if item.get("detail3"):
+            sub_html += f'<div class="signal-tile__sub">{html.escape(str(item["detail3"]))}</div>'
+
+        items_html += (
+            f'<div class="signal-tile" style="--signal-color:{signal_color};--signal-rgb:{signal_rgb};">'
+            f'<div class="signal-tile__label">{html.escape(str(item.get("title", "")))}</div>'
+            f'<div class="signal-tile__value">{arrow_html}{html.escape(str(item.get("value", "")))}</div>'
+            f'{quality_html}'
+            f'<div class="signal-tile__detail">{html.escape(str(item.get("detail", "")))}</div>'
+            f'{sub_html}'
+            '</div>'
+        )
+    st.markdown(f'<div class="signal-strip">{items_html}</div>', unsafe_allow_html=True)
+
+
+def _render_ma_ribbon(items, ma_order_ok=None):
+    """Render the price-vs-MA distance bars as a compact ribbon.
+
+    items: list of dicts with keys: name, value_text, pct, tone (good|warn|bad|neutral), status_text
+    ma_order_ok: bool or None — shows the 21>50>200 order chip in the header.
+    """
+    if not items:
+        return
+
+    bars_html = ""
+    for it in items:
+        tone = (it.get("tone") or "neutral").lower()
+        pct = it.get("pct")
+        # Map pct to 0..100 with 50 = neutral; clamp to [-10%, +10%]
+        if pct is None or (isinstance(pct, float) and np.isnan(pct)):
+            position = 50.0
+        else:
+            clamped = max(-10.0, min(10.0, float(pct)))
+            position = 50.0 + clamped * 5.0  # +/-10% maps to 0..100
+        status_cls = f"ma-ribbon__bar-status--{tone}"
+        marker_cls = f"ma-ribbon__bar-marker--{tone}"
+        bars_html += (
+            '<div class="ma-ribbon__bar">'
+            '<div class="ma-ribbon__bar-head">'
+            f'<span class="ma-ribbon__bar-name">{html.escape(str(it.get("name", "")))}</span>'
+            f'<span class="ma-ribbon__bar-val">{html.escape(str(it.get("value_text", "—")))}</span>'
+            '</div>'
+            '<div class="ma-ribbon__bar-track">'
+            f'<div class="{marker_cls} ma-ribbon__bar-marker" style="left:{position:.1f}%;"></div>'
+            '</div>'
+            f'<div class="{status_cls} ma-ribbon__bar-status">{html.escape(str(it.get("status_text", "")))}</div>'
+            '</div>'
+        )
+
+    order_html = ""
+    if ma_order_ok is not None:
+        if ma_order_ok:
+            order_html = '<span class="ma-ribbon__order ma-ribbon__order--good">Ordnung 21 &gt; 50 &gt; 200 ✓</span>'
+        else:
+            order_html = '<span class="ma-ribbon__order ma-ribbon__order--bad">Ordnung gestört ✗</span>'
+
+    st.markdown(
+        '<div class="ma-ribbon">'
+        '<div class="ma-ribbon__head">'
+        '<span class="ma-ribbon__title">Abstand zu Moving Averages</span>'
+        f'{order_html}'
+        '</div>'
+        f'<div class="ma-ribbon__bars">{bars_html}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_market_glossary(keys):
     items = []
     for key in keys:
@@ -10212,13 +10474,13 @@ def _tab_marktanalyse(compact: bool = False):
     reasons = _build_market_reasons(L, wc, breadth_label, vol_latest)
     freshness = _format_data_freshness(selected, df, vol_dashboard)
     changes = _build_market_changes(df, selected, wc, vol_dashboard, breadth_label)
-    _render_hero_card(mode, tone, reasons, action, freshness)
-    _render_change_cards(changes)
 
-    # Trendwende-Ampel wieder als zentrales Element sichtbar machen
-    render_ampel_section(L, sd)
+    # Cockpit: Hero + Trendwende-Ampel + Zyklus-Stats vereint
+    _render_market_cockpit(L, df, mode, tone, reasons, action, freshness)
+    # KPI Signal-Strip (Heute / Distribution / Volatilität / Breite)
+    _render_signal_strip(changes)
 
-    # MA-Abstand Kacheln (10-SMA, 21-EMA, 50-SMA, 200-SMA)
+    # MA-Abstände als Ribbon (10-SMA, 21-EMA, 50-SMA, 200-SMA)
     d10 = L.get("Dist_10SMA_pct", np.nan)
     d200 = L.get("Dist_200SMA_pct", np.nan)
     s10_val = L.get("SMA10", np.nan)
@@ -10227,6 +10489,11 @@ def _tab_marktanalyse(compact: bool = False):
     if np.isnan(d200) and not np.isnan(L["SMA200"]) and L["SMA200"] > 0:
         d200 = (L["Close"] - L["SMA200"]) / L["SMA200"] * 100
 
+    # 21-EMA tone is based on ATR distance, but the ribbon needs a percent for positioning.
+    # Derive the 21-EMA percent distance separately for visualization.
+    e21_val = L.get("EMA21", np.nan)
+    d21_pct = (L["Close"] - e21_val) / e21_val * 100 if not np.isnan(e21_val) and e21_val > 0 else np.nan
+
     if np.isnan(d21):
         d21_tone, d21_lbl = "neutral", "—"
     elif d21 < 0:
@@ -10234,35 +10501,44 @@ def _tab_marktanalyse(compact: bool = False):
     elif d21 > 3.0:
         d21_tone, d21_lbl = "warn", "⚠ Überdehnt"
     else:
-        d21_tone, d21_lbl = "good", "✓ OK"
+        d21_tone, d21_lbl = "good", "✓ Im Trendkanal"
     if np.isnan(d10):
         d10_tone, d10_lbl = "neutral", "—"
     elif d10 < 0:
-        d10_tone, d10_lbl = "bad", "✗ Darunter"
+        d10_tone, d10_lbl = "bad", "✗ Unter Kurzfrist-MA"
     else:
-        d10_tone, d10_lbl = "good", "✓ OK"
+        d10_tone, d10_lbl = "good", "✓ Über Kurzfrist-MA"
     if np.isnan(d50):
         d50_tone, d50_lbl = "neutral", "—"
     elif d50 < 0:
-        d50_tone, d50_lbl = "bad", "✗ Darunter"
+        d50_tone, d50_lbl = "bad", "✗ Unter 50-SMA"
     elif d50 > t50:
         d50_tone, d50_lbl = "warn", "⚠ Überdehnt"
     else:
-        d50_tone, d50_lbl = "good", "✓ OK"
+        d50_tone, d50_lbl = "good", "✓ Konstruktiv"
     if np.isnan(d200):
         d200_tone, d200_lbl = "neutral", "—"
     elif d200 < 0:
-        d200_tone, d200_lbl = "bad", "✗ Darunter"
+        d200_tone, d200_lbl = "bad", "✗ Bär-Markt-Zone"
     else:
-        d200_tone, d200_lbl = "good", "✓ OK"
-    st.markdown(
-        '<div class="mobile-ma-grid">'
-        + _dist_tile_html("21-EMA", f"{d21:.1f} ATR" if not np.isnan(d21) else "—", d21_lbl, d21_tone)
-        + _dist_tile_html("10-SMA", f"{d10:+.1f}%" if not np.isnan(d10) else "—", d10_lbl, d10_tone)
-        + _dist_tile_html("50-SMA", f"{d50:+.1f}%" if not np.isnan(d50) else "—", d50_lbl, d50_tone)
-        + _dist_tile_html("200-SMA", f"{d200:+.1f}%" if not np.isnan(d200) else "—", d200_lbl, d200_tone)
-        + '</div>',
-        unsafe_allow_html=True,
+        d200_tone, d200_lbl = "good", "✓ Bullen-Markt-Zone"
+
+    _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
+    eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
+    ma_order_ok = bool(eo and so and s2o and _e > _s5 and _s5 > _s2)
+
+    _render_ma_ribbon(
+        [
+            {"name": "10-SMA",  "value_text": f"{d10:+.1f}%" if not np.isnan(d10) else "—",
+             "pct": d10 if not np.isnan(d10) else None, "tone": d10_tone, "status_text": d10_lbl},
+            {"name": "21-EMA",  "value_text": f"{d21:.1f} ATR" if not np.isnan(d21) else "—",
+             "pct": d21_pct if not np.isnan(d21_pct) else None, "tone": d21_tone, "status_text": d21_lbl},
+            {"name": "50-SMA",  "value_text": f"{d50:+.1f}%" if not np.isnan(d50) else "—",
+             "pct": d50 if not np.isnan(d50) else None, "tone": d50_tone, "status_text": d50_lbl},
+            {"name": "200-SMA", "value_text": f"{d200:+.1f}%" if not np.isnan(d200) else "—",
+             "pct": d200 if not np.isnan(d200) else None, "tone": d200_tone, "status_text": d200_lbl},
+        ],
+        ma_order_ok=ma_order_ok,
     )
 
     st.plotly_chart(plot_price_with_volume(df, sd), width="stretch", config={"displayModeBar": False})
