@@ -6904,99 +6904,94 @@ def render_ampel_section(L, history_df=None):
     ss_low_valid = pd.notna(ss_low)
     floor_valid = pd.notna(floor)
     anchor_valid = bool(anchor)
+    active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#22c55e","neutral":"#64748b"}.get(phase,"#64748b")
 
+    # Startschuss state-box
     if phase in ("gelb", "gruen") and ss_low_valid and anchor_valid:
         bonus = L.get("Startschuss_Bonus")
         if bonus is True:
-            bonus_html = '<span style="font-size:.65rem;color:#22c55e;margin-left:6px;">✓ Bonus: Schluss über 21-EMA</span>'
+            bonus_html = ' <span style="font-size:.65rem;color:#22c55e;font-weight:600;">· ✓ Bonus über 21-EMA</span>'
         elif bonus is False:
-            bonus_html = '<span style="font-size:.65rem;color:#64748b;margin-left:6px;">Kein Bonus (unter 21-EMA)</span>'
+            bonus_html = ' <span style="font-size:.65rem;color:#64748b;">· kein Bonus</span>'
         else:
             bonus_html = ""
         startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f59e0b12;border:1px solid #f59e0b30;border-radius:8px;">'
-            f'<span style="font-size:1.4rem;">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#f59e0b;">Startschuss aktiv{bonus_html}</div><div style="font-size:.7rem;color:#94a3b8;">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div></div></div>'
+            '<div class="tampel__state" style="background:#f59e0b12;border-color:#f59e0b40;">'
+            '<span class="tampel__state-icon">🔫</span>'
+            '<div class="tampel__state-body">'
+            f'<div class="tampel__state-title" style="color:#b45309;">Startschuss aktiv{bonus_html}</div>'
+            f'<div class="tampel__state-detail">Startschuss-Tief: {ss_low:,.2f} · Ankertag: {anchor}</div>'
+            '</div></div>'
         )
     else:
         if phase == "rot" and anchor:
             ss_detail = f"Ankertag: {anchor} · Warte auf Tag ≥5 mit ≥1% Gewinn + Vol. > Vortag"
         elif phase == "aufwaertstrend" and anchor_valid:
-            anchor_txt = anchor
             floor_txt = f"{floor:,.2f}" if floor_valid else "—"
             ss_txt = f"{ss_low:,.2f}" if ss_low_valid else "—"
-            ss_detail = f"Letzter Zyklus · Ankertag: {anchor_txt} · Bodenmarke: {floor_txt} · Startschuss-Tief: {ss_txt}"
+            ss_detail = f"Letzter Zyklus · Ankertag: {anchor} · Boden: {floor_txt} · SS-Tief: {ss_txt}"
         elif phase == "rot":
             ss_detail = "Warte auf Ankertag, dann frühestens am 5. Tag möglich"
         else:
             ss_detail = "Kein aktiver Ampel-Zyklus"
         startschuss_html = (
-            f'<div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 12px;background:#f0f2f740;border:1px solid #e3e8f0;border-radius:8px;opacity:0.6;">'
-            f'<span style="font-size:1.4rem;filter:grayscale(1);">🔫</span>'
-            f'<div><div style="font-size:.8rem;font-weight:700;color:#94a3b8;text-decoration:line-through;">Startschuss</div><div style="font-size:.7rem;color:#94a3b8;">{ss_detail}</div></div></div>'
+            '<div class="tampel__state" style="opacity:.65;">'
+            '<span class="tampel__state-icon" style="filter:grayscale(1);">🔫</span>'
+            '<div class="tampel__state-body">'
+            '<div class="tampel__state-title" style="color:#94a3b8;text-decoration:line-through;">Startschuss</div>'
+            f'<div class="tampel__state-detail">{ss_detail}</div>'
+            '</div></div>'
         )
 
-    active_color = {"rot":"#ef4444","gelb":"#f59e0b","gruen":"#22c55e","aufwaertstrend":"#22c55e","neutral":"#64748b"}.get(phase,"#64748b")
+    # Aufwärtstrend confirmation state-box
     uptrend_confirmed = phase == "aufwaertstrend"
-    confirmation_color = "#3b82f6" if uptrend_confirmed else "#94a3b8"
-    confirmation_bg = "#eff6ff" if uptrend_confirmed else "#f8fafc"
-    confirmation_border = "#93c5fd" if uptrend_confirmed else "#e3e8f0"
-    confirmation_icon = "✓" if uptrend_confirmed else "—"
-    confirmation_state = "Aktiv" if uptrend_confirmed else "Noch nicht aktiv"
-    confirmation_detail = (
-        "MA-Ordnung bestätigt: 21-EMA > 50-SMA > 200-SMA."
-        if uptrend_confirmed else
-        "Separate Bestätigung erscheint, sobald die Aufwärtstrend-Regel erfüllt ist."
-    )
+    if uptrend_confirmed:
+        conf_color = "#2563eb"; conf_bg = "#eff6ff"; conf_border = "#bfdbfe"
+        conf_icon = "✓"; conf_state = "Aktiv"
+        conf_detail = "MA-Ordnung bestätigt: 21-EMA > 50-SMA > 200-SMA."
+    else:
+        conf_color = "#94a3b8"; conf_bg = "var(--panel-2)"; conf_border = "var(--border)"
+        conf_icon = "—"; conf_state = "Noch nicht aktiv"
+        conf_detail = "Erscheint, sobald die Aufwärtstrend-Regel erfüllt ist."
     confirmation_html = (
-        f'<div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 12px;'
-        f'background:{confirmation_bg};border:1px solid {confirmation_border};border-radius:8px;">'
-        f'<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;'
-        f'border-radius:999px;background:{confirmation_color}18;color:{confirmation_color};font-weight:900;">{confirmation_icon}</span>'
-        f'<div style="min-width:0;">'
-        f'<div style="font-size:.78rem;font-weight:800;color:{confirmation_color};letter-spacing:.03em;">Aufwärtstrend-Bestätigung: {confirmation_state}</div>'
-        f'<div style="font-size:.68rem;color:#64748b;line-height:1.35;margin-top:2px;">{confirmation_detail}</div>'
-        f'</div></div>'
+        f'<div class="tampel__state" style="background:{conf_bg};border-color:{conf_border};">'
+        '<span class="tampel__state-icon" style="display:inline-flex;align-items:center;justify-content:center;'
+        f'width:30px;height:30px;border-radius:999px;background:{conf_color}18;color:{conf_color};font-weight:900;font-size:1rem;">{conf_icon}</span>'
+        '<div class="tampel__state-body">'
+        f'<div class="tampel__state-title" style="color:{conf_color};">Aufwärtstrend: {conf_state}</div>'
+        f'<div class="tampel__state-detail">{conf_detail}</div>'
+        '</div></div>'
     )
-    html = (
-        '<div class="info-card" style="padding:20px;">'
-        '<div class="card-label">TRENDWENDE-AMPEL</div>'
-        '<div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">'
-        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;background:#f7f9fc;padding:12px;border-radius:12px;border:1px solid #e3e8f0;flex:1 1 180px;">'
-        f'<div class="ampel-lights" style="display:flex;gap:12px;align-items:flex-start;justify-content:center;width:100%;flex-wrap:nowrap;">{lights_html}</div>'
-        '</div>'
-        '<div style="flex:1;min-width:220px;">'
-        f'<div style="font-size:1.1rem;font-weight:800;color:{active_color};letter-spacing:.04em;margin-bottom:6px;">{info["label"]}</div>'
-        f'<div style="font-size:.8rem;color:#0d1626;line-height:1.5;margin-bottom:6px;">{info["reason"]}</div>'
-        f'<div style="font-size:.75rem;color:#5e6e89;line-height:1.4;padding:6px 10px;background:{active_color}10;border-left:3px solid {active_color};border-radius:0 6px 6px 0;">→ {info["action"]}</div>'
-        f'{startschuss_html}'
-        f'{confirmation_html}'
-        '</div></div></div>'
-    )
-    st.markdown(html, unsafe_allow_html=True)
 
+    # Stats row (Ankertag / Bodenmarke / Startschuss-Tief / MA-Ordnung)
     _e = L["EMA21"]; _s5 = L["SMA50"]; _s2 = L["SMA200"]
     eo = not np.isnan(_e); so = not np.isnan(_s5); s2o = not np.isnan(_s2)
     _mao = eo and so and s2o and _e > _s5 and _s5 > _s2
     _close = float(L["Close"]) if not np.isnan(L["Close"]) else None
     floor_pct = (_close - float(floor)) / float(floor) * 100 if floor_valid and _close and float(floor) > 0 else None
     ss_low_pct = (_close - float(ss_low)) / float(ss_low) * 100 if ss_low_valid and _close and float(ss_low) > 0 else None
-    floor_pct_color = "#22c55e" if floor_pct is not None and floor_pct >= 0 else "#ef4444"
-    ss_low_pct_color = "#22c55e" if ss_low_pct is not None and ss_low_pct >= 0 else "#ef4444"
-    floor_val = f"{floor:,.2f}" + (f' <span style="font-size:.7rem;color:{floor_pct_color};">({floor_pct:+.1f}%)</span>' if floor_pct is not None else "") if floor_valid else "—"
-    ss_low_val = f"{ss_low:,.2f}" + (f' <span style="font-size:.7rem;color:{ss_low_pct_color};">({ss_low_pct:+.1f}%)</span>' if ss_low_pct is not None else "") if ss_low_valid else "—"
-    details = {
-        "Ankertag": (anchor if anchor_valid else "— (kein aktiver Zyklus)" if phase == "neutral" else "Warte auf Ankertag", None),
-        "Bodenmarke": (floor_val, None),
-        "Startschuss-Tief": (ss_low_val, None),
-        "MA-Ordnung (21>50>200)": ("Korrekt ✓" if _mao else "Gestört ✗", "#22c55e" if _mao else "#ef4444"),
-    }
-    cols = st.columns(4)
-    for i, (k, (v, vc)) in enumerate(details.items()):
-        with cols[i]:
-            val_color = vc if vc else "#0d1626"
-            st.markdown(f'<div style="background:#f7f9fc;border:1px solid #e3e8f0;border-radius:8px;padding:8px 12px;text-align:center;"><div style="font-size:.6rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">{k}</div><div style="font-size:.85rem;color:{val_color};font-weight:600;margin-top:4px;">{v}</div></div>', unsafe_allow_html=True)
+    floor_pct_color = "#16a34a" if floor_pct is not None and floor_pct >= 0 else "#dc2626"
+    ss_low_pct_color = "#16a34a" if ss_low_pct is not None and ss_low_pct >= 0 else "#dc2626"
+    floor_val = f"{floor:,.2f}" + (f' <span style="font-size:.7rem;color:{floor_pct_color};font-weight:600;">({floor_pct:+.1f}%)</span>' if floor_pct is not None else "") if floor_valid else "—"
+    ss_low_val = f"{ss_low:,.2f}" + (f' <span style="font-size:.7rem;color:{ss_low_pct_color};font-weight:600;">({ss_low_pct:+.1f}%)</span>' if ss_low_pct is not None else "") if ss_low_valid else "—"
+    anchor_display = anchor if anchor_valid else ("— (kein Zyklus)" if phase == "neutral" else "Warte auf Ankertag")
+    mao_text = "Korrekt ✓" if _mao else "Gestört ✗"
+    mao_color = "#16a34a" if _mao else "#dc2626"
+    stats = [
+        ("Ankertag",         str(anchor_display), "var(--text)"),
+        ("Bodenmarke",       floor_val,           "var(--text)"),
+        ("Startschuss-Tief", ss_low_val,          "var(--text)"),
+        ("MA-Ordnung",       mao_text,            mao_color),
+    ]
+    stats_html = "".join(
+        '<div class="tampel__stat">'
+        f'<div class="tampel__stat-label">{lbl}</div>'
+        f'<div class="tampel__stat-value" style="color:{col};">{val}</div>'
+        '</div>'
+        for lbl, val, col in stats
+    )
 
+    # Diagnostics
     missing_reasons = []
     if not anchor_valid:
         missing_reasons.append("Kein aktiver Ankertag")
@@ -7004,8 +6999,37 @@ def render_ampel_section(L, history_df=None):
         missing_reasons.append("Bodenmarke noch nicht gesetzt")
     if not ss_low_valid:
         missing_reasons.append("Startschuss-Tief noch nicht gesetzt")
-    if missing_reasons:
-        st.caption("Diagnose: " + " · ".join(missing_reasons))
+    diag_html = (
+        f'<div class="tampel__diag">Diagnose: {" · ".join(missing_reasons)}</div>'
+        if missing_reasons else ""
+    )
+
+    # Single unified card. The CSS .tampel grid arranges:
+    #   mobile  → head / lights / body / stats / states (stacked)
+    #   desktop → head spans top, lights left, body right, stats & states full-width below
+    card_html = (
+        '<div class="tampel">'
+        '<div class="tampel__head">'
+        '<div class="tampel__head-label">Trendwende-Ampel</div>'
+        f'<div class="tampel__phase-chip" style="color:{active_color};background:{active_color}12;">{info["label"]}</div>'
+        '</div>'
+        '<div class="tampel__main">'
+        f'<div class="tampel__lights">{lights_html}</div>'
+        '<div class="tampel__body">'
+        f'<div class="tampel__verdict" style="color:{active_color};">{info["label"]}</div>'
+        f'<div class="tampel__reason">{info["reason"]}</div>'
+        f'<div class="tampel__action" style="color:{active_color};background:{active_color}10;">→ {info["action"]}</div>'
+        '</div>'
+        '</div>'
+        f'<div class="tampel__stats">{stats_html}</div>'
+        '<div class="tampel__states">'
+        f'{startschuss_html}'
+        f'{confirmation_html}'
+        '</div>'
+        f'{diag_html}'
+        '</div>'
+    )
+    st.markdown(card_html, unsafe_allow_html=True)
 
 def render_check(label,ok,detail="",warn=False):
     critical_fail = (not ok) and str(label).startswith("Warnzeichen")
