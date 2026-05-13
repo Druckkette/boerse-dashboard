@@ -336,6 +336,132 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
 .ampel-light { flex:1 1 0; min-width:0; max-width:92px; }
 .ampel-light summary { list-style:none; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:4px; outline:none; }
 .ampel-light__dot { width:42px; height:42px; border-radius:50%; }
+
+/* ── Marktampel — unified card ── */
+.marktampel-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px;
+  margin: 0 0 14px;
+  max-width: 1080px;
+}
+.marktampel-card__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+  padding-bottom: 12px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.marktampel-card__label {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .12em; font-weight: 800;
+}
+.marktampel-card__phase {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: .82rem; font-weight: 800; letter-spacing: .04em;
+  padding: 5px 12px; border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.marktampel-main {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+.marktampel-lightbox {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 10px;
+  display: flex; gap: 10px;
+  justify-content: space-around; align-items: flex-start;
+}
+.marktampel-light { flex: 1 1 0; min-width: 0; max-width: 92px; }
+.marktampel-light summary {
+  list-style: none; cursor: pointer; display: flex; flex-direction: column;
+  align-items: center; gap: 6px; outline: none;
+}
+.marktampel-light summary::-webkit-details-marker { display: none; }
+.marktampel-light__dot {
+  width: 46px; height: 46px; border-radius: 50%;
+  display: block; margin: 0 auto;
+}
+.marktampel-light__label {
+  font-size: .64rem; letter-spacing: .08em; font-weight: 800;
+}
+.marktampel-light__hint { font-size: .56rem; color: var(--muted); }
+.marktampel-light__rule {
+  margin-top: 6px; padding: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: .68rem; color: var(--text); line-height: 1.4;
+}
+.marktampel-light__rule-title {
+  font-size: .58rem; color: var(--muted); letter-spacing: .08em;
+  text-transform: uppercase; font-weight: 800; margin-bottom: 3px;
+}
+.marktampel-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.marktampel-headline {
+  font-size: 1.1rem; font-weight: 800; letter-spacing: .02em; line-height: 1.2;
+}
+.marktampel-reason {
+  font-size: .83rem; color: var(--text); line-height: 1.5;
+}
+.marktampel-action {
+  font-size: .8rem; line-height: 1.45;
+  padding: 8px 12px; border-radius: var(--radius-sm);
+  border-left: 3px solid currentColor;
+}
+.marktampel-stats {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px; margin-top: 14px;
+}
+.marktampel-stat {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px; text-align: center;
+  min-width: 0; display: flex; flex-direction: column; gap: 4px;
+}
+.marktampel-stat__label {
+  font-size: .58rem; color: var(--muted); letter-spacing: .08em;
+  font-weight: 800; text-transform: uppercase;
+}
+.marktampel-stat__value {
+  font-size: .92rem; font-weight: 700; color: var(--text);
+  overflow-wrap: anywhere; line-height: 1.25;
+}
+.marktampel-status {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; margin-top: 12px;
+}
+.marktampel-status-box {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--panel-2);
+  min-width: 0;
+}
+.marktampel-status-box__icon {
+  font-size: 1.35rem; line-height: 1; flex: 0 0 auto;
+}
+.marktampel-status-box__body { min-width: 0; }
+.marktampel-status-box__title {
+  font-size: .78rem; font-weight: 800; line-height: 1.2;
+}
+.marktampel-status-box__detail {
+  font-size: .68rem; color: var(--muted); line-height: 1.35; margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.marktampel-diag {
+  margin-top: 10px; font-size: .72rem; color: var(--muted); line-height: 1.4;
+}
+
+@media (max-width: 980px) {
+  .marktampel-card { padding: 14px 14px; }
+  .marktampel-main { grid-template-columns: 1fr; gap: 12px; }
+  .marktampel-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .marktampel-status { grid-template-columns: 1fr; }
+  .marktampel-light__dot { width: 40px; height: 40px; }
+}
 .mobile-ma-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px; margin:8px 0 12px; }
 .section-divider { border-top:1px solid var(--border); margin:14px 0 8px; padding-top:8px; font-size:11px; line-height:1.2; color:var(--muted); font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
 .sector-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:8px; }
