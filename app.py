@@ -556,6 +556,30 @@ def search_symbol_candidates(query: str):
     fallback = query.upper().replace(" ", "")
     return [{"symbol": fallback, "name": "", "exchange": "", "type": "MANUAL"}] if fallback else []
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _ticker_display_names(tickers: tuple[str, ...]) -> dict[str, str]:
+    normalized = tuple(dict.fromkeys(_normalize_single_ticker(t) for t in tickers if _normalize_single_ticker(t)))
+    names: dict[str, str] = {}
+    for ticker in normalized:
+        name = ""
+        try:
+            candidates = search_symbol_candidates(ticker)
+            exact = next((row for row in candidates if _normalize_single_ticker(row.get("symbol", "")) == ticker), None)
+            if exact:
+                name = str(exact.get("name", "") or "").strip()
+        except Exception:
+            name = ""
+        if not name:
+            try:
+                metrics = _portfolio_symbol_metrics(ticker)
+                metric_name = str((metrics or {}).get("name", "") or "").strip()
+                if metric_name and metric_name.upper() != ticker:
+                    name = metric_name
+            except Exception:
+                name = ""
+        names[ticker] = name or ticker
+    return names
+
 def _is_mobile_client() -> bool:
     try:
         headers = getattr(st.context, "headers", {}) or {}
@@ -2470,28 +2494,28 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
         invested_df = snapshot_df[snapshot_df.get("is_cash", False) == False].copy() if "is_cash" in snapshot_df else snapshot_df.copy()
         if not invested_df.empty:
             overview = invested_df[[
-                "ticker", "shares", "entry", "current_price", "current_value",
+                "ticker", "name", "shares", "entry", "current_price", "current_value",
                 "pnl_pct", "stop_pct", "stop_price", "stop_distance_pct",
                 "atr_pct", "beta", "risk_contribution", "max_position_value",
             ]].copy().rename(columns={
-                "ticker": "Ticker", "shares": "Stück", "entry": "Einstand",
+                "ticker": "Ticker", "name": "Name", "shares": "Stück", "entry": "Einstand",
                 "current_price": "Aktuell", "current_value": "Wert EUR",
                 "pnl_pct": "P&L %", "stop_pct": "Stopp %", "stop_price": "Stoppkurs",
                 "stop_distance_pct": "Abstand Stop %", "atr_pct": "ATR %",
                 "beta": "Beta", "risk_contribution": "Risikobeitrag",
                 "max_position_value": "Max. Wert",
             }).sort_values("Wert EUR", ascending=False)
-            overview.insert(0, "Entfernen", False)
-            edited_overview = st.data_editor(
+            depot_names = _ticker_display_names(tuple(overview["Ticker"].tolist()))
+            overview["Name"] = overview.apply(
+                lambda row: row["Name"] if str(row.get("Name", "") or "").strip() and str(row.get("Name", "")).upper() != str(row["Ticker"]).upper()
+                else depot_names.get(str(row["Ticker"]), str(row["Ticker"])),
+                axis=1,
+            )
+            st.dataframe(
                 overview.round(2), width="stretch", hide_index=True,
-                disabled=[col for col in overview.columns if col != "Entfernen"],
-                key="pf_positions_editor",
                 column_config={
-                    "Entfernen": st.column_config.CheckboxColumn(
-                        "Entfernen",
-                        help="Anklicken entfernt die Position ohne Cash-Verbuchung.",
-                        width="small",
-                    ),
+                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                    "Name": st.column_config.TextColumn("Name", width="medium"),
                     "Stück": st.column_config.NumberColumn("Stück", format="%.0f"),
                     "Einstand": st.column_config.NumberColumn("Einstand", format="%.2f €"),
                     "Aktuell": st.column_config.NumberColumn("Aktuell", format="%.2f €"),
@@ -2506,13 +2530,19 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f €"),
                 },
             )
-            removals = edited_overview[edited_overview["Entfernen"] == True]["Ticker"].tolist()
-            if removals:
-                for ticker_to_remove in removals:
-                    _remove_position(ticker_to_remove)
-                st.success(f"{', '.join(removals)} aus dem Depot entfernt.")
-                st.rerun()
-            st.caption("Zum Entfernen einfach die Checkbox in der Positionszeile anklicken. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
+            st.caption("Zum Entfernen den Mülleimer drücken. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
+            for _, row in overview[["Ticker", "Name"]].iterrows():
+                ticker = str(row["Ticker"])
+                del_col, ticker_col, name_col = st.columns([0.12, 0.22, 0.66])
+                with del_col:
+                    if st.button("🗑", key=f"pf_delete_{ticker}", help=f"{ticker} aus dem Depot entfernen"):
+                        _remove_position(ticker)
+                        st.success(f"{ticker} aus dem Depot entfernt.")
+                        st.rerun()
+                with ticker_col:
+                    st.markdown(f'<span class="ws-mono">{html.escape(ticker)}</span>', unsafe_allow_html=True)
+                with name_col:
+                    st.markdown(html.escape(str(row["Name"])), unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("#### ➕ Neue Position erfassen oder bestehende aktualisieren")
@@ -2928,7 +2958,13 @@ def _render_workspace_sidebar():
         watchlist = st.session_state.get("watchlist", [])
         st.markdown("**Watchlist**")
         if watchlist:
-            st.markdown('<div class="pill-wrap">' + "".join(f'<span class="pill">{t}</span>' for t in watchlist[:8]) + '</div>', unsafe_allow_html=True)
+            sidebar_names = _ticker_display_names(tuple(watchlist[:8]))
+            pill_html = []
+            for ticker in watchlist[:8]:
+                name = sidebar_names.get(ticker, ticker)
+                label = ticker if name == ticker else f"{ticker} · {name}"
+                pill_html.append(f'<span class="pill">{html.escape(label)}</span>')
+            st.markdown('<div class="pill-wrap">' + "".join(pill_html) + '</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="workspace-note">Noch keine Ticker in der Watchlist.</div>', unsafe_allow_html=True)
         positions = st.session_state.get("positions", [])
@@ -10514,24 +10550,24 @@ def _render_arbeitsbereich() -> None:
                 st.rerun()
     with manage_col:
         if watchlist:
-            manage_df = pd.DataFrame({"Entfernen": [False] * len(watchlist), "Ticker": watchlist})
-            edited_watchlist = st.data_editor(
-                manage_df,
-                width="stretch",
-                hide_index=True,
-                disabled=["Ticker"],
-                key="watchlist_manage_editor",
-                column_config={
-                    "Entfernen": st.column_config.CheckboxColumn("Entfernen", width="small"),
-                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                },
-            )
-            removals = edited_watchlist[edited_watchlist["Entfernen"] == True]["Ticker"].tolist()
-            if removals:
-                for ticker_to_remove in removals:
-                    _remove_watchlist_ticker(ticker_to_remove)
-                st.success(f"{', '.join(removals)} aus der Watchlist entfernt.")
-                st.rerun()
+            name_map = _ticker_display_names(tuple(watchlist))
+            st.markdown('<div class="ws-label">Verwalten</div>', unsafe_allow_html=True)
+            head_del, head_ticker, head_name = st.columns([0.12, 0.24, 0.64])
+            with head_ticker:
+                st.caption("Ticker")
+            with head_name:
+                st.caption("Name")
+            for ticker in watchlist:
+                del_col, ticker_col, name_col = st.columns([0.12, 0.24, 0.64])
+                with del_col:
+                    if st.button("🗑", key=f"watchlist_delete_{ticker}", help=f"{ticker} aus der Watchlist entfernen"):
+                        _remove_watchlist_ticker(ticker)
+                        st.success(f"{ticker} aus der Watchlist entfernt.")
+                        st.rerun()
+                with ticker_col:
+                    st.markdown(f'<span class="ws-mono">{html.escape(ticker)}</span>', unsafe_allow_html=True)
+                with name_col:
+                    st.markdown(html.escape(name_map.get(ticker, ticker)), unsafe_allow_html=True)
         else:
             st.info("Noch keine Ticker in der Watchlist.")
 
