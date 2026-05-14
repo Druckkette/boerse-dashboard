@@ -812,26 +812,35 @@ def _build_market_changes(df: pd.DataFrame, selected: str, wc: int, vol_dashboar
 def _render_change_cards(changes):
     if not changes:
         return
-    cols = st.columns(len(changes))
-    for col, item in zip(cols, changes):
-        with col:
-            arrow_html = ""
-            if "arrow" in item:
-                arrow_html = f'<span style="color:{item["arrow_color"]};font-size:1.5rem;line-height:1;margin-right:4px;">{item["arrow"]}</span>'
-            quality_html = ""
-            if "quality" in item:
-                quality_html = f'<div style="font-size:.7rem;font-weight:700;color:{item["quality_color"]};margin-top:2px;">{item["quality"]}</div>'
-            detail2_html = ""
-            if item.get("detail2"):
-                detail2_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail2"]}</div>'
-            detail3_html = ""
-            if item.get("detail3"):
-                detail3_html = f'<div class="change-detail" style="margin-top:2px;">{item["detail3"]}</div>'
-            priority_cls = " kpi-priority" if item.get("title") in {"Trendwende-Ampel", "Distribution", "Volatilität"} else ""
-            st.markdown(
-                f'<div class="change-card{priority_cls}"><div class="change-title">{item["title"]}</div><div class="change-value" style="display:flex;align-items:center;">{arrow_html}{item["value"]}</div>{quality_html}<div class="change-detail">{item["detail"]}</div>{detail2_html}{detail3_html}</div>',
-                unsafe_allow_html=True,
-            )
+    card_html = []
+    for item in changes:
+        arrow_html = ""
+        if "arrow" in item:
+            arrow_color = html.escape(str(item.get("arrow_color", "#64748b")))
+            arrow = html.escape(str(item.get("arrow", "")))
+            arrow_html = f'<span style="color:{arrow_color};font-size:1.5rem;line-height:1;margin-right:4px;">{arrow}</span>'
+        quality_html = ""
+        if "quality" in item:
+            quality_color = html.escape(str(item.get("quality_color", "#64748b")))
+            quality = html.escape(str(item.get("quality", "")))
+            quality_html = f'<div style="font-size:.7rem;font-weight:700;color:{quality_color};margin-top:2px;">{quality}</div>'
+        detail2_html = ""
+        if item.get("detail2"):
+            detail2_html = f'<div class="change-detail" style="margin-top:2px;">{html.escape(str(item["detail2"]))}</div>'
+        detail3_html = ""
+        if item.get("detail3"):
+            detail3_html = f'<div class="change-detail" style="margin-top:2px;">{html.escape(str(item["detail3"]))}</div>'
+        priority_cls = " kpi-priority" if item.get("title") in {"Trendwende-Ampel", "Distribution", "Volatilität"} else ""
+        card_html.append(
+            f'<article class="change-card{priority_cls}">'
+            f'<div class="change-title">{html.escape(str(item.get("title", "")))}</div>'
+            f'<div class="change-value" style="display:flex;align-items:center;">{arrow_html}{html.escape(str(item.get("value", "")))}</div>'
+            f'{quality_html}'
+            f'<div class="change-detail">{html.escape(str(item.get("detail", "")))}</div>'
+            f'{detail2_html}{detail3_html}'
+            f'</article>'
+        )
+    st.markdown(f'<section class="change-card-grid">{"".join(card_html)}</section>', unsafe_allow_html=True)
 
 def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, freshness: dict):
     tone_cls = {"good": "hero-good", "warn": "hero-warn", "bad": "hero-bad"}.get(tone, "hero-warn")
