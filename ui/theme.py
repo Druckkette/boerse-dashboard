@@ -211,7 +211,16 @@ hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
   border-left: 3px solid var(--accent);
   box-shadow: var(--shadow-soft);
 }
-.change-card { padding: 15px 16px; }
+.change-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.change-card {
+  padding: 15px 16px;
+  min-width: 0;
+}
 .change-card.kpi-priority { border-left: 4px solid var(--accent); padding-left: 14px; }
 .change-card.kpi-priority .change-value { font-size: 1.18rem; font-weight: 800; }
 .info-card, .workspace-card { margin-bottom: 12px; }
@@ -513,6 +522,7 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   [data-testid="stMetric"] { padding: 14px 14px; }
   [data-testid="stMetricValue"] { font-size: 1.26rem !important; }
   .summary-hero { padding: 16px 16px; border-radius: var(--radius-lg); }
+  .change-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .dashboard-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .portfolio-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -530,6 +540,17 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
   [data-testid="stMetricLabel"] { font-size: .66rem !important; }
   [data-testid="stMetricValue"] { font-size: 1.16rem !important; }
   .hero-title { font-size: 1.12rem; }
+  .change-card-grid { grid-template-columns: 1fr; gap: 10px; margin: 10px 0 12px; }
+  .change-card {
+    border-color: var(--border-strong);
+    box-shadow: 0 2px 10px rgba(15,25,50,.10), 0 1px 3px rgba(15,25,50,.06);
+  }
+  .change-card.kpi-priority { border-left-width: 5px; }
+  .change-value { font-size: 1.1rem; }
+  .dash-kpi-card {
+    border-color: rgba(0,0,0,0.16);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.10), 0 1px 3px rgba(0,0,0,0.06);
+  }
   .dashboard-grid { grid-template-columns: 1fr; gap: 10px; }
   .mobile-stack { display: flex; flex-direction: column; gap: 10px; }
   .portfolio-health-grid { grid-template-columns: 1fr; }
@@ -589,7 +610,9 @@ div[data-testid="stButton"]:has(button[kind="primary"]) button:hover { backgroun
 }
 .dash-kpi-card {
   background: #F5F4EF;
+  border: 0.5px solid rgba(0,0,0,0.12);
   border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   padding: 14px 16px;
   min-height: 132px;
   display: flex;

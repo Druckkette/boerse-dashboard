@@ -982,7 +982,6 @@ def _render_change_cards(changes):
 
             render_dashboard_kpi_card(title, value, unit, trend_text, trend_color, trend_icon, footnote)
 
-
 def _render_hero_card(mode: str, tone: str, reasons: list[str], action: str, freshness: dict):
     tone_cls = {"good": "hero-good", "warn": "hero-warn", "bad": "hero-bad"}.get(tone, "hero-warn")
     tone_color = {"good": "#22c55e", "warn": "#f59e0b", "bad": "#ef4444"}.get(tone, "#94a3b8")
