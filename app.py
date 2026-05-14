@@ -9975,7 +9975,7 @@ def _tab_sektoranalyse():
     chart_periods = 15
     vc1, vc2 = st.columns([1, 1])
     with vc1:
-        view_mode = st.radio("Zeitraum", ["Tagesansicht", "Wochenansicht"], horizontal=True, label_visibility="collapsed")
+        view_mode = st.radio("Zeitraum", ["Tagesansicht", "Wochenansicht"], index=0, horizontal=True, label_visibility="collapsed")
     is_weekly = view_mode == "Wochenansicht"
     mode_key = "weekly" if is_weekly else "daily"
     period_word = "Wochen" if is_weekly else "Handelstage"
@@ -9984,6 +9984,7 @@ def _tab_sektoranalyse():
         table_view = st.radio(
             "Tabellenwert",
             [value_label, "Platz Ranking"],
+            index=1,
             horizontal=True,
             label_visibility="collapsed",
         )
