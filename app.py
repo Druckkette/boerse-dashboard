@@ -3496,12 +3496,23 @@ def load_sector_data(lookback_days=200):
     except Exception as e:
         return None
 
-def build_sector_tables(closes, n_periods=15):
-    """Build sector performance and rank tables for the latest trading days."""
-    if closes is None or len(closes) < 5: return None, None, None
+def _sector_period_returns(closes, mode="daily"):
+    """Return daily changes or weekly average daily changes for sector ETFs."""
+    if closes is None or len(closes) < 5: return None
 
     pct = closes.pct_change() * 100
     pct = pct.dropna(how="all")
+    if mode == "weekly":
+        pct = pct.resample("W-FRI").mean().dropna(how="all")
+    return pct
+
+
+def build_sector_tables(closes, mode="daily", n_periods=15):
+    """Build sector performance and rank tables for latest days or weekly averages."""
+    if closes is None or len(closes) < 5: return None, None, None
+
+    pct = _sector_period_returns(closes, mode=mode)
+    if pct is None or len(pct) == 0: return None, None, None
     display_data = pct.tail(n_periods)
 
     if len(display_data) < 2: return None, None, None
@@ -3519,7 +3530,10 @@ def build_sector_tables(closes, n_periods=15):
     latest_col = perf_table.columns[-1]
     perf_table = perf_table.sort_values(by=latest_col, ascending=False)
     perf_table = perf_table.iloc[:, ::-1]
-    perf_table.columns = [d.strftime("%d.%m") for d in perf_table.columns]
+    if mode == "weekly":
+        perf_table.columns = [d.strftime("KW%V %d.%m") for d in perf_table.columns]
+    else:
+        perf_table.columns = [d.strftime("%d.%m") for d in perf_table.columns]
     perf_table = perf_table.round(2)
 
     rank_data = display_data.rank(axis=1, ascending=False, method="min")
@@ -9948,7 +9962,7 @@ def _tab_nach_kauf():
 def _tab_sektoranalyse():
     """Tab 2: Sector performance ranking table."""
     st.markdown("### 🏭 Sektoranalyse — Performance-Ranking")
-    st.caption("S&P 500 Sektor-ETFs über die letzten 15 Handelstage. Bester Sektor steht oben.")
+    st.caption("S&P 500 Sektor-ETFs nach Tagesperformance oder wöchentlichem Durchschnitt. Bester Sektor steht oben.")
 
     with st.spinner("Lade Sektor-Daten …"):
         sector_closes = load_sector_data()
@@ -9957,15 +9971,24 @@ def _tab_sektoranalyse():
         st.error("Sektor-Daten konnten nicht geladen werden.")
         return
 
-    n_periods = 15
-    table_view = st.radio(
-        "Tabellenwert",
-        ["% Tagesgewinn", "Platz Ranking"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+    table_periods = 3 if _is_mobile_client() else 15
+    chart_periods = 15
+    vc1, vc2 = st.columns([1, 1])
+    with vc1:
+        view_mode = st.radio("Zeitraum", ["Tagesansicht", "Wochenansicht"], horizontal=True, label_visibility="collapsed")
+    is_weekly = view_mode == "Wochenansicht"
+    mode_key = "weekly" if is_weekly else "daily"
+    period_word = "Wochen" if is_weekly else "Handelstage"
+    value_label = "% Wochenschnitt" if is_weekly else "% Tagesgewinn"
+    with vc2:
+        table_view = st.radio(
+            "Tabellenwert",
+            [value_label, "Platz Ranking"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
-    perf_table, rank_table, latest_ranked = build_sector_tables(sector_closes, n_periods=n_periods)
+    perf_table, rank_table, latest_ranked = build_sector_tables(sector_closes, mode=mode_key, n_periods=table_periods)
 
     if perf_table is None or rank_table is None or latest_ranked is None:
         st.warning("Nicht genug Daten für die Auswertung.")
@@ -10004,7 +10027,7 @@ def _tab_sektoranalyse():
 
     # ── FULL TABLE with color coding ──
     st.markdown(
-        f'<div class="card-label">PERFORMANCE-TABELLE ({table_view.upper()} · letzte {n_periods} Handelstage · jüngster Tag links)</div>',
+        f'<div class="card-label">PERFORMANCE-TABELLE ({table_view.upper()} · letzte {table_periods} {period_word} · jüngste Periode links)</div>',
         unsafe_allow_html=True,
     )
 
@@ -10023,8 +10046,8 @@ def _tab_sektoranalyse():
         if val >= 9: return "background-color: #ef444420; color: #b91c1c; font-weight: 700"
         return "color: #475569"
 
-    table = perf_table if table_view == "% Tagesgewinn" else rank_table
-    if table_view == "% Tagesgewinn":
+    table = perf_table if table_view == value_label else rank_table
+    if table_view == value_label:
         styled = table.style.map(_color_cell).format("{:+.2f}%", na_rep="—")
     else:
         styled = table.style.map(_rank_cell).format("#{:.0f}", na_rep="—")
@@ -10033,37 +10056,33 @@ def _tab_sektoranalyse():
 
     # ── PERFORMANCE HISTORY ──
     st.markdown("")
-    st.markdown(f'<div class="card-label">PERFORMANCE-VERLAUF (TAGESVERÄNDERUNG)</div>', unsafe_allow_html=True)
+    chart_label = "WOCHENSCHNITT" if is_weekly else "TAGESVERÄNDERUNG"
+    st.markdown(f'<div class="card-label">PERFORMANCE-VERLAUF ({chart_label})</div>', unsafe_allow_html=True)
 
-    pct_all = sector_closes.pct_change() * 100
-    pct_all = pct_all.dropna(how="all").tail(n_periods)
+    pct_all = _sector_period_returns(sector_closes, mode=mode_key)
+    pct_all = pct_all.dropna(how="all").tail(chart_periods)
 
     col_rename = {etf: f"{name} ({etf})" for etf, name in SECTOR_ETFS.items()}
     pct_all.columns = [col_rename.get(c, c) for c in pct_all.columns]
     sector_options = [col for col in latest_ranked.index if col in pct_all.columns]
     default_chart_sectors = [sector for sector in latest_ranked.head(3).index if sector in sector_options]
-    selected_chart_sectors = st.multiselect(
-        "Sektoren im Diagramm",
-        sector_options,
-        default=default_chart_sectors,
-        format_func=lambda x: x.split(" (")[0],
-    )
 
     fig = go.Figure()
     colors_cycle = ["#06b6d4", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#f97316",
                     "#3b82f6", "#ec4899", "#84cc16", "#64748b", "#14b8a6"]
-    for i, col in enumerate(selected_chart_sectors):
+    for i, col in enumerate(sector_options):
         fig.add_trace(go.Scatter(
             x=_x(pct_all.index), y=_y(pct_all[col]),
             name=col.split(" (")[0],  # short name
             line=dict(color=colors_cycle[i % len(colors_cycle)], width=2.2),
             mode="lines+markers", marker=dict(size=4),
+            visible=True if col in default_chart_sectors else "legendonly",
         ))
     fig.update_layout(
         template="plotly_white", paper_bgcolor=CHART_COLORS["bg"], plot_bgcolor="rgba(248,250,252,0)",
-        margin=dict(l=0, r=0, t=10, b=0), height=350,
+        margin=dict(l=0, r=0, t=10, b=34), height=380,
         yaxis=dict(gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b"),
-                   title="% Tagesgewinn", title_font=dict(size=9, color="#64748b"), ticksuffix="%"),
+                   title=value_label, title_font=dict(size=9, color="#64748b"), ticksuffix="%"),
         xaxis=dict(gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b")),
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
                     font=dict(size=8, color="#64748b")),
