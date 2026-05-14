@@ -10054,17 +10054,18 @@ def _tab_sektoranalyse():
 
     st.dataframe(styled, width="stretch", height=min(500, 40 + len(table) * 38))
 
-    # ── PERFORMANCE HISTORY ──
+    # ── RANKING HISTORY ──
     st.markdown("")
-    chart_label = "WOCHENSCHNITT" if is_weekly else "TAGESVERÄNDERUNG"
-    st.markdown(f'<div class="card-label">PERFORMANCE-VERLAUF ({chart_label})</div>', unsafe_allow_html=True)
+    chart_label = "WOCHENSCHNITT" if is_weekly else "TAGESRANKING"
+    st.markdown(f'<div class="card-label">RANKING-VERLAUF ({chart_label} · Platz 1 = bester Sektor)</div>', unsafe_allow_html=True)
 
     pct_all = _sector_period_returns(sector_closes, mode=mode_key)
     pct_all = pct_all.dropna(how="all").tail(chart_periods)
+    rank_all = pct_all.rank(axis=1, ascending=False, method="min")
 
     col_rename = {etf: f"{name} ({etf})" for etf, name in SECTOR_ETFS.items()}
-    pct_all.columns = [col_rename.get(c, c) for c in pct_all.columns]
-    sector_options = [col for col in latest_ranked.index if col in pct_all.columns]
+    rank_all.columns = [col_rename.get(c, c) for c in rank_all.columns]
+    sector_options = [col for col in latest_ranked.index if col in rank_all.columns]
     default_chart_sectors = [sector for sector in latest_ranked.head(3).index if sector in sector_options]
 
     fig = go.Figure()
@@ -10072,7 +10073,7 @@ def _tab_sektoranalyse():
                     "#3b82f6", "#ec4899", "#84cc16", "#64748b", "#14b8a6"]
     for i, col in enumerate(sector_options):
         fig.add_trace(go.Scatter(
-            x=_x(pct_all.index), y=_y(pct_all[col]),
+            x=_x(rank_all.index), y=_y(rank_all[col]),
             name=col.split(" (")[0],  # short name
             line=dict(color=colors_cycle[i % len(colors_cycle)], width=2.2),
             mode="lines+markers", marker=dict(size=4),
@@ -10081,8 +10082,8 @@ def _tab_sektoranalyse():
     fig.update_layout(
         template="plotly_white", paper_bgcolor=CHART_COLORS["bg"], plot_bgcolor="rgba(248,250,252,0)",
         margin=dict(l=0, r=0, t=10, b=34), height=380,
-        yaxis=dict(gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b"),
-                   title=value_label, title_font=dict(size=9, color="#64748b"), ticksuffix="%"),
+        yaxis=dict(autorange="reversed", gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b"),
+                   title="Rang", title_font=dict(size=9, color="#64748b"), dtick=1),
         xaxis=dict(gridcolor="rgba(100,116,139,0.12)", tickfont=dict(size=9, color="#64748b")),
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0,
                     font=dict(size=8, color="#64748b")),
