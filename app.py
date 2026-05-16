@@ -165,6 +165,159 @@ def _default_portfolio_settings():
         "neon_auto_update_preference": "on",
     }
 
+SELL_DECISION_MARKET_ENVIRONMENTS = {"Bullisch", "Unsicher", "Bärisch"}
+SELL_DECISION_INDUSTRY_GROUP_STATUSES = {"Stark", "Neutral", "Schwach"}
+SELL_DECISION_STATE_KEY = "sell_decision_state"
+
+
+def _default_position_manual_sell_data(ticker: str = "") -> dict:
+    return {
+        "ticker": _normalize_single_ticker(ticker),
+        "pivot": None,
+        "low_day_1": None,
+        "low_day_0": None,
+        "market_environment": "Unsicher",
+        "industry_group_status": "Neutral",
+        "personality_changed": False,
+        "strength_checkboxes": {},
+        "warning_checkboxes": {},
+    }
+
+
+def _default_sell_decision_state() -> dict:
+    return {
+        "positions_manual": {},
+        "tranche_log": [],
+        "post_mortem_log": [],
+    }
+
+
+def _safe_optional_float(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(parsed):
+        return None
+    return parsed
+
+
+def _safe_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "ja", "on"}
+    return bool(value)
+
+
+def _normalize_checkbox_map(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    normalized = {}
+    for key, value in raw.items():
+        clean_key = str(key or "").strip()
+        if clean_key:
+            normalized[clean_key] = _safe_bool(value)
+    return normalized
+
+
+def _normalize_position_manual_sell_data(ticker: str, data) -> dict:
+    base = _default_position_manual_sell_data(ticker)
+    if not isinstance(data, dict):
+        return base
+    raw_ticker = data.get("ticker") or ticker
+    base["ticker"] = _normalize_single_ticker(raw_ticker)
+    base["pivot"] = _safe_optional_float(data.get("pivot"))
+    base["low_day_1"] = _safe_optional_float(data.get("low_day_1"))
+    base["low_day_0"] = _safe_optional_float(data.get("low_day_0"))
+    market_env = str(data.get("market_environment") or base["market_environment"]).strip()
+    base["market_environment"] = market_env if market_env in SELL_DECISION_MARKET_ENVIRONMENTS else "Unsicher"
+    group_status = str(data.get("industry_group_status") or base["industry_group_status"]).strip()
+    base["industry_group_status"] = group_status if group_status in SELL_DECISION_INDUSTRY_GROUP_STATUSES else "Neutral"
+    base["personality_changed"] = _safe_bool(data.get("personality_changed", False))
+    base["strength_checkboxes"] = _normalize_checkbox_map(data.get("strength_checkboxes"))
+    base["warning_checkboxes"] = _normalize_checkbox_map(data.get("warning_checkboxes"))
+    return base
+
+
+def _normalize_sell_decision_state(raw) -> dict:
+    state = _default_sell_decision_state()
+    if not isinstance(raw, dict):
+        return state
+
+    manual_source = raw.get("positions_manual", {})
+    if isinstance(manual_source, list):
+        manual_source = {item.get("ticker", ""): item for item in manual_source if isinstance(item, dict)}
+    if isinstance(manual_source, dict):
+        for key, data in manual_source.items():
+            ticker = _normalize_single_ticker((data or {}).get("ticker") if isinstance(data, dict) else key) or _normalize_single_ticker(key)
+            if not ticker:
+                continue
+            normalized = _normalize_position_manual_sell_data(ticker, data)
+            normalized["ticker"] = ticker
+            state["positions_manual"][ticker] = normalized
+
+    state["tranche_log"] = [_normalize_tranche_log_entry(entry) for entry in raw.get("tranche_log", []) if isinstance(entry, dict)]
+    state["tranche_log"] = [entry for entry in state["tranche_log"] if entry.get("ticker")]
+    state["post_mortem_log"] = [_normalize_post_mortem_entry(entry) for entry in raw.get("post_mortem_log", []) if isinstance(entry, dict)]
+    state["post_mortem_log"] = [entry for entry in state["post_mortem_log"] if entry.get("ticker")]
+    return state
+
+
+def _normalize_date_string(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str) and not value.strip():
+        return ""
+    try:
+        parsed = pd.Timestamp(value)
+    except Exception:
+        return str(value or "").strip()
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _normalize_tranche_log_entry(entry: dict) -> dict:
+    ticker = _normalize_single_ticker(entry.get("ticker", ""))
+    return {
+        "date": _normalize_date_string(entry.get("date")),
+        "ticker": ticker,
+        "tranche_percent": _safe_optional_float(entry.get("tranche_percent")),
+        "price": _safe_optional_float(entry.get("price")),
+        "shares_sold": _safe_optional_float(entry.get("shares_sold")),
+        "trigger_signal": str(entry.get("trigger_signal") or "").strip(),
+        "notes": str(entry.get("notes") or "").strip(),
+    }
+
+
+def _normalize_post_mortem_entry(entry: dict) -> dict:
+    ticker = _normalize_single_ticker(entry.get("ticker", ""))
+    return {
+        "analysis_date": _normalize_date_string(entry.get("analysis_date")),
+        "ticker": ticker,
+        "buy_date": _normalize_date_string(entry.get("buy_date")),
+        "buy_price": _safe_optional_float(entry.get("buy_price")),
+        "sell_date": _normalize_date_string(entry.get("sell_date")),
+        "sell_price": _safe_optional_float(entry.get("sell_price")),
+        "realized_pnl_percent": _safe_optional_float(entry.get("realized_pnl_percent")),
+        "max_gain_percent": _safe_optional_float(entry.get("max_gain_percent")),
+        "max_drawdown_percent": _safe_optional_float(entry.get("max_drawdown_percent")),
+        "holding_days": int(_safe_optional_float(entry.get("holding_days")) or 0),
+        "positive_points_count": int(_safe_optional_float(entry.get("positive_points_count")) or 0),
+        "error_count": int(_safe_optional_float(entry.get("error_count")) or 0),
+        "verdict_class": str(entry.get("verdict_class") or "").strip(),
+        "checkboxes": _normalize_checkbox_map(entry.get("checkboxes")),
+        "lessons_learned": str(entry.get("lessons_learned") or "").strip(),
+    }
+
 def _workspace_payload():
     settings = dict(_default_portfolio_settings())
     raw_settings = st.session_state.get("portfolio_settings", {})
@@ -178,6 +331,7 @@ def _workspace_payload():
         "portfolio_history": st.session_state.get("portfolio_history", []),
         "portfolio_cash_flows": st.session_state.get("portfolio_cash_flows", []),
         "portfolio_settings": settings,
+        SELL_DECISION_STATE_KEY: _normalize_sell_decision_state(st.session_state.get(SELL_DECISION_STATE_KEY, {})),
     }
 
 def _load_workspace_from_store():
@@ -192,6 +346,7 @@ def _load_workspace_from_store():
         "portfolio_history": [],
         "portfolio_cash_flows": [],
         "portfolio_settings": _default_portfolio_settings(),
+        SELL_DECISION_STATE_KEY: _default_sell_decision_state(),
     }
     meta_keys = {field: _workspace_meta_key(field) for field in defaults}
     raw_values = _get_cache_metadata_many(store, list(meta_keys.values()))
@@ -215,6 +370,7 @@ def _load_workspace_from_store():
         payload["portfolio_history"] = []
     if not isinstance(payload.get("portfolio_cash_flows"), list):
         payload["portfolio_cash_flows"] = []
+    payload[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(payload.get(SELL_DECISION_STATE_KEY, {}))
     return payload
 
 def _sync_workspace() -> None:
@@ -231,6 +387,7 @@ def _sync_workspace() -> None:
             _workspace_meta_key("portfolio_history"): json.dumps(payload["portfolio_history"], ensure_ascii=False),
             _workspace_meta_key("portfolio_cash_flows"): json.dumps(payload["portfolio_cash_flows"], ensure_ascii=False),
             _workspace_meta_key("portfolio_settings"): json.dumps(payload["portfolio_settings"], ensure_ascii=False),
+            _workspace_meta_key(SELL_DECISION_STATE_KEY): json.dumps(payload[SELL_DECISION_STATE_KEY], ensure_ascii=False),
             _workspace_meta_key("updated_at"): datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
         _set_cache_metadata_many(store, values)
@@ -245,7 +402,8 @@ def _init_workspace_state():
         stored = _load_workspace_from_store()
     except Exception as exc:
         logger.debug("workspace store load failed: %s", exc)
-    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_cash_flows", "portfolio_settings"]):
+    workspace_fields = ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_cash_flows", SELL_DECISION_STATE_KEY]
+    if not any(stored.get(k) for k in workspace_fields):
         local_stored = _safe_json_load(Path(WORKSPACE_FILE), {})
         if isinstance(local_stored, dict) and local_stored:
             stored = local_stored
@@ -256,6 +414,7 @@ def _init_workspace_state():
                 st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", []))
                 st.session_state["portfolio_history"] = stored.get("portfolio_history", [])
                 st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", [])
+                st.session_state[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(stored.get(SELL_DECISION_STATE_KEY, {}))
                 migrated_settings = dict(_default_portfolio_settings())
                 if isinstance(stored.get("portfolio_settings"), dict):
                     migrated_settings.update(stored.get("portfolio_settings", {}))
@@ -269,6 +428,7 @@ def _init_workspace_state():
     st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", [])) if isinstance(stored, dict) else []
     st.session_state["portfolio_history"] = stored.get("portfolio_history", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_history", []), list) else []
     st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_cash_flows", []), list) else []
+    st.session_state[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(stored.get(SELL_DECISION_STATE_KEY, {}) if isinstance(stored, dict) else {})
     base_settings = dict(_default_portfolio_settings())
     if isinstance(stored, dict) and isinstance(stored.get("portfolio_settings"), dict):
         base_settings.update(stored.get("portfolio_settings", {}))
@@ -277,6 +437,79 @@ def _init_workspace_state():
     st.session_state.setdefault("show_add_ticker", False)
     st.session_state.setdefault("show_add_todo", False)
     st.session_state["_workspace_initialized"] = True
+
+def _sell_decision_state_copy(state: dict) -> dict:
+    # JSON roundtrip keeps callers from mutating session state by reference.
+    return json.loads(json.dumps(_normalize_sell_decision_state(state), ensure_ascii=False))
+
+
+def load_sell_decision_state() -> dict:
+    _init_workspace_state()
+    state = _normalize_sell_decision_state(st.session_state.get(SELL_DECISION_STATE_KEY, {}))
+    st.session_state[SELL_DECISION_STATE_KEY] = state
+    return _sell_decision_state_copy(state)
+
+
+def save_sell_decision_state(state: dict) -> dict:
+    _init_workspace_state()
+    normalized = _normalize_sell_decision_state(state)
+    st.session_state[SELL_DECISION_STATE_KEY] = normalized
+    _sync_workspace()
+    return _sell_decision_state_copy(normalized)
+
+
+def get_position_manual_sell_data(ticker: str) -> dict:
+    norm_ticker = _normalize_single_ticker(ticker)
+    state = load_sell_decision_state()
+    stored = state.get("positions_manual", {}).get(norm_ticker, {}) if norm_ticker else {}
+    return _normalize_position_manual_sell_data(norm_ticker, stored)
+
+
+def save_position_manual_sell_data(ticker: str, data: dict) -> dict:
+    norm_ticker = _normalize_single_ticker(ticker or (data or {}).get("ticker", ""))
+    if not norm_ticker:
+        return _default_position_manual_sell_data("")
+    state = load_sell_decision_state()
+    normalized = _normalize_position_manual_sell_data(norm_ticker, data)
+    normalized["ticker"] = norm_ticker
+    state.setdefault("positions_manual", {})[norm_ticker] = normalized
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def load_tranche_log() -> list[dict]:
+    state = load_sell_decision_state()
+    return [dict(entry) for entry in state.get("tranche_log", [])]
+
+
+def append_tranche_log(entry: dict) -> dict:
+    normalized = _normalize_tranche_log_entry(entry or {})
+    if not normalized.get("ticker"):
+        return normalized
+    state = load_sell_decision_state()
+    rows = list(state.get("tranche_log", []))
+    rows.append(normalized)
+    state["tranche_log"] = rows[-3000:]
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def load_post_mortem_log() -> list[dict]:
+    state = load_sell_decision_state()
+    return [dict(entry) for entry in state.get("post_mortem_log", [])]
+
+
+def append_post_mortem_result(entry: dict) -> dict:
+    normalized = _normalize_post_mortem_entry(entry or {})
+    if not normalized.get("ticker"):
+        return normalized
+    state = load_sell_decision_state()
+    rows = list(state.get("post_mortem_log", []))
+    rows.append(normalized)
+    state["post_mortem_log"] = rows[-3000:]
+    save_sell_decision_state(state)
+    return dict(normalized)
+
 
 def _get_private_password_hash() -> str:
     candidates = [
