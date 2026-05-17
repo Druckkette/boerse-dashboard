@@ -195,6 +195,10 @@ def build_sell_decision_metrics_payload(
     weekly_close = pd.to_numeric(weekly["Close"], errors="coerce") if not weekly.empty else pd.Series(dtype=float)
     weekly_sma10 = _sma(weekly_close, 10)
     weekly_sma21 = _sma(weekly_close, 21)
+    weekly_loss = weekly_close < weekly_close.shift(1)
+    weekly_volume = pd.to_numeric(weekly.get("Volume", pd.Series(dtype=float)), errors="coerce") if not weekly.empty else pd.Series(dtype=float)
+    weekly_rising_volume = weekly_volume > weekly_volume.shift(1)
+    consecutive_loss_weeks_rising_volume = _trailing_true_count(weekly_loss & weekly_rising_volume)
 
     vol_ratio = None
     latest_vol_avg = _last_float(vol_sma50)
@@ -221,6 +225,8 @@ def build_sell_decision_metrics_payload(
     weekly_rs = rs_line.resample("W-FRI").last().dropna()
     weekly_rs_ma10 = _sma(weekly_rs, 10)
     weekly_rs_ma25 = _sma(weekly_rs, 25)
+    days_under_rs_ma21 = _trailing_true_count(rs_line < rs_ma21)
+    days_under_rs_ma50 = _trailing_true_count(rs_line < rs_ma50)
 
     after_buy = df[df.index >= buy_ts]
     high_since_buy = _safe_float(pd.to_numeric(after_buy["High"], errors="coerce").max()) if not after_buy.empty else None
@@ -264,6 +270,8 @@ def build_sell_decision_metrics_payload(
         "sma21": _last_float(sma21),
         "sma50": _last_float(sma50),
         "sma200": _last_float(sma200),
+        "price_vs_sma50_pct": ((current_price / _last_float(sma50) - 1) * 100) if _last_float(sma50) else None,
+        "price_vs_sma200_pct": ((current_price / _last_float(sma200) - 1) * 100) if _last_float(sma200) else None,
         "weekly_sma10": _last_float(weekly_sma10),
         "weekly_sma21": _last_float(weekly_sma21),
         "atr14": _last_float(atr14),
@@ -275,6 +283,10 @@ def build_sell_decision_metrics_payload(
         "rs_ma50": _last_float(rs_ma50),
         "weekly_rs_ma10": _last_float(weekly_rs_ma10),
         "weekly_rs_ma25": _last_float(weekly_rs_ma25),
+        "days_under_rs_ma21": days_under_rs_ma21,
+        "days_under_rs_ma50": days_under_rs_ma50,
+        "consecutive_loss_weeks_rising_volume": consecutive_loss_weeks_rising_volume,
+        "three_loss_weeks_rising_volume": consecutive_loss_weeks_rising_volume >= 3,
         "high_since_buy": high_since_buy,
         "drawdown_from_high_since_buy_pct": drawdown_from_high_since_buy_pct,
         "days_under_sma21": under_sma21_days,
