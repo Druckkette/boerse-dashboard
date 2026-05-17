@@ -32,6 +32,11 @@ except Exception:
     psycopg2 = None
     execute_values = None
 
+from sell_decision_metrics import (
+    build_sell_decision_metrics_payload,
+    build_sell_decision_metrics_smoke_inputs,
+)
+from sell_decision_rules import compute_sell_health_score, evaluate_sell_decision
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
 from ui.theme import APP_CSS, PAGE_CONFIG
@@ -165,6 +170,192 @@ def _default_portfolio_settings():
         "neon_auto_update_preference": "on",
     }
 
+SELL_DECISION_MARKET_ENVIRONMENTS = {"Bullisch", "Unsicher", "Bärisch"}
+SELL_DECISION_INDUSTRY_GROUP_STATUSES = {"Stark", "Neutral", "Schwach"}
+SELL_DECISION_STATE_KEY = "sell_decision_state"
+
+
+def _default_position_manual_sell_data(ticker: str = "") -> dict:
+    return {
+        "ticker": _normalize_single_ticker(ticker),
+        "pivot": None,
+        "low_day_1": None,
+        "low_day_0": None,
+        "market_environment": "Unsicher",
+        "industry_group_status": "Neutral",
+        "personality_changed": False,
+        "strength_checkboxes": {},
+        "warning_checkboxes": {},
+    }
+
+
+def _default_sell_decision_state() -> dict:
+    return {
+        "positions_manual": {},
+        "tranche_log": [],
+        "closed_trades": [],
+        "post_mortem_log": [],
+    }
+
+
+def _safe_optional_float(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isnan(parsed):
+        return None
+    return parsed
+
+
+def _safe_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "ja", "on"}
+    return bool(value)
+
+
+def _normalize_checkbox_map(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    normalized = {}
+    for key, value in raw.items():
+        clean_key = str(key or "").strip()
+        if clean_key:
+            normalized[clean_key] = _safe_bool(value)
+    return normalized
+
+
+def _normalize_position_manual_sell_data(ticker: str, data) -> dict:
+    base = _default_position_manual_sell_data(ticker)
+    if not isinstance(data, dict):
+        return base
+    raw_ticker = data.get("ticker") or ticker
+    base["ticker"] = _normalize_single_ticker(raw_ticker)
+    base["pivot"] = _safe_optional_float(data.get("pivot"))
+    base["low_day_1"] = _safe_optional_float(data.get("low_day_1"))
+    base["low_day_0"] = _safe_optional_float(data.get("low_day_0"))
+    market_env = str(data.get("market_environment") or base["market_environment"]).strip()
+    base["market_environment"] = market_env if market_env in SELL_DECISION_MARKET_ENVIRONMENTS else "Unsicher"
+    group_status = str(data.get("industry_group_status") or base["industry_group_status"]).strip()
+    base["industry_group_status"] = group_status if group_status in SELL_DECISION_INDUSTRY_GROUP_STATUSES else "Neutral"
+    base["personality_changed"] = _safe_bool(data.get("personality_changed", False))
+    base["strength_checkboxes"] = _normalize_checkbox_map(data.get("strength_checkboxes"))
+    base["warning_checkboxes"] = _normalize_checkbox_map(data.get("warning_checkboxes"))
+    return base
+
+
+def _normalize_sell_decision_state(raw) -> dict:
+    state = _default_sell_decision_state()
+    if not isinstance(raw, dict):
+        return state
+
+    manual_source = raw.get("positions_manual", {})
+    if isinstance(manual_source, list):
+        manual_source = {item.get("ticker", ""): item for item in manual_source if isinstance(item, dict)}
+    if isinstance(manual_source, dict):
+        for key, data in manual_source.items():
+            ticker = _normalize_single_ticker((data or {}).get("ticker") if isinstance(data, dict) else key) or _normalize_single_ticker(key)
+            if not ticker:
+                continue
+            normalized = _normalize_position_manual_sell_data(ticker, data)
+            normalized["ticker"] = ticker
+            state["positions_manual"][ticker] = normalized
+
+    state["tranche_log"] = [_normalize_tranche_log_entry(entry) for entry in raw.get("tranche_log", []) if isinstance(entry, dict)]
+    state["tranche_log"] = [entry for entry in state["tranche_log"] if entry.get("ticker")]
+    state["closed_trades"] = [_normalize_closed_trade_entry(entry) for entry in raw.get("closed_trades", []) if isinstance(entry, dict)]
+    state["closed_trades"] = [entry for entry in state["closed_trades"] if entry.get("ticker")]
+    state["post_mortem_log"] = [_normalize_post_mortem_entry(entry) for entry in raw.get("post_mortem_log", []) if isinstance(entry, dict)]
+    state["post_mortem_log"] = [entry for entry in state["post_mortem_log"] if entry.get("ticker")]
+    return state
+
+
+def _normalize_date_string(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str) and not value.strip():
+        return ""
+    try:
+        parsed = pd.Timestamp(value)
+    except Exception:
+        return str(value or "").strip()
+    if pd.isna(parsed):
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _normalize_tranche_log_entry(entry: dict) -> dict:
+    ticker = _normalize_single_ticker(entry.get("ticker", ""))
+    return {
+        "date": _normalize_date_string(entry.get("date")),
+        "ticker": ticker,
+        "tranche_percent": _safe_optional_float(entry.get("tranche_percent")),
+        "price": _safe_optional_float(entry.get("price")),
+        "shares_sold": _safe_optional_float(entry.get("shares_sold")),
+        "trigger_signal": str(entry.get("trigger_signal") or "").strip(),
+        "notes": str(entry.get("notes") or "").strip(),
+    }
+
+
+def _normalize_closed_trade_entry(entry: dict) -> dict:
+    ticker = _normalize_single_ticker(entry.get("ticker", ""))
+    buy_price = _safe_optional_float(entry.get("buy_price"))
+    sell_price = _safe_optional_float(entry.get("sell_price"))
+    realized = _safe_optional_float(entry.get("realized_pnl_percent"))
+    if realized is None and buy_price and sell_price:
+        realized = (float(sell_price) / float(buy_price) - 1) * 100
+    return {
+        "id": str(entry.get("id") or uuid.uuid4()).strip(),
+        "source": str(entry.get("source") or "depot_sell_booking").strip(),
+        "booked_at": _normalize_date_string(entry.get("booked_at") or entry.get("analysis_date")),
+        "ticker": ticker,
+        "buy_date": _normalize_date_string(entry.get("buy_date")),
+        "buy_price": buy_price,
+        "buy_currency": str(entry.get("buy_currency") or entry.get("currency") or "").strip().upper(),
+        "sell_date": _normalize_date_string(entry.get("sell_date") or entry.get("date")),
+        "sell_price": sell_price,
+        "sell_currency": str(entry.get("sell_currency") or "").strip().upper(),
+        "shares": _safe_optional_float(entry.get("shares") or entry.get("shares_sold")),
+        "pivot": _safe_optional_float(entry.get("pivot")),
+        "planned_stop": _safe_optional_float(entry.get("planned_stop") or entry.get("stop_price")),
+        "realized_pnl_percent": realized,
+        "notes": str(entry.get("notes") or "").strip(),
+    }
+
+
+def _normalize_post_mortem_entry(entry: dict) -> dict:
+    ticker = _normalize_single_ticker(entry.get("ticker", ""))
+    return {
+        "analysis_date": _normalize_date_string(entry.get("analysis_date")),
+        "ticker": ticker,
+        "buy_date": _normalize_date_string(entry.get("buy_date")),
+        "buy_price": _safe_optional_float(entry.get("buy_price")),
+        "sell_date": _normalize_date_string(entry.get("sell_date")),
+        "sell_price": _safe_optional_float(entry.get("sell_price")),
+        "shares": _safe_optional_float(entry.get("shares")),
+        "pivot": _safe_optional_float(entry.get("pivot")),
+        "planned_stop": _safe_optional_float(entry.get("planned_stop")),
+        "realized_pnl_percent": _safe_optional_float(entry.get("realized_pnl_percent")),
+        "max_gain_percent": _safe_optional_float(entry.get("max_gain_percent")),
+        "max_drawdown_percent": _safe_optional_float(entry.get("max_drawdown_percent")),
+        "holding_days": int(_safe_optional_float(entry.get("holding_days")) or 0),
+        "positive_points_count": int(_safe_optional_float(entry.get("positive_points_count")) or 0),
+        "error_count": int(_safe_optional_float(entry.get("error_count")) or 0),
+        "verdict_class": str(entry.get("verdict_class") or "").strip(),
+        "checkboxes": _normalize_checkbox_map(entry.get("checkboxes")),
+        "lessons_learned": entry.get("lessons_learned") if isinstance(entry.get("lessons_learned"), list) else str(entry.get("lessons_learned") or "").strip(),
+        "trade_data": entry.get("trade_data", {}) if isinstance(entry.get("trade_data", {}), dict) else {},
+    }
+
 def _workspace_payload():
     settings = dict(_default_portfolio_settings())
     raw_settings = st.session_state.get("portfolio_settings", {})
@@ -178,6 +369,7 @@ def _workspace_payload():
         "portfolio_history": st.session_state.get("portfolio_history", []),
         "portfolio_cash_flows": st.session_state.get("portfolio_cash_flows", []),
         "portfolio_settings": settings,
+        SELL_DECISION_STATE_KEY: _normalize_sell_decision_state(st.session_state.get(SELL_DECISION_STATE_KEY, {})),
     }
 
 def _load_workspace_from_store():
@@ -192,6 +384,7 @@ def _load_workspace_from_store():
         "portfolio_history": [],
         "portfolio_cash_flows": [],
         "portfolio_settings": _default_portfolio_settings(),
+        SELL_DECISION_STATE_KEY: _default_sell_decision_state(),
     }
     meta_keys = {field: _workspace_meta_key(field) for field in defaults}
     raw_values = _get_cache_metadata_many(store, list(meta_keys.values()))
@@ -215,6 +408,7 @@ def _load_workspace_from_store():
         payload["portfolio_history"] = []
     if not isinstance(payload.get("portfolio_cash_flows"), list):
         payload["portfolio_cash_flows"] = []
+    payload[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(payload.get(SELL_DECISION_STATE_KEY, {}))
     return payload
 
 def _sync_workspace() -> None:
@@ -231,6 +425,7 @@ def _sync_workspace() -> None:
             _workspace_meta_key("portfolio_history"): json.dumps(payload["portfolio_history"], ensure_ascii=False),
             _workspace_meta_key("portfolio_cash_flows"): json.dumps(payload["portfolio_cash_flows"], ensure_ascii=False),
             _workspace_meta_key("portfolio_settings"): json.dumps(payload["portfolio_settings"], ensure_ascii=False),
+            _workspace_meta_key(SELL_DECISION_STATE_KEY): json.dumps(payload[SELL_DECISION_STATE_KEY], ensure_ascii=False),
             _workspace_meta_key("updated_at"): datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
         _set_cache_metadata_many(store, values)
@@ -245,7 +440,8 @@ def _init_workspace_state():
         stored = _load_workspace_from_store()
     except Exception as exc:
         logger.debug("workspace store load failed: %s", exc)
-    if not any(stored.get(k) for k in ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_cash_flows", "portfolio_settings"]):
+    workspace_fields = ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_cash_flows", SELL_DECISION_STATE_KEY]
+    if not any(stored.get(k) for k in workspace_fields):
         local_stored = _safe_json_load(Path(WORKSPACE_FILE), {})
         if isinstance(local_stored, dict) and local_stored:
             stored = local_stored
@@ -256,6 +452,7 @@ def _init_workspace_state():
                 st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", []))
                 st.session_state["portfolio_history"] = stored.get("portfolio_history", [])
                 st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", [])
+                st.session_state[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(stored.get(SELL_DECISION_STATE_KEY, {}))
                 migrated_settings = dict(_default_portfolio_settings())
                 if isinstance(stored.get("portfolio_settings"), dict):
                     migrated_settings.update(stored.get("portfolio_settings", {}))
@@ -269,6 +466,7 @@ def _init_workspace_state():
     st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", [])) if isinstance(stored, dict) else []
     st.session_state["portfolio_history"] = stored.get("portfolio_history", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_history", []), list) else []
     st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_cash_flows", []), list) else []
+    st.session_state[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(stored.get(SELL_DECISION_STATE_KEY, {}) if isinstance(stored, dict) else {})
     base_settings = dict(_default_portfolio_settings())
     if isinstance(stored, dict) and isinstance(stored.get("portfolio_settings"), dict):
         base_settings.update(stored.get("portfolio_settings", {}))
@@ -277,6 +475,96 @@ def _init_workspace_state():
     st.session_state.setdefault("show_add_ticker", False)
     st.session_state.setdefault("show_add_todo", False)
     st.session_state["_workspace_initialized"] = True
+
+def _sell_decision_state_copy(state: dict) -> dict:
+    # JSON roundtrip keeps callers from mutating session state by reference.
+    return json.loads(json.dumps(_normalize_sell_decision_state(state), ensure_ascii=False))
+
+
+def load_sell_decision_state() -> dict:
+    _init_workspace_state()
+    state = _normalize_sell_decision_state(st.session_state.get(SELL_DECISION_STATE_KEY, {}))
+    st.session_state[SELL_DECISION_STATE_KEY] = state
+    return _sell_decision_state_copy(state)
+
+
+def save_sell_decision_state(state: dict) -> dict:
+    _init_workspace_state()
+    normalized = _normalize_sell_decision_state(state)
+    st.session_state[SELL_DECISION_STATE_KEY] = normalized
+    _sync_workspace()
+    return _sell_decision_state_copy(normalized)
+
+
+def get_position_manual_sell_data(ticker: str) -> dict:
+    norm_ticker = _normalize_single_ticker(ticker)
+    state = load_sell_decision_state()
+    stored = state.get("positions_manual", {}).get(norm_ticker, {}) if norm_ticker else {}
+    return _normalize_position_manual_sell_data(norm_ticker, stored)
+
+
+def save_position_manual_sell_data(ticker: str, data: dict) -> dict:
+    norm_ticker = _normalize_single_ticker(ticker or (data or {}).get("ticker", ""))
+    if not norm_ticker:
+        return _default_position_manual_sell_data("")
+    state = load_sell_decision_state()
+    normalized = _normalize_position_manual_sell_data(norm_ticker, data)
+    normalized["ticker"] = norm_ticker
+    state.setdefault("positions_manual", {})[norm_ticker] = normalized
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def load_tranche_log() -> list[dict]:
+    state = load_sell_decision_state()
+    return [dict(entry) for entry in state.get("tranche_log", [])]
+
+
+def append_tranche_log(entry: dict) -> dict:
+    normalized = _normalize_tranche_log_entry(entry or {})
+    if not normalized.get("ticker"):
+        return normalized
+    state = load_sell_decision_state()
+    rows = list(state.get("tranche_log", []))
+    rows.append(normalized)
+    state["tranche_log"] = rows[-3000:]
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def load_closed_trades() -> list[dict]:
+    state = load_sell_decision_state()
+    return [dict(entry) for entry in state.get("closed_trades", [])]
+
+
+def append_closed_trade(entry: dict) -> dict:
+    normalized = _normalize_closed_trade_entry(entry or {})
+    if not normalized.get("ticker"):
+        return normalized
+    state = load_sell_decision_state()
+    rows = list(state.get("closed_trades", []))
+    rows.append(normalized)
+    state["closed_trades"] = rows[-3000:]
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def load_post_mortem_log() -> list[dict]:
+    state = load_sell_decision_state()
+    return [dict(entry) for entry in state.get("post_mortem_log", [])]
+
+
+def append_post_mortem_result(entry: dict) -> dict:
+    normalized = _normalize_post_mortem_entry(entry or {})
+    if not normalized.get("ticker"):
+        return normalized
+    state = load_sell_decision_state()
+    rows = list(state.get("post_mortem_log", []))
+    rows.append(normalized)
+    state["post_mortem_log"] = rows[-3000:]
+    save_sell_decision_state(state)
+    return dict(normalized)
+
 
 def _get_private_password_hash() -> str:
     candidates = [
@@ -1417,6 +1705,70 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
             continue
         out[sym] = close
     return out
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: float, benchmark_ticker: str = "SPY", currency: str = "", cache_buster: int = 0) -> dict:
+    """Load cached Yahoo data and build reusable metrics for the sell-decision area."""
+    _ = cache_buster
+    norm_ticker = _normalize_single_ticker(ticker)
+    norm_benchmark = _normalize_single_ticker(benchmark_ticker or "SPY") or "SPY"
+    if not norm_ticker:
+        return {"ok": False, "error": "Ticker fehlt.", "ticker": "", "benchmark_ticker": norm_benchmark, "metrics": {}, "manual_defaults": {}, "as_of": ""}
+    try:
+        buy_ts = pd.Timestamp(buy_date).normalize()
+    except Exception:
+        return {"ok": False, "error": "Ungültiges Einstiegsdatum.", "ticker": norm_ticker, "benchmark_ticker": norm_benchmark, "metrics": {}, "manual_defaults": {}, "as_of": ""}
+
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    # 420 calendar days usually covers >=250 trading days; include pre-buy data for pivot defaults.
+    start = min(end - timedelta(days=420), buy_ts.to_pydatetime() - timedelta(days=60))
+    frames = _bulk_download_ohlc((norm_ticker, norm_benchmark), start, end)
+    price_frame = frames.get(norm_ticker, pd.DataFrame())
+    benchmark_frame = frames.get(norm_benchmark, pd.DataFrame())
+
+    market_currency = str(currency or "").upper().strip()
+    if not market_currency:
+        try:
+            market_currency = str((_portfolio_symbol_metrics(norm_ticker) or {}).get("currency", "USD") or "USD").upper()
+        except Exception:
+            market_currency = "USD"
+
+    pnl_abs_eur = None
+    fx_rate_to_eur = None
+    try:
+        current_close = pd.to_numeric(price_frame.get("Close", pd.Series(dtype=float)), errors="coerce").dropna()
+        if not current_close.empty:
+            pnl_abs_market = (float(current_close.iloc[-1]) - float(buy_price or 0.0)) * float(shares or 0.0)
+            if market_currency == "EUR":
+                pnl_abs_eur = pnl_abs_market
+                fx_rate_to_eur = 1.0
+            else:
+                pnl_abs_eur, fx_rate_to_eur = _price_to_eur(pnl_abs_market, market_currency, end.date())
+    except Exception:
+        pnl_abs_eur = None
+        fx_rate_to_eur = None
+
+    return build_sell_decision_metrics_payload(
+        ticker=norm_ticker,
+        buy_date=buy_ts,
+        buy_price=buy_price,
+        shares=shares,
+        price_frame=price_frame,
+        benchmark_frame=benchmark_frame,
+        benchmark_ticker=norm_benchmark,
+        currency=market_currency,
+        pnl_abs_eur=pnl_abs_eur,
+        fx_rate_to_eur=fx_rate_to_eur,
+    )
+
+
+def debug_sell_decision_metrics_smoke_test() -> list[dict]:
+    """Best-effort smoke check for three liquid tickers; intended for local debugging."""
+    results = []
+    for sample in build_sell_decision_metrics_smoke_inputs():
+        results.append(load_sell_decision_metrics(**sample))
+    return results
 
 
 def _beta_from_close_series(close: pd.Series, benchmark_close: pd.Series, window: int = 120) -> float:
@@ -2627,6 +2979,27 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             else:
                 sell_price_eur, _ = _price_to_eur(float(sell_price), sell_currency, sell_date)
                 proceeds = float(sell_shares) * float(sell_price_eur)
+                sell_ticker_norm = _normalize_single_ticker(selected_sell.get("ticker", ""))
+                manual_sell_data = get_position_manual_sell_data(sell_ticker_norm) if sell_ticker_norm else {}
+                buy_price_native = _safe_optional_float(selected_sell.get("buy_price"))
+                sell_price_native = float(sell_price)
+                realized_pct = (sell_price_native / buy_price_native - 1) * 100 if buy_price_native and buy_price_native > 0 else None
+                append_closed_trade({
+                    "source": "depot_sell_booking",
+                    "booked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "ticker": sell_ticker_norm,
+                    "buy_date": selected_sell.get("buy_date"),
+                    "buy_price": buy_price_native,
+                    "buy_currency": selected_sell.get("currency"),
+                    "sell_date": str(sell_date),
+                    "sell_price": sell_price_native,
+                    "sell_currency": sell_currency,
+                    "shares": float(sell_shares),
+                    "pivot": manual_sell_data.get("pivot"),
+                    "planned_stop": selected_sell.get("stop_price"),
+                    "realized_pnl_percent": realized_pct,
+                    "notes": "Teilverkauf" if float(sell_shares) < max_sell_shares else "Vollverkauf",
+                })
                 remaining = max(max_sell_shares - float(sell_shares), 0.0)
                 if remaining <= 0:
                     _remove_position(selected_sell.get("ticker", ""))
@@ -2635,7 +3008,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     updated["shares"] = remaining
                     _upsert_position(updated)
                 _adjust_cash_balance(proceeds)
-                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €.")
+                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €. Der Trade wurde für das Post-Mortem vorgemerkt.")
                 st.rerun()
 
     st.markdown("#### 💵 Cash-Flows")
@@ -9751,6 +10124,767 @@ def _tab_aktienbewertung():
         )
 
 
+SELL_MONITOR_STRENGTH_SIGNALS = [
+    ("upper_third_closes", "Schlusskurse überwiegend im oberen Drittel der Tageskerze"),
+    ("green_days_70", "ungefähr 70% grüne Tage in den ersten ein bis zwei Wochen"),
+    ("positive_volume", "anziehendes Volumen an positiven Tagen, geringeres Volumen an Rücksetzern"),
+    ("pullback_rebound", "Pullback an der 21- oder 50-MA wurde mit sichtbarer Stärke abgeprallt"),
+    ("rs_line_strong", "RS-Linie steigt und verläuft über ihren gleitenden Durchschnitten"),
+    ("strong_industry_group", "Industriegruppe gehört zu den stärksten Gruppen"),
+]
+
+SELL_MONITOR_WARNING_SIGNALS = [
+    ("failed_breakout_high_volume", "Ausbruch ohne Kraft und schnelles Zurückfallen mit hohem Volumen"),
+    ("lower_lows_no_rebound", "drei bis vier tiefere Tagestiefs in Folge ohne Rebound"),
+    ("stall_days_near_breakout", "Stau-Tage nahe dem Ausbruchspunkt"),
+    ("low_closes", "mehrere Schlusskurse nahe Tagestief"),
+    ("distribution_cluster", "Häufung von Distributions-Tagen"),
+    ("negative_market_divergence", "negative Divergenz zum Gesamtmarkt"),
+    ("weak_rebounds", "schwache Erholungsversuche"),
+    ("weak_industry_group", "Industriegruppe schwächelt"),
+    ("worst_day_high_volume", "größter Tagesverlust seit Beginn der Bewegung mit hohem Volumen"),
+    ("downside_reversal_near_high", "Downside Reversal nahe Hoch"),
+    ("three_loss_weeks_rising_volume", "drei Wochen in Folge Verluste bei steigendem Wochenvolumen"),
+]
+
+
+def _sell_monitor_fmt_money(value, currency: str = "") -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    symbol = "€" if str(currency).upper() == "EUR" else "$" if str(currency).upper() == "USD" else str(currency or "")
+    return f"{float(value):,.2f} {symbol}".replace(",", ".")
+
+
+def _sell_monitor_distance(price, reference) -> float | None:
+    price = _safe_float(price, np.nan)
+    reference = _safe_float(reference, np.nan)
+    if np.isnan(price) or np.isnan(reference) or reference <= 0:
+        return None
+    return (price / reference - 1) * 100
+
+
+def _sell_monitor_buy_price_for_market(ticker: str, buy_price: float, currency: str, buy_date, market_currency: str) -> float:
+    raw = float(buy_price or 0.0)
+    src = str(currency or "EUR").upper()
+    dst = str(market_currency or src).upper()
+    if src == dst:
+        return raw
+    if src == "USD" and dst == "EUR":
+        return _price_to_eur(raw, "USD", buy_date)[0]
+    if src == "EUR" and dst == "USD":
+        try:
+            fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
+            if fx is not None and len(fx) > 0:
+                eur_usd = float(fx["Close"].dropna().iloc[-1])
+                if eur_usd > 0:
+                    return raw * eur_usd
+        except Exception as exc:
+            logger.debug("EUR/USD conversion for sell monitor failed: %s", exc)
+        rate = _usd_eur_rate()
+        return raw / rate if rate else raw
+    return raw
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_sell_decision_chart_frame(ticker: str, buy_date, benchmark_ticker: str = "SPY", cache_buster: int = 0) -> pd.DataFrame:
+    _ = cache_buster
+    norm_ticker = _normalize_single_ticker(ticker)
+    if not norm_ticker:
+        return pd.DataFrame()
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        buy_ts = pd.Timestamp(buy_date).normalize()
+    except Exception:
+        buy_ts = pd.Timestamp(end - timedelta(days=420)).normalize()
+    start = min(end - timedelta(days=420), buy_ts.to_pydatetime() - timedelta(days=60))
+    frames = _bulk_download_ohlc((norm_ticker,), start, end)
+    return _coerce_ohlc_frame(frames.get(norm_ticker))
+
+
+def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: float, market_currency: str) -> None:
+    label = result.get("recommendation_label", "HALTEN")
+    pct = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
+    tone = "#16a34a" if label == "HALTEN" else "#d97706" if label == "TEILVERKAUF" else "#dc2626"
+    bg = "#f0fdf4" if label == "HALTEN" else "#fffbeb" if label == "TEILVERKAUF" else "#fef2f2"
+    border = "#bbf7d0" if label == "HALTEN" else "#fde68a" if label == "TEILVERKAUF" else "#fecaca"
+    st.markdown(
+        f"""
+        <div class="summary-hero" style="background:{bg};border-color:{border};border-left:5px solid {tone};margin-bottom:14px;">
+          <div class="card-label" style="color:{tone};">Verkaufs-Empfehlung</div>
+          <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-end;flex-wrap:wrap;">
+            <div style="font-size:2rem;font-weight:800;color:{tone};line-height:1;">{html.escape(label)}</div>
+            <div style="font-size:1.4rem;font-weight:800;color:{tone};">{pct}% jetzt verkaufen</div>
+          </div>
+          <div style="margin-top:8px;color:#334155;font-size:.9rem;">{html.escape(str(result.get('explanation_short', '')))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    already = float(result.get("already_sold_percent", 0.0) or 0.0)
+    remaining_before_pct = max(100.0 - already, 1.0)
+    shares_to_sell = min(float(shares or 0.0), float(shares or 0.0) * pct / remaining_before_pct) if pct else 0.0
+    remaining_shares = max(float(shares or 0.0) - shares_to_sell, 0.0)
+    current_price = _safe_float(metrics.get("current_price"), np.nan)
+    tranche_value_market = shares_to_sell * current_price if not np.isnan(current_price) else np.nan
+    tranche_value_eur = tranche_value_market if str(market_currency).upper() == "EUR" else _usd_to_eur(tranche_value_market)
+    cols = st.columns(4)
+    cols[0].metric("Jetzt verkaufen", f"{shares_to_sell:,.2f} Stk.".replace(",", "."))
+    cols[1].metric("Verbleiben", f"{remaining_shares:,.2f} Stk.".replace(",", "."))
+    cols[2].metric("Tranche EUR", _format_eur(tranche_value_eur if not np.isnan(tranche_value_eur) else 0.0))
+    cols[3].metric("Rest nach Verkauf", f"{float(result.get('remaining_after_sale_percent', 0.0) or 0.0):.0f}%")
+
+    action_cols = st.columns(4)
+    action_cols[0].metric("Stopp Restposition", _sell_monitor_fmt_money(result.get("stop_price"), market_currency))
+    action_cols[1].metric("Nächste Tranche", _sell_monitor_fmt_money(result.get("next_tranche_trigger_price"), market_currency))
+    action_cols[2].metric("Vollausstieg", _sell_monitor_fmt_money(result.get("full_exit_price"), market_currency))
+    with action_cols[3]:
+        st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
+
+
+def _render_sell_monitor_signals(result: dict) -> None:
+    def render_list(title: str, signals: list[dict], color: str, bg: str):
+        st.markdown(f'<div class="info-card" style="border-color:{color}33;"><div class="card-label" style="color:{color};">{html.escape(title)}</div>', unsafe_allow_html=True)
+        if not signals:
+            st.markdown('<div style="color:#64748b;font-size:.85rem;">Keine aktiven Signale</div>', unsafe_allow_html=True)
+        for signal in signals:
+            contrib = int(signal.get("contribution_percent", 0) or 0)
+            contrib_text = f" · {contrib}%" if contrib else ""
+            st.markdown(
+                f"""
+                <div style="background:{bg};border-radius:10px;padding:9px 10px;margin:8px 0;">
+                  <div style="font-weight:700;color:{color};font-size:.86rem;">{html.escape(str(signal.get('label', 'Signal')))}{contrib_text}</div>
+                  <div style="color:#64748b;font-size:.74rem;margin-top:3px;">{html.escape(str(signal.get('book_reference') or 'Regelwerk'))}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_list("Killer-Signale", result.get("killer_signals", []), "#dc2626", "#fef2f2")
+    with c2:
+        render_list("Tranche-Signale", result.get("tranche_signals", []), "#d97706", "#fffbeb")
+    with c3:
+        render_list("Watch-Signale", result.get("watch_signals", []), "#2563eb", "#eff6ff")
+
+
+def _render_sell_monitor_diagnostics(ticker: str, metrics_payload: dict, manual_data: dict, tranche_log: list[dict], chart_df: pd.DataFrame, market_currency: str) -> None:
+    with st.expander("🔎 Erweiterte Diagnose", expanded=False):
+        metrics = metrics_payload.get("metrics", {}) if isinstance(metrics_payload, dict) else {}
+        if metrics:
+            rows = [{"Kennzahl": key, "Wert": value} for key, value in metrics.items()]
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        if chart_df is None or chart_df.empty:
+            st.info("Für den Diagnose-Chart fehlen Kursdaten.")
+            return
+        df = chart_df.copy().tail(260)
+        close = pd.to_numeric(df["Close"], errors="coerce")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df.index, y=close, mode="lines", name="Kurs"))
+        for window, name, color in [(21, "21-MA", "#2563eb"), (50, "50-MA", "#d97706"), (200, "200-MA", "#64748b")]:
+            ma = close.rolling(window, min_periods=window).mean()
+            if ma.notna().any():
+                fig.add_trace(go.Scatter(x=df.index, y=ma, mode="lines", name=name, line=dict(width=1.4, color=color)))
+        for key, name, color in [("pivot", "Pivot", "#7c3aed"), ("low_day_1", "Tief Tag 1", "#dc2626")]:
+            val = _safe_float(manual_data.get(key), np.nan)
+            if not np.isnan(val):
+                fig.add_hline(y=val, line_dash="dot", line_color=color, annotation_text=name)
+        ticker_tranches = [t for t in tranche_log if str(t.get("ticker", "")).upper() == str(ticker).upper()]
+        for idx, entry in enumerate(ticker_tranches[:10]):
+            try:
+                fig.add_trace(go.Scatter(
+                    x=[pd.Timestamp(entry.get("date"))], y=[float(entry.get("price"))], mode="markers",
+                    name=f"Tranche {entry.get('tranche_percent', '')}%", marker=dict(size=9, symbol="triangle-down", color="#dc2626")
+                ))
+            except Exception:
+                continue
+        apply_consistent_layout(fig, height=360, top_margin=24)
+        fig.update_layout(yaxis_title=market_currency, xaxis_title="")
+        st.plotly_chart(fig, width="stretch", key=f"sell_monitor_diag_{ticker}")
+
+
+def _render_sell_decision_live_monitor() -> None:
+    _init_workspace_state()
+    inject_workspace_css()
+    positions = [p for p in st.session_state.get("positions", []) if _normalize_single_ticker((p or {}).get("ticker", ""))]
+    if not positions:
+        st.info("Noch keine offenen Portfolio-Positionen vorhanden. Lege zuerst im Depot oder im Nach-Kauf-Check eine Position an.")
+        return
+
+    st.markdown("#### 📡 Live-Monitor")
+    st.caption("Analysiert eine einzelne offene Position mit Yahoo-Kennzahlen, gespeicherten manuellen Daten und der Verkaufs-Regel-Engine.")
+    ticker_options = list(dict.fromkeys(_normalize_single_ticker(p.get("ticker", "")) for p in positions if _normalize_single_ticker(p.get("ticker", ""))))
+    top_cols = st.columns([2.2, 1])
+    with top_cols[0]:
+        selected_ticker = st.selectbox("Offene Position", ticker_options, key="sell_live_ticker")
+    with top_cols[1]:
+        st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+        if st.button("Yahoo-Daten neu laden", key="sell_live_reload", width="stretch"):
+            st.session_state["sell_live_cache_buster"] = st.session_state.get("sell_live_cache_buster", 0) + 1
+            st.rerun()
+
+    position = next((p for p in positions if _normalize_single_ticker(p.get("ticker", "")) == selected_ticker), {})
+    shares = _safe_float(position.get("shares"), 0.0)
+    buy_date_raw = position.get("buy_date") or datetime.now(timezone.utc).date()
+    try:
+        buy_date = pd.Timestamp(buy_date_raw).date()
+    except Exception:
+        st.error("Die gespeicherte Position hat kein gültiges Kaufdatum.")
+        return
+    stored_currency = str(position.get("currency", "EUR") or "EUR").upper()
+    stored_buy_price = _safe_float(position.get("buy_price"), np.nan)
+    if np.isnan(stored_buy_price) or stored_buy_price <= 0:
+        st.error("Die gespeicherte Position hat keinen gültigen Einstandspreis.")
+        return
+
+    with st.spinner(f"Lade Yahoo-Kennzahlen für {selected_ticker} …"):
+        try:
+            symbol_metrics = _portfolio_symbol_metrics(selected_ticker) or {}
+            market_currency = str(symbol_metrics.get("currency", stored_currency) or stored_currency).upper()
+            metric_buy_price = _sell_monitor_buy_price_for_market(selected_ticker, stored_buy_price, stored_currency, buy_date, market_currency)
+            metrics_payload = load_sell_decision_metrics(
+                selected_ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency,
+                cache_buster=st.session_state.get("sell_live_cache_buster", 0),
+            )
+            chart_df = load_sell_decision_chart_frame(selected_ticker, buy_date, cache_buster=st.session_state.get("sell_live_cache_buster", 0))
+        except Exception as exc:
+            st.error(f"Yahoo-Daten konnten nicht geladen werden: {exc}")
+            return
+    if not metrics_payload.get("ok"):
+        st.error(metrics_payload.get("error") or "Yahoo-Daten konnten nicht berechnet werden.")
+        return
+
+    manual_data = get_position_manual_sell_data(selected_ticker)
+    defaults = metrics_payload.get("manual_defaults", {}) or {}
+    # Fill empty manual fields from measured defaults for display; save only on user action.
+    display_manual = dict(manual_data)
+    for key in ["pivot", "low_day_1", "low_day_0"]:
+        if display_manual.get(key) in (None, ""):
+            display_manual[key] = defaults.get(key)
+    metrics = metrics_payload.get("metrics", {}) or {}
+    result_preview = evaluate_sell_decision(metrics_payload, display_manual, load_tranche_log())
+    _render_sell_monitor_recommendation(result_preview, metrics, shares, market_currency)
+
+    st.markdown("#### Stammdaten & manuelle Overrides")
+    auto_cols = st.columns(5)
+    auto_cols[0].metric("Ticker", selected_ticker)
+    auto_cols[1].metric("Stückzahl", f"{shares:,.2f}".replace(",", "."))
+    auto_cols[2].metric("Kaufdatum", pd.Timestamp(buy_date).strftime("%d.%m.%Y"))
+    auto_cols[3].metric("Einstand", _sell_monitor_fmt_money(stored_buy_price, stored_currency))
+    auto_cols[4].metric("Yahoo-Währung", market_currency)
+
+    with st.form(f"sell_monitor_manual_{selected_ticker}"):
+        m1, m2, m3, m4, m5, m6 = st.columns([1, 1, 1, 1.1, 1.1, 1.4])
+        pivot = m1.number_input("Pivot", min_value=0.0, value=float(display_manual.get("pivot") or 0.0), step=0.01, key=f"sell_pivot_{selected_ticker}")
+        low_day_1 = m2.number_input("Tief Tag 1", min_value=0.0, value=float(display_manual.get("low_day_1") or 0.0), step=0.01, key=f"sell_low1_{selected_ticker}")
+        low_day_0 = m3.number_input("Tief Tag 0", min_value=0.0, value=float(display_manual.get("low_day_0") or 0.0), step=0.01, key=f"sell_low0_{selected_ticker}")
+        market_environment = m4.selectbox("Marktumfeld", ["Bullisch", "Unsicher", "Bärisch"], index=["Bullisch", "Unsicher", "Bärisch"].index(display_manual.get("market_environment", "Unsicher") if display_manual.get("market_environment", "Unsicher") in ["Bullisch", "Unsicher", "Bärisch"] else "Unsicher"), key=f"sell_env_{selected_ticker}")
+        industry_status = m5.selectbox("Industriegruppe", ["Stark", "Neutral", "Schwach"], index=["Stark", "Neutral", "Schwach"].index(display_manual.get("industry_group_status", "Neutral") if display_manual.get("industry_group_status", "Neutral") in ["Stark", "Neutral", "Schwach"] else "Neutral"), key=f"sell_ind_{selected_ticker}")
+        personality_changed = m6.checkbox("Persönlichkeits-Check: Aktie hat ihre Persönlichkeit geändert", value=bool(display_manual.get("personality_changed", False)), key=f"sell_personality_{selected_ticker}")
+
+        st.markdown("##### Verhaltenscheck")
+        s_col, w_col = st.columns(2)
+        strength_values = dict(display_manual.get("strength_checkboxes", {}) or {})
+        warning_values = dict(display_manual.get("warning_checkboxes", {}) or {})
+        with s_col:
+            st.markdown('<div class="card-label" style="color:#16a34a;">Stärke-Signale</div>', unsafe_allow_html=True)
+            for key, label in SELL_MONITOR_STRENGTH_SIGNALS:
+                strength_values[key] = st.checkbox(label, value=bool(strength_values.get(key, False)), key=f"sell_strength_{selected_ticker}_{key}")
+        with w_col:
+            st.markdown('<div class="card-label" style="color:#dc2626;">Warnzeichen</div>', unsafe_allow_html=True)
+            for key, label in SELL_MONITOR_WARNING_SIGNALS:
+                warning_values[key] = st.checkbox(label, value=bool(warning_values.get(key, False)), key=f"sell_warn_{selected_ticker}_{key}")
+
+        saved = st.form_submit_button("💾 Verkaufsdaten für diesen Ticker speichern", type="primary", use_container_width=True)
+        if saved:
+            save_position_manual_sell_data(selected_ticker, {
+                "ticker": selected_ticker,
+                "pivot": pivot or None,
+                "low_day_1": low_day_1 or None,
+                "low_day_0": low_day_0 or None,
+                "market_environment": market_environment,
+                "industry_group_status": industry_status,
+                "personality_changed": personality_changed,
+                "strength_checkboxes": strength_values,
+                "warning_checkboxes": warning_values,
+            })
+            st.success("Verkaufsdaten gespeichert.")
+            st.rerun()
+
+    manual_for_rules = get_position_manual_sell_data(selected_ticker)
+    for key in ["pivot", "low_day_1", "low_day_0"]:
+        if manual_for_rules.get(key) in (None, ""):
+            manual_for_rules[key] = defaults.get(key)
+    result = evaluate_sell_decision(metrics_payload, manual_for_rules, load_tranche_log())
+
+    st.markdown("#### Kennzahlen")
+    current = _safe_float(metrics.get("current_price"), np.nan)
+    rs_status = "—"
+    rs_line = _safe_float(metrics.get("rs_line"), np.nan)
+    rs21 = _safe_float(metrics.get("rs_ma21"), np.nan)
+    rs50 = _safe_float(metrics.get("rs_ma50"), np.nan)
+    if not np.isnan(rs_line) and not np.isnan(rs21) and not np.isnan(rs50):
+        rs_status = "Stark" if rs_line > rs21 > rs50 else "Schwach" if rs_line < rs21 or rs_line < rs50 else "Neutral"
+    kpis = [
+        {"title": "P&L", "value": _fmt_pct(metrics.get("pnl_pct")), "detail": "seit Einstieg"},
+        {"title": "Drawdown", "value": _fmt_pct(metrics.get("drawdown_from_high_since_buy_pct")), "detail": "vom Hoch nach Kauf"},
+        {"title": "Distanz 21-MA", "value": _fmt_pct(_sell_monitor_distance(current, metrics.get("sma21"))), "detail": _sell_monitor_fmt_money(metrics.get("sma21"), market_currency)},
+        {"title": "Distanz 50-MA", "value": _fmt_pct(_sell_monitor_distance(current, metrics.get("sma50"))), "detail": _sell_monitor_fmt_money(metrics.get("sma50"), market_currency)},
+    ]
+    _render_change_cards(kpis)
+    st.markdown(f'<div class="info-card"><div class="card-label">RS-Linien-Status</div><div style="font-size:1.1rem;font-weight:800;">{html.escape(rs_status)}</div><div class="mini-help">RS {rs_line:.4f} · 21-MA {_fmt_num(rs21)} · 50-MA {_fmt_num(rs50)}</div></div>' if not np.isnan(rs_line) else '<div class="info-card"><div class="card-label">RS-Linien-Status</div>—</div>', unsafe_allow_html=True)
+
+    st.markdown("#### Aktive Signale")
+    _render_sell_monitor_signals(result)
+    _render_sell_monitor_diagnostics(selected_ticker, metrics_payload, manual_for_rules, load_tranche_log(), chart_df, market_currency)
+
+
+def _sell_ranking_status_badge(status: str) -> str:
+    return {"Halten": "🟢 Halten", "Beobachten": "🟡 Beobachten", "Verkaufen": "🔴 Verkaufen"}.get(str(status), str(status or "—"))
+
+
+def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: dict, tranche_log: list[dict], cache_buster: int) -> dict:
+    ticker = _normalize_single_ticker((position or {}).get("ticker", ""))
+    base = {
+        "Ticker": ticker,
+        "Firma": name_map.get(ticker, ticker),
+        "P&L %": np.nan,
+        "Health-Score": np.nan,
+        "Empfohlene Tranche %": 0,
+        "Status": "Fehler",
+        "Drawdown vom Peak %": np.nan,
+        "21-MA": "—",
+        "50-MA": "—",
+        "RS-Trend": "—",
+        "Distribution-Tage": np.nan,
+        "Haltedauer Tage": np.nan,
+        "Fehler": "",
+        "_sort_tranche": 0,
+        "_sort_health": -1,
+    }
+    if not ticker:
+        base["Fehler"] = "Ticker fehlt."
+        return base
+    try:
+        buy_date = pd.Timestamp((position or {}).get("buy_date")).date()
+    except Exception:
+        base["Fehler"] = "Kaufdatum fehlt/ungültig."
+        return base
+    buy_price = _safe_float((position or {}).get("buy_price"), np.nan)
+    if np.isnan(buy_price) or buy_price <= 0:
+        base["Fehler"] = "Einstandspreis fehlt/ungültig."
+        return base
+    shares = _safe_float((position or {}).get("shares"), 0.0)
+    stored_currency = str((position or {}).get("currency", "EUR") or "EUR").upper()
+    try:
+        symbol_metrics = _portfolio_symbol_metrics(ticker) or {}
+        market_currency = str(symbol_metrics.get("currency", stored_currency) or stored_currency).upper()
+        metric_buy_price = _sell_monitor_buy_price_for_market(ticker, buy_price, stored_currency, buy_date, market_currency)
+        metrics_payload = load_sell_decision_metrics(ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency, cache_buster=cache_buster)
+        if not metrics_payload.get("ok"):
+            base["Fehler"] = metrics_payload.get("error") or "Kennzahlen fehlen."
+            return base
+        manual = dict((manual_map or {}).get(ticker, {}) or {})
+        result = evaluate_sell_decision(metrics_payload, manual, tranche_log)
+        health = compute_sell_health_score(metrics_payload, manual)
+        metrics = metrics_payload.get("metrics", {}) or {}
+        current = _safe_float(metrics.get("current_price"), np.nan)
+        sma21 = _safe_float(metrics.get("sma21"), np.nan)
+        sma50 = _safe_float(metrics.get("sma50"), np.nan)
+        held_days = max((datetime.now(timezone.utc).date() - buy_date).days, 0)
+        tranche = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
+        base.update({
+            "P&L %": _safe_float(metrics.get("pnl_pct"), np.nan),
+            "Health-Score": _safe_float(health.get("health_score"), np.nan),
+            "Empfohlene Tranche %": tranche,
+            "Status": _sell_ranking_status_badge(health.get("status")),
+            "Drawdown vom Peak %": _safe_float(metrics.get("drawdown_from_high_since_buy_pct"), np.nan),
+            "21-MA": "darüber" if not np.isnan(current) and not np.isnan(sma21) and current >= sma21 else "darunter" if not np.isnan(current) and not np.isnan(sma21) else "—",
+            "50-MA": "darüber" if not np.isnan(current) and not np.isnan(sma50) and current >= sma50 else "darunter" if not np.isnan(current) and not np.isnan(sma50) else "—",
+            "RS-Trend": health.get("rs_trend", "seitwärts"),
+            "Distribution-Tage": int(_safe_float(metrics.get("distribution_days_25"), 0) or 0),
+            "Haltedauer Tage": held_days,
+            "_sort_tranche": tranche,
+            "_sort_health": _safe_float(health.get("health_score"), -1),
+        })
+    except Exception as exc:
+        base["Fehler"] = str(exc)
+    return base
+
+
+def _sell_ranking_action_text(rows: list[dict]) -> str:
+    valid = [r for r in rows if not r.get("Fehler")]
+    if not valid:
+        return "Für die aktuellen Positionen konnten noch keine belastbaren Ranking-Daten berechnet werden."
+    sell_candidates = [r for r in valid if float(r.get("Empfohlene Tranche %") or 0) >= 50 or "Verkaufen" in str(r.get("Status", ""))]
+    healthy = [r for r in valid if "Halten" in str(r.get("Status", ""))]
+    watch = [r for r in valid if "Beobachten" in str(r.get("Status", ""))]
+    if sell_candidates and healthy:
+        return "Kapital aus den schwächsten Titeln freisetzen und in führende Positionen nur bei sauberen Setups umschichten."
+    if sell_candidates and not healthy:
+        return "Es gibt Verkaufs-Kandidaten, aber keine gesunden Halter. Cash ist auch eine Position — erst Stabilität abwarten."
+    if len(healthy) == len(valid):
+        return "Das Portfolio wirkt in Ordnung. Die Score-Reihenfolge zeigt eine mögliche Aufstockungsreihenfolge bei sauberen Setups."
+    if len(watch) >= max(1, len(valid) / 2):
+        return "Überwiegend Beobachten: Stopps enger ziehen und vorerst nicht aufstocken."
+    return "Portfolio gemischt: zuerst die niedrigsten Health-Scores prüfen und Positionsgrößen defensiv halten."
+
+
+def _render_sell_decision_portfolio_ranking() -> None:
+    _init_workspace_state()
+    positions = [p for p in st.session_state.get("positions", []) if _normalize_single_ticker((p or {}).get("ticker", ""))]
+    st.markdown("#### 🏁 Portfolio-Ranking")
+    st.caption("Bewertet alle offenen Positionen mit derselben Kennzahlen- und Regel-Engine wie der Live-Monitor.")
+    if not positions:
+        st.info("Noch keine offenen Portfolio-Positionen vorhanden. Lege zuerst im Depot oder im Nach-Kauf-Check eine Position an.")
+        return
+
+    col_btn, col_meta = st.columns([1, 2])
+    with col_btn:
+        run_clicked = st.button("Alle Positionen auswerten", key="sell_rank_run", type="primary", use_container_width=True)
+    with col_meta:
+        st.caption(f"{len(positions)} offene Position(en) · gespeicherte Live-Monitor-Daten werden berücksichtigt")
+    if run_clicked:
+        st.session_state["sell_rank_cache_buster"] = st.session_state.get("sell_rank_cache_buster", 0) + 1
+        tickers = tuple(dict.fromkeys(_normalize_single_ticker(p.get("ticker", "")) for p in positions if _normalize_single_ticker(p.get("ticker", ""))))
+        name_map = _ticker_display_names(tickers)
+        state = load_sell_decision_state()
+        manual_map = state.get("positions_manual", {}) if isinstance(state, dict) else {}
+        tranche_log = load_tranche_log()
+        rows = []
+        progress = st.progress(0, text="Starte Auswertung …")
+        for idx, position in enumerate(positions, start=1):
+            ticker = _normalize_single_ticker(position.get("ticker", ""))
+            progress.progress((idx - 1) / max(len(positions), 1), text=f"Bewerte {ticker or idx} …")
+            rows.append(_evaluate_sell_ranking_position(position, name_map, manual_map, tranche_log, st.session_state.get("sell_rank_cache_buster", 0)))
+        progress.progress(1.0, text="Auswertung abgeschlossen")
+        st.session_state["sell_rank_rows"] = rows
+        st.session_state["sell_rank_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y · %H:%M UTC")
+
+    rows = st.session_state.get("sell_rank_rows", [])
+    if not rows:
+        st.info("Klicke auf „Alle Positionen auswerten“, um das Ranking zu berechnen.")
+        return
+
+    df = pd.DataFrame(rows).sort_values(["_sort_tranche", "_sort_health"], ascending=[False, True]).drop(columns=["_sort_tranche", "_sort_health"], errors="ignore")
+    display_cols = ["Ticker", "Firma", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "Drawdown vom Peak %", "21-MA", "50-MA", "RS-Trend", "Distribution-Tage", "Haltedauer Tage"]
+    if _is_mobile_client():
+        display_cols = ["Ticker", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "21-MA", "50-MA"]
+    st.dataframe(
+        df[display_cols],
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker", help="Firmenname steht in der Spalte Firma, sofern zuverlässig verfügbar."),
+            "Firma": st.column_config.TextColumn("Firma", width="medium"),
+            "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f%%"),
+            "Health-Score": st.column_config.ProgressColumn("Health-Score", format="%.0f", min_value=0, max_value=100),
+            "Empfohlene Tranche %": st.column_config.NumberColumn("Empf. Tranche %", format="%d%%"),
+            "Drawdown vom Peak %": st.column_config.NumberColumn("Drawdown Peak %", format="%+.2f%%"),
+            "Distribution-Tage": st.column_config.NumberColumn("Dist.-Tage", format="%d"),
+            "Haltedauer Tage": st.column_config.NumberColumn("Haltedauer", format="%d"),
+        },
+    )
+    if st.session_state.get("sell_rank_at"):
+        st.caption(f"Letzte Auswertung: {st.session_state['sell_rank_at']}")
+    st.markdown(f'<div class="info-card"><div class="card-label">Aktionsempfehlung</div>{html.escape(_sell_ranking_action_text(rows))}</div>', unsafe_allow_html=True)
+    errors = [r for r in rows if r.get("Fehler")]
+    if errors:
+        with st.expander(f"⚠️ Fehlermeldungen ({len(errors)})", expanded=False):
+            err_df = pd.DataFrame([{"Ticker": r.get("Ticker"), "Fehler": r.get("Fehler")} for r in errors])
+            st.dataframe(err_df, width="stretch", hide_index=True)
+
+
+POST_MORTEM_CHECKBOXES = [
+    ("entry_more_than_5_above_pivot", "Einstieg lag mehr als 5% über dem Pivot"),
+    ("stop_hit_executed", "Stopp wurde erreicht und sauber ausgeführt"),
+    ("stop_moved_down", "Stopp wurde während des Trades nach unten verschoben"),
+    ("breakeven_after_20", "Stopp wurde nach 20% Gewinn auf Break-even nachgezogen"),
+    ("partial_profit_20_25", "Teilgewinn bei 20–25% wurde mitgenommen"),
+    ("emotional_sell", "Verkauf war emotional getrieben"),
+    ("hope_hold", "Aktie wurde unter Hoffnung auf Erholung gehalten"),
+    ("rule_based_sell", "Verkauf erfolgte auf Basis einer klaren Regel aus dem Regelwerk"),
+    ("ignored_market_warnings", "Gesamtmarkt hatte Warnsignale, die ignoriert wurden"),
+]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_post_mortem_trade_metrics(ticker: str, buy_date, sell_date, buy_price: float, sell_price: float, cache_buster: int = 0) -> dict:
+    _ = cache_buster
+    ticker = _normalize_single_ticker(ticker)
+    if not ticker:
+        return {"ok": False, "error": "Ticker fehlt."}
+    try:
+        buy_ts = pd.Timestamp(buy_date).normalize()
+        sell_ts = pd.Timestamp(sell_date).normalize()
+    except Exception:
+        return {"ok": False, "error": "Kauf- oder Verkaufsdatum ist ungültig."}
+    if sell_ts < buy_ts:
+        return {"ok": False, "error": "Verkaufsdatum liegt vor Kaufdatum."}
+    entry = _safe_float(buy_price, np.nan)
+    exit_ = _safe_float(sell_price, np.nan)
+    if np.isnan(entry) or entry <= 0 or np.isnan(exit_) or exit_ <= 0:
+        return {"ok": False, "error": "Kauf- oder Verkaufspreis ist ungültig."}
+    frames = _bulk_download_ohlc((ticker,), buy_ts - timedelta(days=10), sell_ts + timedelta(days=3))
+    df = _coerce_ohlc_frame(frames.get(ticker))
+    realized = (exit_ / entry - 1) * 100
+    holding_days = max((sell_ts.date() - buy_ts.date()).days, 0)
+    if df.empty:
+        return {
+            "ok": False, "error": "Yahoo-Daten für Haltedauer fehlen; Basiswerte aus Eingaben berechnet.",
+            "realized_pnl_percent": realized, "max_gain_percent": None, "max_drawdown_percent": None,
+            "holding_days": holding_days, "high_price": None, "low_price": None, "drawdown_from_peak_percent": None,
+        }
+    held = df[(df.index >= buy_ts) & (df.index <= sell_ts)].copy()
+    if held.empty:
+        return {"ok": False, "error": "Keine Yahoo-Kurse im Kauf-/Verkaufsfenster gefunden.", "realized_pnl_percent": realized, "holding_days": holding_days}
+    high_price = _safe_float(held["High"].max(), np.nan)
+    low_price = _safe_float(held["Low"].min(), np.nan)
+    max_gain = (high_price / entry - 1) * 100 if not np.isnan(high_price) else None
+    drawdown_from_peak = (exit_ / high_price - 1) * 100 if not np.isnan(high_price) and high_price > 0 else None
+    closes = pd.to_numeric(held["Close"], errors="coerce").dropna()
+    max_dd = None
+    if not closes.empty:
+        running_peak = closes.cummax()
+        dd = (closes / running_peak - 1) * 100
+        max_dd = abs(float(dd.min())) if len(dd) else None
+    return {
+        "ok": True, "error": "", "realized_pnl_percent": realized,
+        "max_gain_percent": max_gain, "max_drawdown_percent": max_dd,
+        "holding_days": holding_days, "high_price": None if np.isnan(high_price) else high_price,
+        "low_price": None if np.isnan(low_price) else low_price,
+        "drawdown_from_peak_percent": drawdown_from_peak,
+    }
+
+
+def _analyze_post_mortem(trade: dict, checkboxes: dict, metrics: dict) -> dict:
+    pnl = _safe_float(metrics.get("realized_pnl_percent"), _safe_float(trade.get("realized_pnl_percent"), 0.0)) or 0.0
+    max_gain = _safe_float(metrics.get("max_gain_percent"), 0.0) or 0.0
+    max_dd = _safe_float(metrics.get("max_drawdown_percent"), 0.0) or 0.0
+    peak_giveback = abs(_safe_float(metrics.get("drawdown_from_peak_percent"), 0.0) or 0.0)
+    buy_price = _safe_float(trade.get("buy_price"), np.nan)
+    pivot = _safe_float(trade.get("pivot"), np.nan)
+    good: list[str] = []
+    errors: list[str] = []
+    lessons: list[str] = []
+
+    has_pivot = not np.isnan(buy_price) and not np.isnan(pivot) and pivot > 0
+    extended_buy = (has_pivot and buy_price > pivot * 1.05) or _safe_bool(checkboxes.get("entry_more_than_5_above_pivot"))
+    if pnl > -7:
+        good.append("Verlust unter 7% gehalten")
+    else:
+        errors.append("7%-Grenze überschritten")
+        lessons.append("Verlustbegrenzung erzwingen, Kap. 6.1")
+    if 20 <= pnl <= 25:
+        good.append("Gewinn in der Zielzone 20–25% realisiert")
+    if pnl > 0 and peak_giveback < 5:
+        good.append("Nahe am Hoch verkauft, weniger als 5% Drawdown vom Peak")
+    if extended_buy:
+        errors.append("Extended Buy")
+        lessons.append("Extended Buy: künftig maximal 5% über Pivot kaufen, Kap. 4.2")
+    elif has_pivot:
+        good.append("Einstieg sauber am Pivot, weniger als 5% drüber")
+    if _safe_bool(checkboxes.get("stop_hit_executed")):
+        good.append("Stopp diszipliniert ausgeführt")
+    if _safe_bool(checkboxes.get("breakeven_after_20")):
+        good.append("Break-even-Stopp gesetzt")
+    if _safe_bool(checkboxes.get("partial_profit_20_25")):
+        good.append("Teilgewinn mitgenommen")
+    if _safe_bool(checkboxes.get("rule_based_sell")):
+        good.append("Regelbasierter Verkauf")
+
+    if peak_giveback > 15:
+        errors.append("Gewinne zurückgegeben, mehr als 15% vom Peak")
+        lessons.append("Gewinne zurückgegeben: Stopp- und Teilverkaufsregeln beachten, Kap. 6.2 / 7.1")
+    if _safe_bool(checkboxes.get("stop_moved_down")):
+        errors.append("Stopp nach unten verschoben")
+        lessons.append("Stopp nach unten verschoben: Regelbruch klar markieren, Kap. 7.1")
+    if max_gain >= 20 and not _safe_bool(checkboxes.get("breakeven_after_20")):
+        errors.append("Trotz Höchstgewinn kein Break-even-Stopp gesetzt")
+        lessons.append("Nach 20% Gewinn Restposition mindestens auf Break-even absichern, Kap. 6.2 / 7.1")
+    if _safe_bool(checkboxes.get("emotional_sell")):
+        errors.append("Emotionaler Verkauf")
+        lessons.append("Emotionaler Verkauf: Verkauf nur nach Regelwerk, Kap. 1.3 / 8.2")
+    if _safe_bool(checkboxes.get("hope_hold")):
+        errors.append("Hoffnungs-Halten")
+        lessons.append("Hoffnungs-Halten: Hoffnung durch definierte Exit-Regeln ersetzen, Kap. 5.3 / 6.1")
+    if _safe_bool(checkboxes.get("ignored_market_warnings")):
+        errors.append("Marktwarnsignale ignoriert")
+        lessons.append("Marktwarnsignale ignoriert: Gesamtmarktprüfung verpflichtend machen")
+    if pnl <= -15:
+        lessons.append("Größerer Verlust: Verlust-Mathematik beachten — je tiefer der Verlust, desto größer der notwendige Aufholgewinn, Kap. 7.1")
+
+    lessons = list(dict.fromkeys(lessons))
+    if pnl > 0 and not errors:
+        verdict_class = "Disziplinierter, regelgetreuer Gewinntrade"
+        verdict_tone = "good"
+    elif pnl > 0:
+        verdict_class = "Gewinn mit Regelbrüchen"
+        verdict_tone = "warn"
+        lessons.insert(0, "Nicht reproduzierbar: Gewinn trotz Fehlern nicht als sauberes Muster werten.")
+    elif not errors:
+        verdict_class = "Guter Verlust"
+        verdict_tone = "good"
+    else:
+        verdict_class = "Verlust mit Regelverstößen"
+        verdict_tone = "bad"
+    return {"good": good, "errors": errors, "lessons": lessons, "verdict_class": verdict_class, "verdict_tone": verdict_tone}
+
+
+def _render_post_mortem_list(title: str, items: list[str], color: str) -> None:
+    st.markdown(f'<div class="info-card"><div class="card-label" style="color:{color};">{html.escape(title)}</div>', unsafe_allow_html=True)
+    if not items:
+        st.markdown('<div style="color:#64748b;font-size:.85rem;">Keine Punkte erkannt.</div>', unsafe_allow_html=True)
+    for item in items:
+        st.markdown(f'<div style="padding:6px 0;border-bottom:1px solid #e3e8f0;font-size:.86rem;">{html.escape(str(item))}</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _post_mortem_default_date(value):
+    try:
+        parsed = pd.Timestamp(value) if value else pd.Timestamp(datetime.now(timezone.utc).date())
+        if pd.isna(parsed):
+            return datetime.now(timezone.utc).date()
+        return parsed.date()
+    except Exception:
+        return datetime.now(timezone.utc).date()
+
+
+def _render_sell_decision_post_mortem() -> None:
+    st.markdown("#### 🧾 Post-Mortem")
+    st.caption("Analysiere abgeschlossene Trades, Regelverstöße und konkrete Lessons Learned.")
+
+    closed_trades = load_closed_trades()
+    saved = load_post_mortem_log()
+    tranche_sources = []
+    for entry in load_tranche_log():
+        if not isinstance(entry, dict) or not entry.get("ticker"):
+            continue
+        tranche_sources.append({
+            "ticker": entry.get("ticker"),
+            "sell_date": entry.get("date"),
+            "sell_price": entry.get("price"),
+            "shares": entry.get("shares_sold"),
+            "source": "tranche_log",
+            "source_note": f"Realisierte Tranche {entry.get('tranche_percent', '—')}%",
+        })
+
+    sources = []
+    for row in closed_trades:
+        pnl = row.get("realized_pnl_percent")
+        pnl_part = f" · {float(pnl):+.1f}%" if pnl is not None else ""
+        note_part = f" · {row.get('notes')}" if row.get("notes") else ""
+        sources.append((f"Abgeschlossener Trade · {row.get('ticker', '—')} · {row.get('sell_date', '—')}{pnl_part}{note_part}", row))
+    for row in tranche_sources:
+        sources.append((f"Tranche · {row.get('ticker', '—')} · {row.get('sell_date', '—')} · {row.get('source_note', '')}", row))
+    for row in saved:
+        sources.append((f"Gespeicherte Analyse · {row.get('ticker', '—')} · {row.get('sell_date', '—')} · {float(row.get('realized_pnl_percent') or 0):+.1f}%", row))
+
+    if closed_trades:
+        st.success(f"{len(closed_trades)} abgeschlossene Trade(s) aus dem Depot-Verkaufsbuch gefunden.")
+    else:
+        st.info("Im bestehenden Depot-Code werden erst ab jetzt gebuchte Verkäufe als abgeschlossene Trades gespeichert. Nutze bis dahin das manuelle Formular als Fallback.")
+
+    if sources:
+        labels = [label for label, _row in sources]
+        selected_saved = st.selectbox("Abgeschlossene Trades / realisierte Tranchen", ["Manuell neu erfassen"] + labels, key="pm_saved_select")
+    else:
+        labels = []
+        selected_saved = "Manuell neu erfassen"
+
+    source = {}
+    if sources and selected_saved != "Manuell neu erfassen":
+        source = dict(sources[labels.index(selected_saved)][1])
+
+    with st.form("post_mortem_form"):
+        c1, c2, c3 = st.columns(3)
+        ticker = c1.text_input("Ticker", value=source.get("ticker", ""), placeholder="z.B. NVDA")
+        buy_date = c2.date_input("Kaufdatum", value=_post_mortem_default_date(source.get("buy_date")))
+        sell_date = c3.date_input("Verkaufsdatum", value=_post_mortem_default_date(source.get("sell_date")))
+        p1, p2, p3, p4 = st.columns(4)
+        buy_price = p1.number_input("Kaufpreis", min_value=0.0, value=float(source.get("buy_price") or 0.0), step=0.01)
+        sell_price = p2.number_input("Verkaufspreis", min_value=0.0, value=float(source.get("sell_price") or 0.0), step=0.01)
+        shares = p3.number_input("Stückzahl optional", min_value=0.0, value=float(source.get("shares") or 0.0), step=1.0)
+        pivot = p4.number_input("Pivot optional", min_value=0.0, value=float(source.get("pivot") or 0.0), step=0.01)
+        planned_stop = st.number_input("Geplanter Stopp optional", min_value=0.0, value=float(source.get("planned_stop") or 0.0), step=0.01)
+        stored_checks = source.get("checkboxes", {}) if isinstance(source.get("checkboxes", {}), dict) else {}
+        st.markdown("##### Selbstauskunft")
+        cols = st.columns(3)
+        checks = {}
+        for idx, (key, label) in enumerate(POST_MORTEM_CHECKBOXES):
+            with cols[idx % 3]:
+                checks[key] = st.checkbox(label, value=bool(stored_checks.get(key, False)), key=f"pm_{key}")
+        submitted = st.form_submit_button("Post-Mortem berechnen", type="primary", use_container_width=True)
+
+    if not submitted and not source:
+        return
+    ticker = _normalize_single_ticker(ticker)
+    if not ticker or buy_price <= 0 or sell_price <= 0:
+        st.warning("Bitte Ticker, Kaufpreis und Verkaufspreis ausfüllen.")
+        return
+    with st.spinner(f"Lade Yahoo-Daten für {ticker} …"):
+        metrics = load_post_mortem_trade_metrics(ticker, buy_date, sell_date, buy_price, sell_price, cache_buster=st.session_state.get("pm_cache_buster", 0))
+    if not metrics.get("ok"):
+        st.warning(metrics.get("error") or "Yahoo-Daten konnten nicht geladen werden.")
+    else:
+        st.caption(
+            f"Yahoo-Haltedauerdaten geladen · Hoch: {metrics.get('high_price') or '—'} · "
+            f"Tief: {metrics.get('low_price') or '—'}"
+        )
+    trade = {"ticker": ticker, "buy_date": str(buy_date), "buy_price": buy_price, "sell_date": str(sell_date), "sell_price": sell_price, "shares": shares or None, "pivot": pivot or None, "planned_stop": planned_stop or None}
+    analysis = _analyze_post_mortem(trade, checks, metrics)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Realisierter G/V", _fmt_pct(metrics.get("realized_pnl_percent")))
+    k2.metric("Max. Gewinn", _fmt_pct(metrics.get("max_gain_percent")))
+    k3.metric("Max. Drawdown", _fmt_pct(-abs(metrics.get("max_drawdown_percent") or 0)))
+    k4.metric("Haltedauer", f"{int(metrics.get('holding_days') or 0)} Tage")
+
+    a, b, c = st.columns(3)
+    with a:
+        _render_post_mortem_list("Was gut lief", analysis["good"], "#16a34a")
+    with b:
+        _render_post_mortem_list("Regelverletzungen und Fehler", analysis["errors"], "#dc2626")
+    with c:
+        _render_post_mortem_list("Lessons Learned", analysis["lessons"], "#2563eb")
+
+    tone = {"good": ("#16a34a", "#f0fdf4", "#bbf7d0"), "warn": ("#d97706", "#fffbeb", "#fde68a"), "bad": ("#dc2626", "#fef2f2", "#fecaca")}[analysis["verdict_tone"]]
+    st.markdown(f'<div class="summary-hero" style="background:{tone[1]};border-color:{tone[2]};border-left:5px solid {tone[0]};"><div class="card-label" style="color:{tone[0]};">Trade-Verdict</div><div style="font-size:1.7rem;font-weight:800;color:{tone[0]};">{html.escape(analysis["verdict_class"])}</div></div>', unsafe_allow_html=True)
+    if st.button("💾 Post-Mortem speichern", type="primary", use_container_width=True, key="pm_save"):
+        entry = {
+            "analysis_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), **trade,
+            "realized_pnl_percent": metrics.get("realized_pnl_percent"),
+            "max_gain_percent": metrics.get("max_gain_percent"),
+            "max_drawdown_percent": metrics.get("max_drawdown_percent"),
+            "holding_days": metrics.get("holding_days"),
+            "positive_points_count": len(analysis["good"]),
+            "error_count": len(analysis["errors"]),
+            "verdict_class": analysis["verdict_class"],
+            "checkboxes": checks,
+            "lessons_learned": analysis["lessons"],
+            "trade_data": {**metrics, "high_price": metrics.get("high_price"), "low_price": metrics.get("low_price")},
+        }
+        append_post_mortem_result(entry)
+        st.success("Post-Mortem dauerhaft gespeichert.")
+        st.rerun()
+
+
+def _tab_verkaufsentscheidung():
+    if not _render_private_gate("🔐 Verkaufs-Entscheidung"):
+        return
+    inject_workspace_css()
+    st.markdown("### 🧭 Verkaufs-Entscheidung")
+    st.caption("Regelbasierter Verkaufsbereich für Live-Monitor, Portfolio-Ranking und spätere Post-Mortems.")
+    tabs = st.tabs(["📡 Live-Monitor", "🏁 Portfolio-Ranking", "🧾 Post-Mortem"])
+    with tabs[0]:
+        _render_sell_decision_live_monitor()
+    with tabs[1]:
+        _render_sell_decision_portfolio_ranking()
+    with tabs[2]:
+        _render_sell_decision_post_mortem()
+
+
 # ═══════════════════════════════════════════════════════
 # TAB 4: NACH DEM KAUF (Book Ch.5.2 + 5.3)
 # ═══════════════════════════════════════════════════════
@@ -10600,6 +11734,7 @@ def _tab_mein_depot():
         "✏️ Positionen",
         "📈 Depotkurve",
         "🎯 Nach-Kauf-Check",
+        "🧭 Verkaufs-Entscheidung",
         "🧮 Rechner",
         "⭐ Watchlist",
     ])
@@ -10612,8 +11747,10 @@ def _tab_mein_depot():
     with tabs[3]:
         _tab_nach_kauf()
     with tabs[4]:
-        _render_stueckzahl_rechner_page()
+        _tab_verkaufsentscheidung()
     with tabs[5]:
+        _render_stueckzahl_rechner_page()
+    with tabs[6]:
         _init_workspace_state()
         st.caption(
             f"Persistent über {_workspace_backend_label()} · Watchlist: {_workspace_scope()}"
