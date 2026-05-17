@@ -193,6 +193,7 @@ def _default_sell_decision_state() -> dict:
     return {
         "positions_manual": {},
         "tranche_log": [],
+        "closed_trades": [],
         "post_mortem_log": [],
     }
 
@@ -271,6 +272,8 @@ def _normalize_sell_decision_state(raw) -> dict:
 
     state["tranche_log"] = [_normalize_tranche_log_entry(entry) for entry in raw.get("tranche_log", []) if isinstance(entry, dict)]
     state["tranche_log"] = [entry for entry in state["tranche_log"] if entry.get("ticker")]
+    state["closed_trades"] = [_normalize_closed_trade_entry(entry) for entry in raw.get("closed_trades", []) if isinstance(entry, dict)]
+    state["closed_trades"] = [entry for entry in state["closed_trades"] if entry.get("ticker")]
     state["post_mortem_log"] = [_normalize_post_mortem_entry(entry) for entry in raw.get("post_mortem_log", []) if isinstance(entry, dict)]
     state["post_mortem_log"] = [entry for entry in state["post_mortem_log"] if entry.get("ticker")]
     return state
@@ -303,6 +306,32 @@ def _normalize_tranche_log_entry(entry: dict) -> dict:
     }
 
 
+def _normalize_closed_trade_entry(entry: dict) -> dict:
+    ticker = _normalize_single_ticker(entry.get("ticker", ""))
+    buy_price = _safe_optional_float(entry.get("buy_price"))
+    sell_price = _safe_optional_float(entry.get("sell_price"))
+    realized = _safe_optional_float(entry.get("realized_pnl_percent"))
+    if realized is None and buy_price and sell_price:
+        realized = (float(sell_price) / float(buy_price) - 1) * 100
+    return {
+        "id": str(entry.get("id") or uuid.uuid4()).strip(),
+        "source": str(entry.get("source") or "depot_sell_booking").strip(),
+        "booked_at": _normalize_date_string(entry.get("booked_at") or entry.get("analysis_date")),
+        "ticker": ticker,
+        "buy_date": _normalize_date_string(entry.get("buy_date")),
+        "buy_price": buy_price,
+        "buy_currency": str(entry.get("buy_currency") or entry.get("currency") or "").strip().upper(),
+        "sell_date": _normalize_date_string(entry.get("sell_date") or entry.get("date")),
+        "sell_price": sell_price,
+        "sell_currency": str(entry.get("sell_currency") or "").strip().upper(),
+        "shares": _safe_optional_float(entry.get("shares") or entry.get("shares_sold")),
+        "pivot": _safe_optional_float(entry.get("pivot")),
+        "planned_stop": _safe_optional_float(entry.get("planned_stop") or entry.get("stop_price")),
+        "realized_pnl_percent": realized,
+        "notes": str(entry.get("notes") or "").strip(),
+    }
+
+
 def _normalize_post_mortem_entry(entry: dict) -> dict:
     ticker = _normalize_single_ticker(entry.get("ticker", ""))
     return {
@@ -312,6 +341,9 @@ def _normalize_post_mortem_entry(entry: dict) -> dict:
         "buy_price": _safe_optional_float(entry.get("buy_price")),
         "sell_date": _normalize_date_string(entry.get("sell_date")),
         "sell_price": _safe_optional_float(entry.get("sell_price")),
+        "shares": _safe_optional_float(entry.get("shares")),
+        "pivot": _safe_optional_float(entry.get("pivot")),
+        "planned_stop": _safe_optional_float(entry.get("planned_stop")),
         "realized_pnl_percent": _safe_optional_float(entry.get("realized_pnl_percent")),
         "max_gain_percent": _safe_optional_float(entry.get("max_gain_percent")),
         "max_drawdown_percent": _safe_optional_float(entry.get("max_drawdown_percent")),
@@ -320,7 +352,8 @@ def _normalize_post_mortem_entry(entry: dict) -> dict:
         "error_count": int(_safe_optional_float(entry.get("error_count")) or 0),
         "verdict_class": str(entry.get("verdict_class") or "").strip(),
         "checkboxes": _normalize_checkbox_map(entry.get("checkboxes")),
-        "lessons_learned": str(entry.get("lessons_learned") or "").strip(),
+        "lessons_learned": entry.get("lessons_learned") if isinstance(entry.get("lessons_learned"), list) else str(entry.get("lessons_learned") or "").strip(),
+        "trade_data": entry.get("trade_data", {}) if isinstance(entry.get("trade_data", {}), dict) else {},
     }
 
 def _workspace_payload():
@@ -495,6 +528,23 @@ def append_tranche_log(entry: dict) -> dict:
     rows = list(state.get("tranche_log", []))
     rows.append(normalized)
     state["tranche_log"] = rows[-3000:]
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def load_closed_trades() -> list[dict]:
+    state = load_sell_decision_state()
+    return [dict(entry) for entry in state.get("closed_trades", [])]
+
+
+def append_closed_trade(entry: dict) -> dict:
+    normalized = _normalize_closed_trade_entry(entry or {})
+    if not normalized.get("ticker"):
+        return normalized
+    state = load_sell_decision_state()
+    rows = list(state.get("closed_trades", []))
+    rows.append(normalized)
+    state["closed_trades"] = rows[-3000:]
     save_sell_decision_state(state)
     return dict(normalized)
 
@@ -2929,6 +2979,27 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             else:
                 sell_price_eur, _ = _price_to_eur(float(sell_price), sell_currency, sell_date)
                 proceeds = float(sell_shares) * float(sell_price_eur)
+                sell_ticker_norm = _normalize_single_ticker(selected_sell.get("ticker", ""))
+                manual_sell_data = get_position_manual_sell_data(sell_ticker_norm) if sell_ticker_norm else {}
+                buy_price_native = _safe_optional_float(selected_sell.get("buy_price"))
+                sell_price_native = float(sell_price)
+                realized_pct = (sell_price_native / buy_price_native - 1) * 100 if buy_price_native and buy_price_native > 0 else None
+                append_closed_trade({
+                    "source": "depot_sell_booking",
+                    "booked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "ticker": sell_ticker_norm,
+                    "buy_date": selected_sell.get("buy_date"),
+                    "buy_price": buy_price_native,
+                    "buy_currency": selected_sell.get("currency"),
+                    "sell_date": str(sell_date),
+                    "sell_price": sell_price_native,
+                    "sell_currency": sell_currency,
+                    "shares": float(sell_shares),
+                    "pivot": manual_sell_data.get("pivot"),
+                    "planned_stop": selected_sell.get("stop_price"),
+                    "realized_pnl_percent": realized_pct,
+                    "notes": "Teilverkauf" if float(sell_shares) < max_sell_shares else "Vollverkauf",
+                })
                 remaining = max(max_sell_shares - float(sell_shares), 0.0)
                 if remaining <= 0:
                     _remove_position(selected_sell.get("ticker", ""))
@@ -2937,7 +3008,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     updated["shares"] = remaining
                     _upsert_position(updated)
                 _adjust_cash_balance(proceeds)
-                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €.")
+                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €. Der Trade wurde für das Post-Mortem vorgemerkt.")
                 st.rerun()
 
     st.markdown("#### 💵 Cash-Flows")
@@ -10526,17 +10597,292 @@ def _render_sell_decision_portfolio_ranking() -> None:
             st.dataframe(err_df, width="stretch", hide_index=True)
 
 
+POST_MORTEM_CHECKBOXES = [
+    ("entry_more_than_5_above_pivot", "Einstieg lag mehr als 5% über dem Pivot"),
+    ("stop_hit_executed", "Stopp wurde erreicht und sauber ausgeführt"),
+    ("stop_moved_down", "Stopp wurde während des Trades nach unten verschoben"),
+    ("breakeven_after_20", "Stopp wurde nach 20% Gewinn auf Break-even nachgezogen"),
+    ("partial_profit_20_25", "Teilgewinn bei 20–25% wurde mitgenommen"),
+    ("emotional_sell", "Verkauf war emotional getrieben"),
+    ("hope_hold", "Aktie wurde unter Hoffnung auf Erholung gehalten"),
+    ("rule_based_sell", "Verkauf erfolgte auf Basis einer klaren Regel aus dem Regelwerk"),
+    ("ignored_market_warnings", "Gesamtmarkt hatte Warnsignale, die ignoriert wurden"),
+]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_post_mortem_trade_metrics(ticker: str, buy_date, sell_date, buy_price: float, sell_price: float, cache_buster: int = 0) -> dict:
+    _ = cache_buster
+    ticker = _normalize_single_ticker(ticker)
+    if not ticker:
+        return {"ok": False, "error": "Ticker fehlt."}
+    try:
+        buy_ts = pd.Timestamp(buy_date).normalize()
+        sell_ts = pd.Timestamp(sell_date).normalize()
+    except Exception:
+        return {"ok": False, "error": "Kauf- oder Verkaufsdatum ist ungültig."}
+    if sell_ts < buy_ts:
+        return {"ok": False, "error": "Verkaufsdatum liegt vor Kaufdatum."}
+    entry = _safe_float(buy_price, np.nan)
+    exit_ = _safe_float(sell_price, np.nan)
+    if np.isnan(entry) or entry <= 0 or np.isnan(exit_) or exit_ <= 0:
+        return {"ok": False, "error": "Kauf- oder Verkaufspreis ist ungültig."}
+    frames = _bulk_download_ohlc((ticker,), buy_ts - timedelta(days=10), sell_ts + timedelta(days=3))
+    df = _coerce_ohlc_frame(frames.get(ticker))
+    realized = (exit_ / entry - 1) * 100
+    holding_days = max((sell_ts.date() - buy_ts.date()).days, 0)
+    if df.empty:
+        return {
+            "ok": False, "error": "Yahoo-Daten für Haltedauer fehlen; Basiswerte aus Eingaben berechnet.",
+            "realized_pnl_percent": realized, "max_gain_percent": None, "max_drawdown_percent": None,
+            "holding_days": holding_days, "high_price": None, "low_price": None, "drawdown_from_peak_percent": None,
+        }
+    held = df[(df.index >= buy_ts) & (df.index <= sell_ts)].copy()
+    if held.empty:
+        return {"ok": False, "error": "Keine Yahoo-Kurse im Kauf-/Verkaufsfenster gefunden.", "realized_pnl_percent": realized, "holding_days": holding_days}
+    high_price = _safe_float(held["High"].max(), np.nan)
+    low_price = _safe_float(held["Low"].min(), np.nan)
+    max_gain = (high_price / entry - 1) * 100 if not np.isnan(high_price) else None
+    drawdown_from_peak = (exit_ / high_price - 1) * 100 if not np.isnan(high_price) and high_price > 0 else None
+    closes = pd.to_numeric(held["Close"], errors="coerce").dropna()
+    max_dd = None
+    if not closes.empty:
+        running_peak = closes.cummax()
+        dd = (closes / running_peak - 1) * 100
+        max_dd = abs(float(dd.min())) if len(dd) else None
+    return {
+        "ok": True, "error": "", "realized_pnl_percent": realized,
+        "max_gain_percent": max_gain, "max_drawdown_percent": max_dd,
+        "holding_days": holding_days, "high_price": None if np.isnan(high_price) else high_price,
+        "low_price": None if np.isnan(low_price) else low_price,
+        "drawdown_from_peak_percent": drawdown_from_peak,
+    }
+
+
+def _analyze_post_mortem(trade: dict, checkboxes: dict, metrics: dict) -> dict:
+    pnl = _safe_float(metrics.get("realized_pnl_percent"), _safe_float(trade.get("realized_pnl_percent"), 0.0)) or 0.0
+    max_gain = _safe_float(metrics.get("max_gain_percent"), 0.0) or 0.0
+    max_dd = _safe_float(metrics.get("max_drawdown_percent"), 0.0) or 0.0
+    peak_giveback = abs(_safe_float(metrics.get("drawdown_from_peak_percent"), 0.0) or 0.0)
+    buy_price = _safe_float(trade.get("buy_price"), np.nan)
+    pivot = _safe_float(trade.get("pivot"), np.nan)
+    good: list[str] = []
+    errors: list[str] = []
+    lessons: list[str] = []
+
+    has_pivot = not np.isnan(buy_price) and not np.isnan(pivot) and pivot > 0
+    extended_buy = (has_pivot and buy_price > pivot * 1.05) or _safe_bool(checkboxes.get("entry_more_than_5_above_pivot"))
+    if pnl > -7:
+        good.append("Verlust unter 7% gehalten")
+    else:
+        errors.append("7%-Grenze überschritten")
+        lessons.append("Verlustbegrenzung erzwingen, Kap. 6.1")
+    if 20 <= pnl <= 25:
+        good.append("Gewinn in der Zielzone 20–25% realisiert")
+    if pnl > 0 and peak_giveback < 5:
+        good.append("Nahe am Hoch verkauft, weniger als 5% Drawdown vom Peak")
+    if extended_buy:
+        errors.append("Extended Buy")
+        lessons.append("Extended Buy: künftig maximal 5% über Pivot kaufen, Kap. 4.2")
+    elif has_pivot:
+        good.append("Einstieg sauber am Pivot, weniger als 5% drüber")
+    if _safe_bool(checkboxes.get("stop_hit_executed")):
+        good.append("Stopp diszipliniert ausgeführt")
+    if _safe_bool(checkboxes.get("breakeven_after_20")):
+        good.append("Break-even-Stopp gesetzt")
+    if _safe_bool(checkboxes.get("partial_profit_20_25")):
+        good.append("Teilgewinn mitgenommen")
+    if _safe_bool(checkboxes.get("rule_based_sell")):
+        good.append("Regelbasierter Verkauf")
+
+    if peak_giveback > 15:
+        errors.append("Gewinne zurückgegeben, mehr als 15% vom Peak")
+        lessons.append("Gewinne zurückgegeben: Stopp- und Teilverkaufsregeln beachten, Kap. 6.2 / 7.1")
+    if _safe_bool(checkboxes.get("stop_moved_down")):
+        errors.append("Stopp nach unten verschoben")
+        lessons.append("Stopp nach unten verschoben: Regelbruch klar markieren, Kap. 7.1")
+    if max_gain >= 20 and not _safe_bool(checkboxes.get("breakeven_after_20")):
+        errors.append("Trotz Höchstgewinn kein Break-even-Stopp gesetzt")
+        lessons.append("Nach 20% Gewinn Restposition mindestens auf Break-even absichern, Kap. 6.2 / 7.1")
+    if _safe_bool(checkboxes.get("emotional_sell")):
+        errors.append("Emotionaler Verkauf")
+        lessons.append("Emotionaler Verkauf: Verkauf nur nach Regelwerk, Kap. 1.3 / 8.2")
+    if _safe_bool(checkboxes.get("hope_hold")):
+        errors.append("Hoffnungs-Halten")
+        lessons.append("Hoffnungs-Halten: Hoffnung durch definierte Exit-Regeln ersetzen, Kap. 5.3 / 6.1")
+    if _safe_bool(checkboxes.get("ignored_market_warnings")):
+        errors.append("Marktwarnsignale ignoriert")
+        lessons.append("Marktwarnsignale ignoriert: Gesamtmarktprüfung verpflichtend machen")
+    if pnl <= -15:
+        lessons.append("Größerer Verlust: Verlust-Mathematik beachten — je tiefer der Verlust, desto größer der notwendige Aufholgewinn, Kap. 7.1")
+
+    lessons = list(dict.fromkeys(lessons))
+    if pnl > 0 and not errors:
+        verdict_class = "Disziplinierter, regelgetreuer Gewinntrade"
+        verdict_tone = "good"
+    elif pnl > 0:
+        verdict_class = "Gewinn mit Regelbrüchen"
+        verdict_tone = "warn"
+        lessons.insert(0, "Nicht reproduzierbar: Gewinn trotz Fehlern nicht als sauberes Muster werten.")
+    elif not errors:
+        verdict_class = "Guter Verlust"
+        verdict_tone = "good"
+    else:
+        verdict_class = "Verlust mit Regelverstößen"
+        verdict_tone = "bad"
+    return {"good": good, "errors": errors, "lessons": lessons, "verdict_class": verdict_class, "verdict_tone": verdict_tone}
+
+
+def _render_post_mortem_list(title: str, items: list[str], color: str) -> None:
+    st.markdown(f'<div class="info-card"><div class="card-label" style="color:{color};">{html.escape(title)}</div>', unsafe_allow_html=True)
+    if not items:
+        st.markdown('<div style="color:#64748b;font-size:.85rem;">Keine Punkte erkannt.</div>', unsafe_allow_html=True)
+    for item in items:
+        st.markdown(f'<div style="padding:6px 0;border-bottom:1px solid #e3e8f0;font-size:.86rem;">{html.escape(str(item))}</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _post_mortem_default_date(value):
+    try:
+        parsed = pd.Timestamp(value) if value else pd.Timestamp(datetime.now(timezone.utc).date())
+        if pd.isna(parsed):
+            return datetime.now(timezone.utc).date()
+        return parsed.date()
+    except Exception:
+        return datetime.now(timezone.utc).date()
+
+
+def _render_sell_decision_post_mortem() -> None:
+    st.markdown("#### 🧾 Post-Mortem")
+    st.caption("Analysiere abgeschlossene Trades, Regelverstöße und konkrete Lessons Learned.")
+
+    closed_trades = load_closed_trades()
+    saved = load_post_mortem_log()
+    tranche_sources = []
+    for entry in load_tranche_log():
+        if not isinstance(entry, dict) or not entry.get("ticker"):
+            continue
+        tranche_sources.append({
+            "ticker": entry.get("ticker"),
+            "sell_date": entry.get("date"),
+            "sell_price": entry.get("price"),
+            "shares": entry.get("shares_sold"),
+            "source": "tranche_log",
+            "source_note": f"Realisierte Tranche {entry.get('tranche_percent', '—')}%",
+        })
+
+    sources = []
+    for row in closed_trades:
+        pnl = row.get("realized_pnl_percent")
+        pnl_part = f" · {float(pnl):+.1f}%" if pnl is not None else ""
+        note_part = f" · {row.get('notes')}" if row.get("notes") else ""
+        sources.append((f"Abgeschlossener Trade · {row.get('ticker', '—')} · {row.get('sell_date', '—')}{pnl_part}{note_part}", row))
+    for row in tranche_sources:
+        sources.append((f"Tranche · {row.get('ticker', '—')} · {row.get('sell_date', '—')} · {row.get('source_note', '')}", row))
+    for row in saved:
+        sources.append((f"Gespeicherte Analyse · {row.get('ticker', '—')} · {row.get('sell_date', '—')} · {float(row.get('realized_pnl_percent') or 0):+.1f}%", row))
+
+    if closed_trades:
+        st.success(f"{len(closed_trades)} abgeschlossene Trade(s) aus dem Depot-Verkaufsbuch gefunden.")
+    else:
+        st.info("Im bestehenden Depot-Code werden erst ab jetzt gebuchte Verkäufe als abgeschlossene Trades gespeichert. Nutze bis dahin das manuelle Formular als Fallback.")
+
+    if sources:
+        labels = [label for label, _row in sources]
+        selected_saved = st.selectbox("Abgeschlossene Trades / realisierte Tranchen", ["Manuell neu erfassen"] + labels, key="pm_saved_select")
+    else:
+        labels = []
+        selected_saved = "Manuell neu erfassen"
+
+    source = {}
+    if sources and selected_saved != "Manuell neu erfassen":
+        source = dict(sources[labels.index(selected_saved)][1])
+
+    with st.form("post_mortem_form"):
+        c1, c2, c3 = st.columns(3)
+        ticker = c1.text_input("Ticker", value=source.get("ticker", ""), placeholder="z.B. NVDA")
+        buy_date = c2.date_input("Kaufdatum", value=_post_mortem_default_date(source.get("buy_date")))
+        sell_date = c3.date_input("Verkaufsdatum", value=_post_mortem_default_date(source.get("sell_date")))
+        p1, p2, p3, p4 = st.columns(4)
+        buy_price = p1.number_input("Kaufpreis", min_value=0.0, value=float(source.get("buy_price") or 0.0), step=0.01)
+        sell_price = p2.number_input("Verkaufspreis", min_value=0.0, value=float(source.get("sell_price") or 0.0), step=0.01)
+        shares = p3.number_input("Stückzahl optional", min_value=0.0, value=float(source.get("shares") or 0.0), step=1.0)
+        pivot = p4.number_input("Pivot optional", min_value=0.0, value=float(source.get("pivot") or 0.0), step=0.01)
+        planned_stop = st.number_input("Geplanter Stopp optional", min_value=0.0, value=float(source.get("planned_stop") or 0.0), step=0.01)
+        stored_checks = source.get("checkboxes", {}) if isinstance(source.get("checkboxes", {}), dict) else {}
+        st.markdown("##### Selbstauskunft")
+        cols = st.columns(3)
+        checks = {}
+        for idx, (key, label) in enumerate(POST_MORTEM_CHECKBOXES):
+            with cols[idx % 3]:
+                checks[key] = st.checkbox(label, value=bool(stored_checks.get(key, False)), key=f"pm_{key}")
+        submitted = st.form_submit_button("Post-Mortem berechnen", type="primary", use_container_width=True)
+
+    if not submitted and not source:
+        return
+    ticker = _normalize_single_ticker(ticker)
+    if not ticker or buy_price <= 0 or sell_price <= 0:
+        st.warning("Bitte Ticker, Kaufpreis und Verkaufspreis ausfüllen.")
+        return
+    with st.spinner(f"Lade Yahoo-Daten für {ticker} …"):
+        metrics = load_post_mortem_trade_metrics(ticker, buy_date, sell_date, buy_price, sell_price, cache_buster=st.session_state.get("pm_cache_buster", 0))
+    if not metrics.get("ok"):
+        st.warning(metrics.get("error") or "Yahoo-Daten konnten nicht geladen werden.")
+    else:
+        st.caption(
+            f"Yahoo-Haltedauerdaten geladen · Hoch: {metrics.get('high_price') or '—'} · "
+            f"Tief: {metrics.get('low_price') or '—'}"
+        )
+    trade = {"ticker": ticker, "buy_date": str(buy_date), "buy_price": buy_price, "sell_date": str(sell_date), "sell_price": sell_price, "shares": shares or None, "pivot": pivot or None, "planned_stop": planned_stop or None}
+    analysis = _analyze_post_mortem(trade, checks, metrics)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Realisierter G/V", _fmt_pct(metrics.get("realized_pnl_percent")))
+    k2.metric("Max. Gewinn", _fmt_pct(metrics.get("max_gain_percent")))
+    k3.metric("Max. Drawdown", _fmt_pct(-abs(metrics.get("max_drawdown_percent") or 0)))
+    k4.metric("Haltedauer", f"{int(metrics.get('holding_days') or 0)} Tage")
+
+    a, b, c = st.columns(3)
+    with a:
+        _render_post_mortem_list("Was gut lief", analysis["good"], "#16a34a")
+    with b:
+        _render_post_mortem_list("Regelverletzungen und Fehler", analysis["errors"], "#dc2626")
+    with c:
+        _render_post_mortem_list("Lessons Learned", analysis["lessons"], "#2563eb")
+
+    tone = {"good": ("#16a34a", "#f0fdf4", "#bbf7d0"), "warn": ("#d97706", "#fffbeb", "#fde68a"), "bad": ("#dc2626", "#fef2f2", "#fecaca")}[analysis["verdict_tone"]]
+    st.markdown(f'<div class="summary-hero" style="background:{tone[1]};border-color:{tone[2]};border-left:5px solid {tone[0]};"><div class="card-label" style="color:{tone[0]};">Trade-Verdict</div><div style="font-size:1.7rem;font-weight:800;color:{tone[0]};">{html.escape(analysis["verdict_class"])}</div></div>', unsafe_allow_html=True)
+    if st.button("💾 Post-Mortem speichern", type="primary", use_container_width=True, key="pm_save"):
+        entry = {
+            "analysis_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), **trade,
+            "realized_pnl_percent": metrics.get("realized_pnl_percent"),
+            "max_gain_percent": metrics.get("max_gain_percent"),
+            "max_drawdown_percent": metrics.get("max_drawdown_percent"),
+            "holding_days": metrics.get("holding_days"),
+            "positive_points_count": len(analysis["good"]),
+            "error_count": len(analysis["errors"]),
+            "verdict_class": analysis["verdict_class"],
+            "checkboxes": checks,
+            "lessons_learned": analysis["lessons"],
+            "trade_data": {**metrics, "high_price": metrics.get("high_price"), "low_price": metrics.get("low_price")},
+        }
+        append_post_mortem_result(entry)
+        st.success("Post-Mortem dauerhaft gespeichert.")
+        st.rerun()
+
+
 def _tab_verkaufsentscheidung():
     if not _render_private_gate("🔐 Verkaufs-Entscheidung"):
         return
     inject_workspace_css()
     st.markdown("### 🧭 Verkaufs-Entscheidung")
     st.caption("Regelbasierter Verkaufsbereich für Live-Monitor, Portfolio-Ranking und spätere Post-Mortems.")
-    tabs = st.tabs(["📡 Live-Monitor", "🏁 Portfolio-Ranking"])
+    tabs = st.tabs(["📡 Live-Monitor", "🏁 Portfolio-Ranking", "🧾 Post-Mortem"])
     with tabs[0]:
         _render_sell_decision_live_monitor()
     with tabs[1]:
         _render_sell_decision_portfolio_ranking()
+    with tabs[2]:
+        _render_sell_decision_post_mortem()
 
 
 # ═══════════════════════════════════════════════════════
