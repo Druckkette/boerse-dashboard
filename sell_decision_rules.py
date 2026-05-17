@@ -426,8 +426,9 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
 
     # Avoid recommending already executed tranches again. Killer signals target 100%,
     # but the immediate recommendation is only the still unsold remainder.
-    sell_now = max(0.0, min(100.0, target_total - already_sold))
-    recommendation_percent = int(round(sell_now))
+    sell_now_raw = max(0.0, min(100.0, target_total - already_sold))
+    sell_now = _floor_allowed(sell_now_raw)
+    recommendation_percent = int(sell_now)
     remaining_after_sale = max(0.0, 100.0 - already_sold - sell_now)
 
     if recommendation_percent >= 100 or (target_total == 100 and remaining_after_sale <= 0):
@@ -471,6 +472,6 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         "book_references": book_references,
         "target_total_sold_percent": int(target_total),
         "already_sold_percent": already_sold,
-        "sell_now_percent": int(round(sell_now)),
+        "sell_now_percent": int(sell_now),
         "remaining_after_sale_percent": remaining_after_sale,
     }

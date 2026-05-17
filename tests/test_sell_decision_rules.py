@@ -76,6 +76,21 @@ class SellDecisionRulesTest(unittest.TestCase):
         self.assertEqual(result["sell_now_percent"], 25)
         self.assertEqual(result["remaining_after_sale_percent"], 0)
 
+    def test_arbitrary_prior_sale_still_returns_allowed_tranche(self):
+        result = evaluate_sell_decision(
+            payload({"pnl_pct": 22.0, "price_vs_sma50_pct": 30.0}),
+            tranche_log=[{"ticker": "TEST", "tranche_percent": 40}],
+        )
+        self.assertEqual(result["target_total_sold_percent"], 66)
+        self.assertIn(result["sell_now_percent"], {0, 25, 33, 50, 66, 75, 100})
+        self.assertEqual(result["sell_now_percent"], 25)
+
+    def test_big_winner_regime_stays_active_with_small_weakness(self):
+        result = evaluate_sell_decision(payload({"pnl_pct": 85.0, "days_under_sma21": 1}))
+        self.assertEqual(result["regime"], "Großgewinner")
+        self.assertEqual(result["target_total_sold_percent"], 25)
+        self.assertIn(result["sell_now_percent"], {0, 25, 33, 50, 66, 75, 100})
+
     def test_health_score_for_five_synthetic_tickers(self):
         samples = [
             {"pnl_pct": 25.0, "current_price": 125.0, "sma21": 110.0, "sma50": 105.0, "rs_line": 1.2, "rs_ma21": 1.1, "rs_ma50": 1.0, "distribution_days_25": 1},
