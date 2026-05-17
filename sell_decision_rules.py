@@ -364,10 +364,9 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         tranche_signals.append(_signal("tranche_sma50_break_volume", "Bruch der 50-MA mit mindestens 2% Abstand und erhöhtem Volumen", 50))
 
     already_sold = _sum_already_sold(ticker, tranche_log)
-    no_tranche_realized = already_sold <= 0
     profit_zone_threshold = 10 if is_bearish else 20
-    if pnl >= profit_zone_threshold and pnl <= 25 and no_tranche_realized:
-        tranche_signals.append(_signal("tranche_profit_zone_20_25", "Erreichen der Gewinnmitnahme-Zone ohne realisierte Tranche", 33))
+    if pnl >= profit_zone_threshold and pnl <= 25:
+        tranche_signals.append(_signal("tranche_profit_zone_20_25", "Erreichen der Gewinnmitnahme-Zone", 33))
 
     drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
     if positive_pnl and drawdown >= 15:
@@ -425,16 +424,11 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         if is_bearish and target_total < 100:
             target_total = _next_allowed(target_total)
 
-    # Avoid recommending already executed tranches again. Killer signals mean sell all remaining shares.
-    if killer_signals and already_sold < 100:
-        sell_now = 100
-        recommendation_percent = 100
-        remaining_after_sale = 0.0
-    else:
-        sell_now_raw = max(0.0, target_total - already_sold)
-        sell_now = _floor_allowed(sell_now_raw)
-        recommendation_percent = sell_now
-        remaining_after_sale = max(0.0, 100.0 - already_sold - sell_now)
+    # Avoid recommending already executed tranches again. Killer signals target 100%,
+    # but the immediate recommendation is only the still unsold remainder.
+    sell_now = max(0.0, min(100.0, target_total - already_sold))
+    recommendation_percent = int(round(sell_now))
+    remaining_after_sale = max(0.0, 100.0 - already_sold - sell_now)
 
     if recommendation_percent >= 100 or (target_total == 100 and remaining_after_sale <= 0):
         label = "KOMPLETTVERKAUF"
@@ -453,7 +447,9 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     if killer_signals:
         explanation = f"{killer_signals[0].label}: kompletter Verkauf erforderlich."
     elif recommendation_percent > 0:
-        explanation = f"{len(tranche_signals)} aktive Tranche-Signale ergeben Zielverkauf {target_total}%; jetzt {recommendation_percent}% verkaufen."
+        explanation = f"{len(tranche_signals)} aktive Tranche-Signale ergeben Zielverkauf {target_total}%; bereits verkauft {already_sold:.0f}%; jetzt zusätzlich {recommendation_percent}% verkaufen."
+    elif already_sold >= target_total and target_total > 0:
+        explanation = "Die aktuell notwendige Verkaufsquote wurde bereits durch frühere Tranchen erreicht."
     elif watch_signals:
         explanation = f"Keine Verkaufstranche, aber {len(watch_signals)} Watch-Signal(e) beobachten."
     else:
@@ -475,6 +471,6 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         "book_references": book_references,
         "target_total_sold_percent": int(target_total),
         "already_sold_percent": already_sold,
-        "sell_now_percent": int(sell_now),
+        "sell_now_percent": int(round(sell_now)),
         "remaining_after_sale_percent": remaining_after_sale,
     }

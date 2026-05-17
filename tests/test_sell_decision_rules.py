@@ -39,14 +39,42 @@ class SellDecisionRulesTest(unittest.TestCase):
         self.assertEqual(result["target_total_sold_percent"], 50)
         self.assertEqual(result["recommendation_percent"], 50)
 
+    def test_no_tranche_sold_recommends_current_target(self):
+        result = evaluate_sell_decision(payload({"pnl_pct": 22.0}))
+        self.assertEqual(result["already_sold_percent"], 0)
+        self.assertEqual(result["target_total_sold_percent"], 33)
+        self.assertEqual(result["sell_now_percent"], 33)
+        self.assertEqual(result["remaining_after_sale_percent"], 67)
+
+    def test_already_sold_only_recommends_delta_to_higher_target(self):
+        result = evaluate_sell_decision(
+            payload({"pnl_pct": 22.0, "price_vs_sma50_pct": 30.0}),
+            tranche_log=[{"ticker": "TEST", "tranche_percent": 33}],
+        )
+        self.assertEqual(result["already_sold_percent"], 33)
+        self.assertEqual(result["target_total_sold_percent"], 66)
+        self.assertEqual(result["sell_now_percent"], 33)
+        self.assertEqual(result["remaining_after_sale_percent"], 34)
+
     def test_already_sold_prevents_double_sale(self):
         result = evaluate_sell_decision(
             payload({"pnl_pct": 22.0}),
             tranche_log=[{"ticker": "TEST", "tranche_percent": 33}],
         )
-        self.assertEqual(result["target_total_sold_percent"], 0)
+        self.assertEqual(result["target_total_sold_percent"], 33)
         self.assertEqual(result["recommendation_percent"], 0)
         self.assertEqual(result["sell_now_percent"], 0)
+        self.assertIn("bereits", result["explanation_short"])
+
+    def test_killer_signal_only_recommends_unsold_remainder(self):
+        result = evaluate_sell_decision(
+            payload({"pnl_pct": -8.0}),
+            tranche_log=[{"ticker": "TEST", "tranche_percent": 75}],
+        )
+        self.assertEqual(result["already_sold_percent"], 75)
+        self.assertEqual(result["target_total_sold_percent"], 100)
+        self.assertEqual(result["sell_now_percent"], 25)
+        self.assertEqual(result["remaining_after_sale_percent"], 0)
 
     def test_health_score_for_five_synthetic_tickers(self):
         samples = [

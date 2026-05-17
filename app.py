@@ -36,10 +36,82 @@ from sell_decision_metrics import (
     build_sell_decision_metrics_payload,
     build_sell_decision_metrics_smoke_inputs,
 )
-from sell_decision_rules import compute_sell_health_score, evaluate_sell_decision
+import sell_decision_rules
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
 from ui.theme import APP_CSS, PAGE_CONFIG
+
+
+def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None) -> dict:
+    """Delegate sell decisions to the rules module without importing optional names directly."""
+    return sell_decision_rules.evaluate_sell_decision(metrics_payload, manual_data, tranche_log)
+
+
+def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = None) -> dict:
+    """Return the engine health score, with a compatibility fallback for older deployed rules modules."""
+    engine_fn = getattr(sell_decision_rules, "compute_sell_health_score", None)
+    if callable(engine_fn):
+        return engine_fn(metrics_payload, manual_data)
+    return _compute_sell_health_score_fallback(metrics_payload, manual_data)
+
+
+def _fallback_float(value, default=0.0):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if np.isnan(parsed):
+        return default
+    return parsed
+
+
+def _compute_sell_health_score_fallback(metrics_payload: dict, manual_data: dict | None = None) -> dict:
+    metrics = metrics_payload.get("metrics") if isinstance(metrics_payload, dict) and isinstance(metrics_payload.get("metrics"), dict) else (metrics_payload or {})
+    score = 50.0
+    reasons = []
+    pnl = _fallback_float(metrics.get("pnl_pct"), 0.0)
+    drawdown = abs(_fallback_float(metrics.get("drawdown_from_high_pct"), 0.0))
+    days_under_21 = _fallback_float(metrics.get("days_under_sma21"), 0.0)
+    rs_slope = _fallback_float(metrics.get("rs_slope_21"), 0.0)
+    if pnl >= 20:
+        score += 12
+        reasons.append("Gewinnpuffer vorhanden")
+    elif pnl <= -7:
+        score -= 35
+        reasons.append("7%-Verlustgrenze überschritten")
+    elif pnl < 0:
+        score -= 12
+        reasons.append("Position im Verlust")
+    if drawdown >= 15:
+        score -= 22
+        reasons.append("Drawdown vom Hoch kritisch")
+    elif drawdown >= 8:
+        score -= 12
+        reasons.append("Drawdown vom Hoch erhöht")
+    if days_under_21 >= 3:
+        score -= 14
+        reasons.append("Mehrere Tage unter 21-Tage-Linie")
+    elif days_under_21 >= 1:
+        score -= 6
+        reasons.append("Kurz unter 21-Tage-Linie")
+    if rs_slope > 0:
+        score += 8
+        rs_trend = "steigend"
+    elif rs_slope < 0:
+        score -= 8
+        rs_trend = "fallend"
+        reasons.append("Relative Stärke fällt")
+    else:
+        rs_trend = "seitwärts"
+    score = max(0.0, min(100.0, score))
+    if score >= 70:
+        status = "Gesund"
+    elif score >= 40:
+        status = "Beobachten"
+    else:
+        status = "Verkaufskandidat"
+    return {"health_score": round(score, 1), "status": status, "rs_trend": rs_trend, "reasons": reasons}
+
 
 def configure_page() -> None:
     st.set_page_config(**PAGE_CONFIG)
@@ -10222,8 +10294,7 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
     )
 
     already = float(result.get("already_sold_percent", 0.0) or 0.0)
-    remaining_before_pct = max(100.0 - already, 1.0)
-    shares_to_sell = min(float(shares or 0.0), float(shares or 0.0) * pct / remaining_before_pct) if pct else 0.0
+    shares_to_sell = _sell_monitor_shares_for_percent(shares, already, pct)
     remaining_shares = max(float(shares or 0.0) - shares_to_sell, 0.0)
     current_price = _safe_float(metrics.get("current_price"), np.nan)
     tranche_value_market = shares_to_sell * current_price if not np.isnan(current_price) else np.nan
@@ -10240,6 +10311,109 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
     action_cols[2].metric("Vollausstieg", _sell_monitor_fmt_money(result.get("full_exit_price"), market_currency))
     with action_cols[3]:
         st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
+
+
+def _sell_monitor_primary_signal(result: dict) -> str:
+    for group in ("killer_signals", "tranche_signals", "watch_signals"):
+        for signal in result.get(group, []) or []:
+            label = str((signal or {}).get("label") or "").strip()
+            if label:
+                return label
+    return str(result.get("recommendation_label") or "Manuelle Umsetzung").strip()
+
+
+def _sell_monitor_shares_for_percent(shares: float, already_sold_percent: float, sell_now_percent: float) -> float:
+    current_shares = max(float(shares or 0.0), 0.0)
+    pct = max(float(sell_now_percent or 0.0), 0.0)
+    if pct <= 0 or current_shares <= 0:
+        return 0.0
+    remaining_before_pct = max(100.0 - max(float(already_sold_percent or 0.0), 0.0), 1.0)
+    return min(current_shares, current_shares * pct / remaining_before_pct)
+
+
+def _render_sell_monitor_tranche_log(ticker: str, result: dict, metrics: dict, shares: float, market_currency: str, tranche_log: list[dict]) -> None:
+    ticker = _normalize_single_ticker(ticker)
+    ticker_tranches = [entry for entry in tranche_log if _normalize_single_ticker(entry.get("ticker", "")) == ticker]
+    already = float(result.get("already_sold_percent", 0.0) or 0.0)
+    sell_now = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
+    target_total = int(result.get("target_total_sold_percent", 0) or 0)
+    remaining_after = float(result.get("remaining_after_sale_percent", 0.0) or 0.0)
+
+    st.markdown("#### Realisierte Tranchen")
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Bereits verkauft", f"{already:.0f}%")
+    summary_cols[1].metric("Ziel gesamt", f"{target_total}%")
+    summary_cols[2].metric("Jetzt zusätzlich", f"{sell_now}%")
+    summary_cols[3].metric("Rest nach Umsetzung", f"{remaining_after:.0f}%")
+
+    if ticker_tranches:
+        display_rows = []
+        for entry in sorted(ticker_tranches, key=lambda row: str(row.get("date") or ""), reverse=True):
+            display_rows.append({
+                "Datum": entry.get("date") or "—",
+                "Tranche %": _safe_float(entry.get("tranche_percent"), 0.0),
+                "Kurs": _safe_float(entry.get("price"), np.nan),
+                "Stück": _safe_float(entry.get("shares_sold"), np.nan),
+                "Signal": entry.get("trigger_signal") or "—",
+                "Notiz": entry.get("notes") or "",
+            })
+        st.dataframe(
+            pd.DataFrame(display_rows),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Tranche %": st.column_config.NumberColumn("Tranche %", format="%.0f%%"),
+                "Kurs": st.column_config.NumberColumn(f"Kurs ({market_currency})", format="%.2f"),
+                "Stück": st.column_config.NumberColumn("Stück", format="%.2f"),
+            },
+        )
+    else:
+        st.info("Für diese Position sind noch keine realisierten Tranchen protokolliert.")
+
+    if sell_now <= 0:
+        if already >= target_total and target_total > 0:
+            st.caption("Die aktuell notwendige Verkaufsquote wurde bereits durch frühere Tranchen erreicht.")
+        return
+
+    current_price = _safe_float(metrics.get("current_price"), 0.0) or 0.0
+    default_shares = _sell_monitor_shares_for_percent(shares, already, sell_now)
+    signal_options = []
+    for group in ("killer_signals", "tranche_signals", "watch_signals"):
+        for signal in result.get(group, []) or []:
+            label = str((signal or {}).get("label") or "").strip()
+            if label and label not in signal_options:
+                signal_options.append(label)
+    primary_signal = _sell_monitor_primary_signal(result)
+    if primary_signal and primary_signal not in signal_options:
+        signal_options.insert(0, primary_signal)
+    if not signal_options:
+        signal_options = ["Manuelle Umsetzung"]
+
+    with st.form(f"sell_monitor_tranche_log_{ticker}"):
+        st.markdown("##### Umsetzung protokollieren")
+        c1, c2, c3, c4 = st.columns(4)
+        sale_date = c1.date_input("Datum", value=datetime.now(timezone.utc).date(), key=f"tranche_date_{ticker}")
+        tranche_percent = c2.number_input("Verkaufte Tranche %", min_value=0.0, max_value=100.0, value=float(sell_now), step=1.0, key=f"tranche_pct_{ticker}")
+        sale_price = c3.number_input("Kurs", min_value=0.0, value=float(current_price), step=0.01, key=f"tranche_price_{ticker}")
+        shares_sold = c4.number_input("Stückzahl", min_value=0.0, value=float(default_shares), step=1.0, key=f"tranche_shares_{ticker}")
+        trigger_signal = st.selectbox("Auslösendes Signal", signal_options, index=0, key=f"tranche_signal_{ticker}")
+        notes = st.text_input("Notiz optional", value="", key=f"tranche_note_{ticker}")
+        submitted = st.form_submit_button("Tranche als verkauft protokollieren", type="primary", use_container_width=True)
+        if submitted:
+            if tranche_percent <= 0:
+                st.warning("Bitte eine verkaufte Tranche größer 0% erfassen.")
+            else:
+                append_tranche_log({
+                    "date": str(sale_date),
+                    "ticker": ticker,
+                    "tranche_percent": float(tranche_percent),
+                    "price": float(sale_price) if sale_price > 0 else None,
+                    "shares_sold": float(shares_sold) if shares_sold > 0 else None,
+                    "trigger_signal": trigger_signal,
+                    "notes": notes,
+                })
+                st.success("Tranche wurde im Verkaufs-Log gespeichert. Die Portfolio-Position wurde nicht automatisch reduziert.")
+                st.rerun()
 
 
 def _render_sell_monitor_signals(result: dict) -> None:
@@ -10364,8 +10538,10 @@ def _render_sell_decision_live_monitor() -> None:
         if display_manual.get(key) in (None, ""):
             display_manual[key] = defaults.get(key)
     metrics = metrics_payload.get("metrics", {}) or {}
-    result_preview = evaluate_sell_decision(metrics_payload, display_manual, load_tranche_log())
+    tranche_log = load_tranche_log()
+    result_preview = evaluate_sell_decision(metrics_payload, display_manual, tranche_log)
     _render_sell_monitor_recommendation(result_preview, metrics, shares, market_currency)
+    _render_sell_monitor_tranche_log(selected_ticker, result_preview, metrics, shares, market_currency, tranche_log)
 
     st.markdown("#### Stammdaten & manuelle Overrides")
     auto_cols = st.columns(5)
@@ -10417,7 +10593,8 @@ def _render_sell_decision_live_monitor() -> None:
     for key in ["pivot", "low_day_1", "low_day_0"]:
         if manual_for_rules.get(key) in (None, ""):
             manual_for_rules[key] = defaults.get(key)
-    result = evaluate_sell_decision(metrics_payload, manual_for_rules, load_tranche_log())
+    tranche_log = load_tranche_log()
+    result = evaluate_sell_decision(metrics_payload, manual_for_rules, tranche_log)
 
     st.markdown("#### Kennzahlen")
     current = _safe_float(metrics.get("current_price"), np.nan)
@@ -10438,7 +10615,7 @@ def _render_sell_decision_live_monitor() -> None:
 
     st.markdown("#### Aktive Signale")
     _render_sell_monitor_signals(result)
-    _render_sell_monitor_diagnostics(selected_ticker, metrics_payload, manual_for_rules, load_tranche_log(), chart_df, market_currency)
+    _render_sell_monitor_diagnostics(selected_ticker, metrics_payload, manual_for_rules, tranche_log, chart_df, market_currency)
 
 
 def _sell_ranking_status_badge(status: str) -> str:
