@@ -36,7 +36,7 @@ from sell_decision_metrics import (
     build_sell_decision_metrics_payload,
     build_sell_decision_metrics_smoke_inputs,
 )
-from sell_decision_rules import evaluate_sell_decision
+from sell_decision_rules import compute_sell_health_score, evaluate_sell_decision
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
 from ui.theme import APP_CSS, PAGE_CONFIG
@@ -10370,15 +10370,173 @@ def _render_sell_decision_live_monitor() -> None:
     _render_sell_monitor_diagnostics(selected_ticker, metrics_payload, manual_for_rules, load_tranche_log(), chart_df, market_currency)
 
 
+def _sell_ranking_status_badge(status: str) -> str:
+    return {"Halten": "🟢 Halten", "Beobachten": "🟡 Beobachten", "Verkaufen": "🔴 Verkaufen"}.get(str(status), str(status or "—"))
+
+
+def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: dict, tranche_log: list[dict], cache_buster: int) -> dict:
+    ticker = _normalize_single_ticker((position or {}).get("ticker", ""))
+    base = {
+        "Ticker": ticker,
+        "Firma": name_map.get(ticker, ticker),
+        "P&L %": np.nan,
+        "Health-Score": np.nan,
+        "Empfohlene Tranche %": 0,
+        "Status": "Fehler",
+        "Drawdown vom Peak %": np.nan,
+        "21-MA": "—",
+        "50-MA": "—",
+        "RS-Trend": "—",
+        "Distribution-Tage": np.nan,
+        "Haltedauer Tage": np.nan,
+        "Fehler": "",
+        "_sort_tranche": 0,
+        "_sort_health": -1,
+    }
+    if not ticker:
+        base["Fehler"] = "Ticker fehlt."
+        return base
+    try:
+        buy_date = pd.Timestamp((position or {}).get("buy_date")).date()
+    except Exception:
+        base["Fehler"] = "Kaufdatum fehlt/ungültig."
+        return base
+    buy_price = _safe_float((position or {}).get("buy_price"), np.nan)
+    if np.isnan(buy_price) or buy_price <= 0:
+        base["Fehler"] = "Einstandspreis fehlt/ungültig."
+        return base
+    shares = _safe_float((position or {}).get("shares"), 0.0)
+    stored_currency = str((position or {}).get("currency", "EUR") or "EUR").upper()
+    try:
+        symbol_metrics = _portfolio_symbol_metrics(ticker) or {}
+        market_currency = str(symbol_metrics.get("currency", stored_currency) or stored_currency).upper()
+        metric_buy_price = _sell_monitor_buy_price_for_market(ticker, buy_price, stored_currency, buy_date, market_currency)
+        metrics_payload = load_sell_decision_metrics(ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency, cache_buster=cache_buster)
+        if not metrics_payload.get("ok"):
+            base["Fehler"] = metrics_payload.get("error") or "Kennzahlen fehlen."
+            return base
+        manual = dict((manual_map or {}).get(ticker, {}) or {})
+        result = evaluate_sell_decision(metrics_payload, manual, tranche_log)
+        health = compute_sell_health_score(metrics_payload, manual)
+        metrics = metrics_payload.get("metrics", {}) or {}
+        current = _safe_float(metrics.get("current_price"), np.nan)
+        sma21 = _safe_float(metrics.get("sma21"), np.nan)
+        sma50 = _safe_float(metrics.get("sma50"), np.nan)
+        held_days = max((datetime.now(timezone.utc).date() - buy_date).days, 0)
+        tranche = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
+        base.update({
+            "P&L %": _safe_float(metrics.get("pnl_pct"), np.nan),
+            "Health-Score": _safe_float(health.get("health_score"), np.nan),
+            "Empfohlene Tranche %": tranche,
+            "Status": _sell_ranking_status_badge(health.get("status")),
+            "Drawdown vom Peak %": _safe_float(metrics.get("drawdown_from_high_since_buy_pct"), np.nan),
+            "21-MA": "darüber" if not np.isnan(current) and not np.isnan(sma21) and current >= sma21 else "darunter" if not np.isnan(current) and not np.isnan(sma21) else "—",
+            "50-MA": "darüber" if not np.isnan(current) and not np.isnan(sma50) and current >= sma50 else "darunter" if not np.isnan(current) and not np.isnan(sma50) else "—",
+            "RS-Trend": health.get("rs_trend", "seitwärts"),
+            "Distribution-Tage": int(_safe_float(metrics.get("distribution_days_25"), 0) or 0),
+            "Haltedauer Tage": held_days,
+            "_sort_tranche": tranche,
+            "_sort_health": _safe_float(health.get("health_score"), -1),
+        })
+    except Exception as exc:
+        base["Fehler"] = str(exc)
+    return base
+
+
+def _sell_ranking_action_text(rows: list[dict]) -> str:
+    valid = [r for r in rows if not r.get("Fehler")]
+    if not valid:
+        return "Für die aktuellen Positionen konnten noch keine belastbaren Ranking-Daten berechnet werden."
+    sell_candidates = [r for r in valid if float(r.get("Empfohlene Tranche %") or 0) >= 50 or "Verkaufen" in str(r.get("Status", ""))]
+    healthy = [r for r in valid if "Halten" in str(r.get("Status", ""))]
+    watch = [r for r in valid if "Beobachten" in str(r.get("Status", ""))]
+    if sell_candidates and healthy:
+        return "Kapital aus den schwächsten Titeln freisetzen und in führende Positionen nur bei sauberen Setups umschichten."
+    if sell_candidates and not healthy:
+        return "Es gibt Verkaufs-Kandidaten, aber keine gesunden Halter. Cash ist auch eine Position — erst Stabilität abwarten."
+    if len(healthy) == len(valid):
+        return "Das Portfolio wirkt in Ordnung. Die Score-Reihenfolge zeigt eine mögliche Aufstockungsreihenfolge bei sauberen Setups."
+    if len(watch) >= max(1, len(valid) / 2):
+        return "Überwiegend Beobachten: Stopps enger ziehen und vorerst nicht aufstocken."
+    return "Portfolio gemischt: zuerst die niedrigsten Health-Scores prüfen und Positionsgrößen defensiv halten."
+
+
+def _render_sell_decision_portfolio_ranking() -> None:
+    _init_workspace_state()
+    positions = [p for p in st.session_state.get("positions", []) if _normalize_single_ticker((p or {}).get("ticker", ""))]
+    st.markdown("#### 🏁 Portfolio-Ranking")
+    st.caption("Bewertet alle offenen Positionen mit derselben Kennzahlen- und Regel-Engine wie der Live-Monitor.")
+    if not positions:
+        st.info("Noch keine offenen Portfolio-Positionen vorhanden. Lege zuerst im Depot oder im Nach-Kauf-Check eine Position an.")
+        return
+
+    col_btn, col_meta = st.columns([1, 2])
+    with col_btn:
+        run_clicked = st.button("Alle Positionen auswerten", key="sell_rank_run", type="primary", use_container_width=True)
+    with col_meta:
+        st.caption(f"{len(positions)} offene Position(en) · gespeicherte Live-Monitor-Daten werden berücksichtigt")
+    if run_clicked:
+        st.session_state["sell_rank_cache_buster"] = st.session_state.get("sell_rank_cache_buster", 0) + 1
+        tickers = tuple(dict.fromkeys(_normalize_single_ticker(p.get("ticker", "")) for p in positions if _normalize_single_ticker(p.get("ticker", ""))))
+        name_map = _ticker_display_names(tickers)
+        state = load_sell_decision_state()
+        manual_map = state.get("positions_manual", {}) if isinstance(state, dict) else {}
+        tranche_log = load_tranche_log()
+        rows = []
+        progress = st.progress(0, text="Starte Auswertung …")
+        for idx, position in enumerate(positions, start=1):
+            ticker = _normalize_single_ticker(position.get("ticker", ""))
+            progress.progress((idx - 1) / max(len(positions), 1), text=f"Bewerte {ticker or idx} …")
+            rows.append(_evaluate_sell_ranking_position(position, name_map, manual_map, tranche_log, st.session_state.get("sell_rank_cache_buster", 0)))
+        progress.progress(1.0, text="Auswertung abgeschlossen")
+        st.session_state["sell_rank_rows"] = rows
+        st.session_state["sell_rank_at"] = datetime.now(timezone.utc).strftime("%d.%m.%Y · %H:%M UTC")
+
+    rows = st.session_state.get("sell_rank_rows", [])
+    if not rows:
+        st.info("Klicke auf „Alle Positionen auswerten“, um das Ranking zu berechnen.")
+        return
+
+    df = pd.DataFrame(rows).sort_values(["_sort_tranche", "_sort_health"], ascending=[False, True]).drop(columns=["_sort_tranche", "_sort_health"], errors="ignore")
+    display_cols = ["Ticker", "Firma", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "Drawdown vom Peak %", "21-MA", "50-MA", "RS-Trend", "Distribution-Tage", "Haltedauer Tage"]
+    if _is_mobile_client():
+        display_cols = ["Ticker", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "21-MA", "50-MA"]
+    st.dataframe(
+        df[display_cols],
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Ticker": st.column_config.TextColumn("Ticker", help="Firmenname steht in der Spalte Firma, sofern zuverlässig verfügbar."),
+            "Firma": st.column_config.TextColumn("Firma", width="medium"),
+            "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f%%"),
+            "Health-Score": st.column_config.ProgressColumn("Health-Score", format="%.0f", min_value=0, max_value=100),
+            "Empfohlene Tranche %": st.column_config.NumberColumn("Empf. Tranche %", format="%d%%"),
+            "Drawdown vom Peak %": st.column_config.NumberColumn("Drawdown Peak %", format="%+.2f%%"),
+            "Distribution-Tage": st.column_config.NumberColumn("Dist.-Tage", format="%d"),
+            "Haltedauer Tage": st.column_config.NumberColumn("Haltedauer", format="%d"),
+        },
+    )
+    if st.session_state.get("sell_rank_at"):
+        st.caption(f"Letzte Auswertung: {st.session_state['sell_rank_at']}")
+    st.markdown(f'<div class="info-card"><div class="card-label">Aktionsempfehlung</div>{html.escape(_sell_ranking_action_text(rows))}</div>', unsafe_allow_html=True)
+    errors = [r for r in rows if r.get("Fehler")]
+    if errors:
+        with st.expander(f"⚠️ Fehlermeldungen ({len(errors)})", expanded=False):
+            err_df = pd.DataFrame([{"Ticker": r.get("Ticker"), "Fehler": r.get("Fehler")} for r in errors])
+            st.dataframe(err_df, width="stretch", hide_index=True)
+
+
 def _tab_verkaufsentscheidung():
     if not _render_private_gate("🔐 Verkaufs-Entscheidung"):
         return
     inject_workspace_css()
     st.markdown("### 🧭 Verkaufs-Entscheidung")
     st.caption("Regelbasierter Verkaufsbereich für Live-Monitor, Portfolio-Ranking und spätere Post-Mortems.")
-    tabs = st.tabs(["📡 Live-Monitor"])
+    tabs = st.tabs(["📡 Live-Monitor", "🏁 Portfolio-Ranking"])
     with tabs[0]:
         _render_sell_decision_live_monitor()
+    with tabs[1]:
+        _render_sell_decision_portfolio_ranking()
 
 
 # ═══════════════════════════════════════════════════════

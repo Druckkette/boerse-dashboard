@@ -220,6 +220,90 @@ def _build_trigger_prices(regime: str, metrics: dict, metrics_payload: dict, man
     return weekly_sma10 or stop_price, weekly_sma10 or stop_price
 
 
+def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = None) -> dict[str, Any]:
+    """Compute the portfolio-ranking health score from sell metrics and manual data."""
+    manual_data = manual_data or {}
+    metrics, _ticker, _buy_price, _shares = _extract_inputs(metrics_payload or {})
+    score = 50.0
+    reasons: list[str] = []
+
+    pnl = _metric(metrics, "pnl_pct")
+    if pnl is not None:
+        if pnl >= 20:
+            score += 12; reasons.append("P&L >= 20%")
+        elif pnl >= 10:
+            score += 8; reasons.append("P&L 10-20%")
+        elif pnl >= 0:
+            score += 3; reasons.append("P&L 0-10%")
+        elif pnl >= -3:
+            score -= 5; reasons.append("P&L -3-0%")
+        elif pnl >= -7:
+            score -= 15; reasons.append("P&L -7--3%")
+        else:
+            score -= 30; reasons.append("P&L < -7%")
+
+    current = _metric(metrics, "current_price")
+    sma21 = _metric(metrics, "sma21")
+    sma50 = _metric(metrics, "sma50")
+    low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_1"))
+
+    if current is not None and sma21 is not None:
+        if current >= sma21:
+            score += 8; reasons.append("Kurs >= 21-MA")
+        else:
+            score -= 12; reasons.append("Kurs < 21-MA")
+    if current is not None and sma50 is not None:
+        if current >= sma50:
+            score += 6; reasons.append("Kurs >= 50-MA")
+        elif current >= sma50 * 0.98:
+            score -= 5; reasons.append("Kurs knapp unter 50-MA")
+        else:
+            score -= 20; reasons.append("Kurs < 50-MA -2%")
+    if current is not None and low_day_1 is not None and current < low_day_1:
+        score -= 15; reasons.append("Schluss unter Tief Tag 1")
+
+    drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
+    if drawdown >= 15:
+        score -= 15; reasons.append("Drawdown >= 15%")
+    elif drawdown >= 12:
+        score -= 10; reasons.append("Drawdown 12-15%")
+    elif drawdown >= 8:
+        score -= 5; reasons.append("Drawdown 8-12%")
+
+    rs_line = _metric(metrics, "rs_line")
+    rs_ma21 = _metric(metrics, "rs_ma21")
+    rs_ma50 = _metric(metrics, "rs_ma50")
+    days_under_rs21 = int(_metric(metrics, "days_under_rs_ma21", 0) or 0)
+    if rs_line is not None and rs_ma21 is not None and rs_ma50 is not None:
+        if rs_line >= rs_ma21 and rs_line >= rs_ma50 and days_under_rs21 == 0:
+            rs_trend = "hoch"
+            score += 10; reasons.append("RS hoch")
+        elif rs_line < rs_ma21 or rs_line < rs_ma50 or days_under_rs21 >= 3:
+            rs_trend = "runter"
+            score -= 12; reasons.append("RS runter/unter MAs")
+        else:
+            rs_trend = "seitwärts"
+    else:
+        rs_trend = "seitwärts"
+
+    dist_days = int(_metric(metrics, "distribution_days_25", 0) or 0)
+    if dist_days >= 6:
+        score -= 15; reasons.append("Distribution >= 6")
+    elif dist_days >= 4:
+        score -= 8; reasons.append("Distribution 4-5")
+    elif dist_days >= 2:
+        score -= 3; reasons.append("Distribution 2-3")
+
+    score = max(0.0, min(100.0, score))
+    if score >= 65:
+        status = "Halten"
+    elif score >= 40:
+        status = "Beobachten"
+    else:
+        status = "Verkaufen"
+    return {"health_score": round(score, 1), "status": status, "rs_trend": rs_trend, "reasons": reasons}
+
+
 def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None) -> dict[str, Any]:
     """Evaluate the pure sell-decision rules without UI dependencies."""
     manual_data = manual_data or {}
