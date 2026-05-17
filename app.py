@@ -32,6 +32,10 @@ except Exception:
     psycopg2 = None
     execute_values = None
 
+from sell_decision_metrics import (
+    build_sell_decision_metrics_payload,
+    build_sell_decision_metrics_smoke_inputs,
+)
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
 from ui.theme import APP_CSS, PAGE_CONFIG
@@ -1650,6 +1654,69 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
             continue
         out[sym] = close
     return out
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: float, benchmark_ticker: str = "SPY", currency: str = "") -> dict:
+    """Load cached Yahoo data and build reusable metrics for the sell-decision area."""
+    norm_ticker = _normalize_single_ticker(ticker)
+    norm_benchmark = _normalize_single_ticker(benchmark_ticker or "SPY") or "SPY"
+    if not norm_ticker:
+        return {"ok": False, "error": "Ticker fehlt.", "ticker": "", "benchmark_ticker": norm_benchmark, "metrics": {}, "manual_defaults": {}, "as_of": ""}
+    try:
+        buy_ts = pd.Timestamp(buy_date).normalize()
+    except Exception:
+        return {"ok": False, "error": "Ungültiges Einstiegsdatum.", "ticker": norm_ticker, "benchmark_ticker": norm_benchmark, "metrics": {}, "manual_defaults": {}, "as_of": ""}
+
+    end = datetime.now(timezone.utc).replace(tzinfo=None)
+    # 420 calendar days usually covers >=250 trading days; include pre-buy data for pivot defaults.
+    start = min(end - timedelta(days=420), buy_ts.to_pydatetime() - timedelta(days=60))
+    frames = _bulk_download_ohlc((norm_ticker, norm_benchmark), start, end)
+    price_frame = frames.get(norm_ticker, pd.DataFrame())
+    benchmark_frame = frames.get(norm_benchmark, pd.DataFrame())
+
+    market_currency = str(currency or "").upper().strip()
+    if not market_currency:
+        try:
+            market_currency = str((_portfolio_symbol_metrics(norm_ticker) or {}).get("currency", "USD") or "USD").upper()
+        except Exception:
+            market_currency = "USD"
+
+    pnl_abs_eur = None
+    fx_rate_to_eur = None
+    try:
+        current_close = pd.to_numeric(price_frame.get("Close", pd.Series(dtype=float)), errors="coerce").dropna()
+        if not current_close.empty:
+            pnl_abs_market = (float(current_close.iloc[-1]) - float(buy_price or 0.0)) * float(shares or 0.0)
+            if market_currency == "EUR":
+                pnl_abs_eur = pnl_abs_market
+                fx_rate_to_eur = 1.0
+            else:
+                pnl_abs_eur, fx_rate_to_eur = _price_to_eur(pnl_abs_market, market_currency, end.date())
+    except Exception:
+        pnl_abs_eur = None
+        fx_rate_to_eur = None
+
+    return build_sell_decision_metrics_payload(
+        ticker=norm_ticker,
+        buy_date=buy_ts,
+        buy_price=buy_price,
+        shares=shares,
+        price_frame=price_frame,
+        benchmark_frame=benchmark_frame,
+        benchmark_ticker=norm_benchmark,
+        currency=market_currency,
+        pnl_abs_eur=pnl_abs_eur,
+        fx_rate_to_eur=fx_rate_to_eur,
+    )
+
+
+def debug_sell_decision_metrics_smoke_test() -> list[dict]:
+    """Best-effort smoke check for three liquid tickers; intended for local debugging."""
+    results = []
+    for sample in build_sell_decision_metrics_smoke_inputs():
+        results.append(load_sell_decision_metrics(**sample))
+    return results
 
 
 def _beta_from_close_series(close: pd.Series, benchmark_close: pd.Series, window: int = 120) -> float:
