@@ -10392,6 +10392,13 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
     with action_cols[3]:
         st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
 
+    action_cols[0].metric("Stopp Restposition", _sell_monitor_fmt_money(result.get("stop_price"), market_currency))
+    action_cols[1].metric("Nächste Tranche", _sell_monitor_fmt_money(result.get("next_tranche_trigger_price"), market_currency))
+    action_cols[2].metric("Vollausstieg", _sell_monitor_fmt_money(result.get("full_exit_price"), market_currency))
+    with action_cols[3]:
+        st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
+
+
 def _sell_monitor_primary_signal(result: dict) -> str:
     for group in ("killer_signals", "tranche_signals", "watch_signals"):
         for signal in result.get(group, []) or []:
