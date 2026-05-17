@@ -224,6 +224,8 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     """Evaluate the pure sell-decision rules without UI dependencies."""
     manual_data = manual_data or {}
     metrics, ticker, buy_price, _shares = _extract_inputs(metrics_payload or {})
+    if not ticker and isinstance(manual_data, dict):
+        ticker = str(manual_data.get("ticker") or "").upper().strip()
     market_environment = str(manual_data.get("market_environment") or "Unsicher").strip() or "Unsicher"
     industry_group_status = str(manual_data.get("industry_group_status") or "Neutral").strip() or "Neutral"
     pnl = _metric(metrics, "pnl_pct", 0.0) or 0.0
