@@ -10368,6 +10368,7 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
             <div class="sell-rec-hero__pct" style="color:{tone};">Konkrete Tranche: {pct}% jetzt verkaufen</div>
           </div>
           <div style="margin-top:8px;color:#334155;font-size:.9rem;line-height:1.45;">{html.escape(str(result.get('explanation_short', '')))}</div>
+          <div class="mini-help">{html.escape(str(result.get('sell_mode') or ''))}{(' · ' + html.escape(str(result.get('sell_style')))) if result.get('sell_style') else ''}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -10391,13 +10392,6 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
     action_cols[2].metric("Vollausstieg-Marke", _sell_monitor_fmt_money(result.get("full_exit_price"), market_currency))
     with action_cols[3]:
         st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
-
-    action_cols[0].metric("Stopp Restposition", _sell_monitor_fmt_money(result.get("stop_price"), market_currency))
-    action_cols[1].metric("Nächste Tranche", _sell_monitor_fmt_money(result.get("next_tranche_trigger_price"), market_currency))
-    action_cols[2].metric("Vollausstieg", _sell_monitor_fmt_money(result.get("full_exit_price"), market_currency))
-    with action_cols[3]:
-        st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
-
 
 def _sell_monitor_primary_signal(result: dict) -> str:
     for group in ("killer_signals", "tranche_signals", "watch_signals"):
@@ -10512,12 +10506,19 @@ def _render_sell_monitor_signals(result: dict) -> None:
             contrib_text = f" · Tranche-Beitrag {contrib}%" if contrib else ""
             book_ref = str(signal.get("book_reference") or "Regelwerk").strip()
             reason = _sell_signal_reason(signal, title)
+            signal_date = str(signal.get("signal_date") or "Aktueller Stand")
+            event_note = str(signal.get("event_note") or "")
+            sell_mode = str(signal.get("sell_mode") or "")
+            sell_style = str(signal.get("sell_style") or "")
+            mode_line = " · ".join(part for part in [sell_mode, sell_style] if part)
             st.markdown(
                 f"""
                 <div class="sell-signal-card" style="background:{bg};">
                   <div class="sell-signal-card__title" style="color:{color};">{html.escape(str(signal.get('label', 'Signal')))}{html.escape(contrib_text)}</div>
-                  <div class="sell-signal-card__meta">Kapitelverweis: {html.escape(book_ref)}</div>
+                  <div class="sell-signal-card__meta">Ausgelöst am/seit: {html.escape(signal_date)} · Kapitelverweis: {html.escape(book_ref)}</div>
                   <div class="sell-signal-card__reason">Begründung: {html.escape(reason)}</div>
+                  {f'<div class="sell-signal-card__reason">Datenpunkt: {html.escape(event_note)}</div>' if event_note else ''}
+                  {f'<div class="sell-signal-card__meta">Einordnung: {html.escape(mode_line)}</div>' if mode_line else ''}
                 </div>
                 """,
                 unsafe_allow_html=True,

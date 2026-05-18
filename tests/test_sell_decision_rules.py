@@ -91,6 +91,30 @@ class SellDecisionRulesTest(unittest.TestCase):
         self.assertEqual(result["target_total_sold_percent"], 25)
         self.assertIn(result["sell_now_percent"], {0, 25, 33, 50, 66, 75, 100})
 
+    def test_tranche_signals_include_event_date_and_sell_mode(self):
+        result = evaluate_sell_decision(payload({
+            "pnl_pct": 22.0,
+            "days_under_sma21": 3,
+            "under_sma21_start_date": "2026-05-14",
+            "as_of_date": "2026-05-18",
+        }))
+        sma_signal = next(sig for sig in result["tranche_signals"] if sig["id"] == "tranche_three_days_under_sma21_gain")
+        self.assertEqual(sma_signal["signal_date"], "2026-05-14")
+        self.assertEqual(sma_signal["sell_mode"], "Offensives Verkaufen: Gewinn in Schwäche sichern")
+        self.assertEqual(result["sell_mode"], "Offensives Verkaufen: Gewinn in Schwäche sichern")
+        self.assertIn("Tag", sma_signal["event_note"])
+
+    def test_profit_zone_signal_is_offensive_strength_sale(self):
+        result = evaluate_sell_decision(payload({
+            "pnl_pct": 22.0,
+            "first_20_pct_gain_date": "2026-05-10",
+            "as_of_date": "2026-05-18",
+        }))
+        profit_signal = next(sig for sig in result["tranche_signals"] if sig["id"] == "tranche_profit_zone_20_25")
+        self.assertEqual(profit_signal["signal_date"], "2026-05-10")
+        self.assertEqual(profit_signal["sell_style"], "Gewinn in Stärke mitnehmen")
+        self.assertEqual(result["sell_mode"], "Offensives Verkaufen: Gewinn in Stärke mitnehmen")
+
     def test_health_score_for_five_synthetic_tickers(self):
         samples = [
             {"pnl_pct": 25.0, "current_price": 125.0, "sma21": 110.0, "sma50": 105.0, "rs_line": 1.2, "rs_ma21": 1.1, "rs_ma50": 1.0, "distribution_days_25": 1},

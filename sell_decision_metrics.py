@@ -85,6 +85,41 @@ def _trailing_true_count(mask: pd.Series) -> int:
     return int(count)
 
 
+
+
+def _trailing_true_start_date(mask: pd.Series) -> str:
+    count = _trailing_true_count(mask)
+    if count <= 0 or mask is None or mask.empty:
+        return ""
+    try:
+        return pd.Timestamp(mask.index[-count]).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _first_true_date(mask: pd.Series) -> str:
+    if mask is None or mask.empty:
+        return ""
+    valid = mask.fillna(False)
+    if not valid.any():
+        return ""
+    try:
+        return pd.Timestamp(valid[valid].index[0]).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _index_date_of_max(series: pd.Series | None) -> str:
+    if series is None or series.empty:
+        return ""
+    valid = pd.to_numeric(series, errors="coerce").dropna()
+    if valid.empty:
+        return ""
+    try:
+        return pd.Timestamp(valid.idxmax()).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
 def _last_float(series: pd.Series | None):
     if series is None or series.empty:
         return None
@@ -258,6 +293,21 @@ def build_sell_decision_metrics_payload(
     pivot_default = _safe_float(pd.to_numeric(pre_buy["High"], errors="coerce").max()) if not pre_buy.empty else None
     low_day_1_default = _series_float_at_or_after(low, buy_ts)
     low_day_0_default = _previous_series_float(low, buy_ts)
+    low_day_1_date = _first_true_date(low.index.to_series().ge(buy_ts)) if low_day_1_default is not None else ""
+    low_day_0_date = _last_index_date(low[low.index < buy_ts]) if low_day_0_default is not None else ""
+    as_of_date = _last_index_date(df)
+    high_since_buy_date = _index_date_of_max(pd.to_numeric(after_buy.get("High", pd.Series(dtype=float)), errors="coerce")) if not after_buy.empty else ""
+    under_sma21_start_date = _trailing_true_start_date(close < sma21)
+    under_sma50_start_date = _trailing_true_start_date(close < sma50)
+    under_rs_ma21_start_date = _trailing_true_start_date(rs_line < rs_ma21)
+    under_rs_ma50_start_date = _trailing_true_start_date(rs_line < rs_ma50)
+    close_since_buy = close[close.index >= buy_ts]
+    sma50_since_buy = sma50.reindex(close_since_buy.index)
+    sma200_since_buy = sma200.reindex(close_since_buy.index)
+    first_10_pct_gain_date = _first_true_date(((close_since_buy / entry_price) - 1) * 100 >= 10)
+    first_20_pct_gain_date = _first_true_date(((close_since_buy / entry_price) - 1) * 100 >= 20)
+    first_sma50_extension_date = _first_true_date((close_since_buy / sma50_since_buy - 1) * 100 > 25)
+    first_sma200_extension_date = _first_true_date((close_since_buy / sma200_since_buy - 1) * 100 > 70)
 
     metrics = {
         "current_price": current_price,
@@ -292,6 +342,18 @@ def build_sell_decision_metrics_payload(
         "days_under_sma21": under_sma21_days,
         "days_under_sma50": under_sma50_days,
         "weekly_closes_under_10w": weekly_under_10w_count,
+        "as_of_date": as_of_date,
+        "high_since_buy_date": high_since_buy_date,
+        "low_day_1_date": low_day_1_date,
+        "low_day_0_date": low_day_0_date,
+        "under_sma21_start_date": under_sma21_start_date,
+        "under_sma50_start_date": under_sma50_start_date,
+        "under_rs_ma21_start_date": under_rs_ma21_start_date,
+        "under_rs_ma50_start_date": under_rs_ma50_start_date,
+        "first_10_pct_gain_date": first_10_pct_gain_date,
+        "first_20_pct_gain_date": first_20_pct_gain_date,
+        "first_sma50_extension_date": first_sma50_extension_date,
+        "first_sma200_extension_date": first_sma200_extension_date,
         "worst_day_loss_pct_since_buy": worst_day_loss_pct,
         "worst_day_loss_date": worst_day_date,
         "worst_day_loss_high_volume": worst_day_high_volume,
@@ -310,7 +372,7 @@ def build_sell_decision_metrics_payload(
         "buy_price": entry_price,
         "shares": float(share_count or 0.0),
         "currency": str(currency or "USD").upper(),
-        "as_of": _last_index_date(df),
+        "as_of": as_of_date,
         "benchmark_as_of": _last_index_date(bench),
         "metrics": metrics,
         "manual_defaults": manual_defaults,
