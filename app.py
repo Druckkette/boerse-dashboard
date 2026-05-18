@@ -716,9 +716,6 @@ def _remove_watchlist_ticker(ticker: str) -> None:
     _sync_workspace()
 
 
-
-
-
 def _normalize_workspace_todos(raw) -> list[dict]:
     if raw is None:
         items = []
@@ -1501,7 +1498,6 @@ def _safe_float(value, default=np.nan):
         return float(value)
     except Exception:
         return default
-
 
 
 def _round_half_up_int(value) -> int:
@@ -2901,7 +2897,6 @@ Verkaufs-Score ein:
         })
         st.success("Einstellungen gespeichert. Snapshot, Rechner und Verkaufs-Score nutzen jetzt die neuen Werte.")
         st.rerun()
-
 
 
 def _render_depot_positions_manager(state: dict | None = None) -> None:
@@ -10220,6 +10215,19 @@ SELL_MONITOR_WARNING_SIGNALS = [
 ]
 
 
+def _sell_monitor_auto_checkbox_data(metrics_payload: dict) -> tuple[dict, dict, dict]:
+    auto = (metrics_payload or {}).get("auto_checkboxes", {}) if isinstance(metrics_payload, dict) else {}
+    if not isinstance(auto, dict):
+        return {}, {}, {}
+    strength = auto.get("strength_checkboxes") if isinstance(auto.get("strength_checkboxes"), dict) else {}
+    warning = auto.get("warning_checkboxes") if isinstance(auto.get("warning_checkboxes"), dict) else {}
+    reasons = auto.get("reasons") if isinstance(auto.get("reasons"), dict) else {}
+    return strength, warning, reasons
+
+
+def _sell_monitor_checkbox_label(label: str, key: str, auto_values: dict) -> str:
+    return f"{label} · automatisch erkannt" if bool((auto_values or {}).get(key, False)) else label
+
 def _sell_monitor_fmt_money(value, currency: str = "") -> str:
     if value is None or pd.isna(value):
         return "—"
@@ -10661,14 +10669,29 @@ def _render_sell_decision_live_monitor() -> None:
         s_col, w_col = st.columns(2)
         strength_values = dict(display_manual.get("strength_checkboxes", {}) or {})
         warning_values = dict(display_manual.get("warning_checkboxes", {}) or {})
+        auto_strength, auto_warning, auto_reasons = _sell_monitor_auto_checkbox_data(metrics_payload)
         with s_col:
             st.markdown('<div class="card-label" style="color:#16a34a;">Stärke-Signale</div>', unsafe_allow_html=True)
             for key, label in SELL_MONITOR_STRENGTH_SIGNALS:
-                strength_values[key] = st.checkbox(label, value=bool(strength_values.get(key, False)), key=f"sell_strength_{selected_ticker}_{key}")
+                is_auto = bool(auto_strength.get(key, False))
+                help_text = str(auto_reasons.get(key, "")) if is_auto else None
+                strength_values[key] = st.checkbox(
+                    _sell_monitor_checkbox_label(label, key, auto_strength),
+                    value=bool(strength_values.get(key, False) or is_auto),
+                    key=f"sell_strength_{selected_ticker}_{key}",
+                    help=help_text,
+                )
         with w_col:
             st.markdown('<div class="card-label" style="color:#dc2626;">Warnzeichen</div>', unsafe_allow_html=True)
             for key, label in SELL_MONITOR_WARNING_SIGNALS:
-                warning_values[key] = st.checkbox(label, value=bool(warning_values.get(key, False)), key=f"sell_warn_{selected_ticker}_{key}")
+                is_auto = bool(auto_warning.get(key, False))
+                help_text = str(auto_reasons.get(key, "")) if is_auto else None
+                warning_values[key] = st.checkbox(
+                    _sell_monitor_checkbox_label(label, key, auto_warning),
+                    value=bool(warning_values.get(key, False) or is_auto),
+                    key=f"sell_warn_{selected_ticker}_{key}",
+                    help=help_text,
+                )
 
         saved = st.form_submit_button("💾 Verkaufsdaten für diesen Ticker speichern", type="primary", use_container_width=True)
         if saved:
@@ -11544,8 +11567,6 @@ def _tab_sektoranalyse():
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
-
-
 def _render_market_dashboard_header(available):
     """Render dashboard header and return selected data key plus chart window."""
     label_to_key = {
@@ -11933,8 +11954,6 @@ def _tab_dashboard():
 
 
 # ===== Main entry point =====
-
-
 
 
 def _render_arbeitsbereich() -> None:
