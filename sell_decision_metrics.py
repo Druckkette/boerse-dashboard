@@ -85,8 +85,6 @@ def _trailing_true_count(mask: pd.Series) -> int:
     return int(count)
 
 
-
-
 def _trailing_true_start_date(mask: pd.Series) -> str:
     count = _trailing_true_count(mask)
     if count <= 0 or mask is None or mask.empty:
@@ -149,6 +147,15 @@ def _previous_series_float(series: pd.Series, date_value):
     return _safe_float(subset.iloc[-1])
 
 
+def _avg_volume_on_mask(volume: pd.Series, mask: pd.Series) -> float | None:
+    if volume is None or volume.empty or mask is None or mask.empty:
+        return None
+    aligned_volume = pd.to_numeric(volume.reindex(mask.index), errors="coerce")
+    selected = aligned_volume[mask.fillna(False)].dropna()
+    if selected.empty:
+        return None
+    return float(selected.mean())
+
 def _last_index_date(series: pd.Series | pd.DataFrame | None) -> str:
     if series is None or len(series) == 0:
         return ""
@@ -166,6 +173,7 @@ def _error(message: str, ticker: str = "", benchmark_ticker: str = "SPY") -> dic
         "benchmark_ticker": str(benchmark_ticker or "SPY").upper(),
         "metrics": {},
         "manual_defaults": {},
+        "auto_checkboxes": {"strength_checkboxes": {}, "warning_checkboxes": {}, "reasons": {}},
         "as_of": "",
     }
 
@@ -334,6 +342,104 @@ def build_sell_decision_metrics_payload(
     current_sma50_extension_start_date = _trailing_true_start_date(sma50_extension_mask)
     current_sma200_extension_start_date = _trailing_true_start_date(sma200_extension_mask)
 
+    day_range = (high - low).replace(0, np.nan)
+    closing_range = ((close - low) / day_range).clip(lower=0, upper=1)
+    first_sessions = df[df.index >= buy_ts].head(10)
+    first_green_ratio = None
+    if len(first_sessions) >= 5:
+        first_close = pd.to_numeric(first_sessions["Close"], errors="coerce")
+        first_green_ratio = float((first_close > first_close.shift(1)).sum() / max(1, len(first_close) - 1))
+    recent_20 = df.tail(20)
+    recent_pct_20 = pd.to_numeric(recent_20.get("Close", pd.Series(dtype=float)), errors="coerce").pct_change() if not recent_20.empty else pd.Series(dtype=float)
+    recent_volume_20 = pd.to_numeric(recent_20.get("Volume", pd.Series(dtype=float)), errors="coerce") if not recent_20.empty else pd.Series(dtype=float)
+    recent_up_avg_volume = _avg_volume_on_mask(recent_volume_20, recent_pct_20 > 0)
+    recent_down_avg_volume = _avg_volume_on_mask(recent_volume_20, recent_pct_20 < 0)
+    positive_volume_ratio_20 = (recent_up_avg_volume / recent_down_avg_volume) if recent_down_avg_volume and recent_down_avg_volume > 0 and recent_up_avg_volume is not None else None
+    recent_close_10 = close.tail(10)
+    recent_volume_10 = volume.tail(10)
+    recent_cr_10 = closing_range.tail(10)
+    pivot_near_mask = pd.Series(False, index=recent_close_10.index)
+    if pivot_default and pivot_default > 0 and not recent_close_10.empty:
+        pivot_distance = (recent_close_10 / pivot_default - 1) * 100
+        pivot_near_mask = pivot_distance.between(0, 5, inclusive="both")
+    stall_mask = pivot_near_mask & (recent_close_10.pct_change().fillna(0).abs() <= 0.015) & (recent_volume_10 >= recent_volume_10.shift(1) * 0.95) & (recent_cr_10 < 0.5)
+    low_close_count_5 = int((closing_range.tail(5) <= 0.25).sum()) if len(closing_range) else 0
+    upper_third_close_count_5 = int((closing_range.tail(5) >= (2 / 3)).sum()) if len(closing_range) else 0
+    lower_lows_count_4 = _trailing_true_count(low < low.shift(1))
+    weak_recent_rebound = False
+    if len(recent_close_10.dropna()) >= 5:
+        last_10_pct = recent_close_10.pct_change().dropna() * 100
+        weak_recent_rebound = bool((last_10_pct.max() < 3.0) and (_last_float(sma21) is not None) and current_price < (_last_float(sma21) or current_price))
+    recent_sma21 = sma21.reindex(close.index)
+    recent_sma50 = sma50.reindex(close.index)
+    pullback_rebound_21 = (low <= recent_sma21 * 1.01) & (close > recent_sma21) & (close > close.shift(1))
+    pullback_rebound_50 = (low <= recent_sma50 * 1.01) & (close > recent_sma50) & (close > close.shift(1))
+    pullback_rebound_recent = bool(((pullback_rebound_21 | pullback_rebound_50).tail(5)).fillna(False).any())
+    asset_return_10 = (close.iloc[-1] / close.iloc[-11] - 1) if len(close.dropna()) >= 11 else None
+    benchmark_return_10 = (bench_close.iloc[-1] / bench_close.iloc[-11] - 1) if len(bench_close.dropna()) >= 11 else None
+    negative_market_divergence = bool(
+        asset_return_10 is not None
+        and benchmark_return_10 is not None
+        and asset_return_10 < benchmark_return_10 - 0.03
+        and _last_float(rs_line) is not None
+        and _last_float(rs_ma21) is not None
+        and (_last_float(rs_line) or 0) < (_last_float(rs_ma21) or 0)
+    )
+    downside_reversal_near_high = bool(
+        high_since_buy
+        and high_since_buy > 0
+        and _last_float(high) is not None
+        and (_last_float(high) or 0) >= high_since_buy * 0.95
+        and len(close.dropna()) >= 2
+        and len(high.dropna()) >= 2
+        and close.iloc[-1] < close.iloc[-2]
+        and high.iloc[-1] > high.iloc[-2]
+        and (_last_float(closing_range) is not None and (_last_float(closing_range) or 0) <= 0.5)
+    )
+    failed_breakout_high_volume = bool(low_day_1_default and current_price < low_day_1_default and vol_ratio is not None and vol_ratio > 1.2)
+
+    auto_strength_checkboxes = {
+        "upper_third_closes": upper_third_close_count_5 >= 3,
+        "green_days_70": bool(first_green_ratio is not None and first_green_ratio >= 0.70),
+        "positive_volume": bool(positive_volume_ratio_20 is not None and positive_volume_ratio_20 >= 1.10),
+        "pullback_rebound": pullback_rebound_recent,
+        "rs_line_strong": bool(_last_float(rs_line) is not None and _last_float(rs_ma21) is not None and _last_float(rs_ma50) is not None and (_last_float(rs_line) or 0) > (_last_float(rs_ma21) or 0) > (_last_float(rs_ma50) or 0)),
+    }
+    auto_warning_checkboxes = {
+        "failed_breakout_high_volume": failed_breakout_high_volume,
+        "lower_lows_no_rebound": lower_lows_count_4 >= 3 and weak_recent_rebound,
+        "stall_days_near_breakout": int(stall_mask.sum()) >= 2,
+        "low_closes": low_close_count_5 >= 3,
+        "distribution_cluster": distribution_days_25 >= 4,
+        "negative_market_divergence": negative_market_divergence,
+        "weak_rebounds": weak_recent_rebound,
+        "worst_day_high_volume": bool(worst_day_high_volume),
+        "downside_reversal_near_high": downside_reversal_near_high,
+        "three_loss_weeks_rising_volume": consecutive_loss_weeks_rising_volume >= 3,
+    }
+    auto_checkbox_reasons = {
+        "upper_third_closes": f"{upper_third_close_count_5} der letzten 5 Schlusskurse im oberen Kerzendrittel",
+        "green_days_70": f"{(first_green_ratio or 0) * 100:.0f}% grüne Tage in den ersten {len(first_sessions)} Sessions seit Kauf" if first_green_ratio is not None else "Zu wenige Sessions seit Kauf",
+        "positive_volume": f"Up-/Down-Volumenfaktor 20T {positive_volume_ratio_20:.2f}" if positive_volume_ratio_20 is not None else "Kein belastbarer Up-/Down-Volumenvergleich",
+        "pullback_rebound": "Rebound an 21/50-MA in den letzten 5 Sessions" if pullback_rebound_recent else "Kein frischer Rebound an 21/50-MA",
+        "rs_line_strong": "RS-Linie über 21- und 50-Tage-Durchschnitt" if auto_strength_checkboxes["rs_line_strong"] else "RS-Linie nicht über beiden Durchschnitten",
+        "failed_breakout_high_volume": f"Kurs unter Tief Tag 1 bei Volumenfaktor {vol_ratio:.2f}" if failed_breakout_high_volume and vol_ratio is not None else "Nicht unter Tief Tag 1 mit erhöhtem Volumen",
+        "lower_lows_no_rebound": f"{lower_lows_count_4} tiefere Tiefs in Folge, schwache Rebounds" if auto_warning_checkboxes["lower_lows_no_rebound"] else "Keine 3+ tieferen Tiefs mit schwachem Rebound",
+        "stall_days_near_breakout": f"{int(stall_mask.sum())} Stau-Tage nahe Pivot in den letzten 10 Sessions",
+        "low_closes": f"{low_close_count_5} der letzten 5 Schlusskurse im unteren Kerzenviertel",
+        "distribution_cluster": f"{distribution_days_25} Distribution-Tage in 25 Sessions",
+        "negative_market_divergence": "10T-Rendite mindestens 3 Prozentpunkte schwächer als Benchmark und RS unter 21-MA" if negative_market_divergence else "Keine klare negative Divergenz gegen Benchmark",
+        "weak_rebounds": "Max. Rebound < 3% in 10 Sessions und Kurs unter 21-MA" if weak_recent_rebound else "Rebounds aktuell nicht schwach genug",
+        "worst_day_high_volume": f"Größter Tagesverlust seit Kauf am {worst_day_date} mit erhöhtem Volumen" if worst_day_high_volume else "Größter Tagesverlust nicht mit erhöhtem Volumen",
+        "downside_reversal_near_high": "Downside Reversal innerhalb 5% des Hochs seit Kauf" if downside_reversal_near_high else "Kein Downside Reversal nahe Hoch",
+        "three_loss_weeks_rising_volume": f"{consecutive_loss_weeks_rising_volume} Verlustwochen mit steigendem Volumen in Folge",
+    }
+    auto_checkboxes = {
+        "strength_checkboxes": auto_strength_checkboxes,
+        "warning_checkboxes": auto_warning_checkboxes,
+        "reasons": auto_checkbox_reasons,
+    }
+
     metrics = {
         "current_price": current_price,
         "pnl_pct": pnl_pct,
@@ -395,6 +501,11 @@ def build_sell_decision_metrics_payload(
         "worst_day_loss_pct_since_buy": worst_day_loss_pct,
         "worst_day_loss_date": worst_day_date,
         "worst_day_loss_high_volume": worst_day_high_volume,
+        "low_close_count_5": low_close_count_5,
+        "upper_third_close_count_5": upper_third_close_count_5,
+        "lower_lows_count": lower_lows_count_4,
+        "positive_volume_ratio_20": positive_volume_ratio_20,
+        "first_10_sessions_green_ratio": first_green_ratio,
     }
     manual_defaults = {
         "pivot": pivot_default,
@@ -414,6 +525,7 @@ def build_sell_decision_metrics_payload(
         "benchmark_as_of": _last_index_date(bench),
         "metrics": metrics,
         "manual_defaults": manual_defaults,
+        "auto_checkboxes": auto_checkboxes,
     }
 
 

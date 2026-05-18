@@ -205,6 +205,18 @@ def _extract_inputs(metrics_payload: dict) -> tuple[dict, str, float, float]:
     return metrics, ticker, buy_price, shares
 
 
+def _active_checkbox_map(metrics_payload: dict, manual_data: dict, group: str) -> dict:
+    combined = {}
+    auto = (metrics_payload or {}).get("auto_checkboxes", {}) if isinstance(metrics_payload, dict) else {}
+    if isinstance(auto, dict) and isinstance(auto.get(group), dict):
+        combined.update({str(key): _safe_bool(value) for key, value in auto[group].items()})
+    if isinstance(manual_data, dict) and isinstance(manual_data.get(group), dict):
+        for key, value in manual_data[group].items():
+            clean_key = str(key or "").strip()
+            if clean_key and _safe_bool(value):
+                combined[clean_key] = True
+    return combined
+
 def _manual_value(manual_data: dict, metrics_payload: dict, key: str):
     if isinstance(manual_data, dict) and manual_data.get(key) not in (None, ""):
         return manual_data.get(key)
@@ -579,7 +591,7 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             sell_style=STRENGTH_DEFENSIVE_STYLE,
         ))
 
-    for raw_key, active in (manual_data.get("warning_checkboxes") or {}).items():
+    for raw_key, active in _active_checkbox_map(metrics_payload or {}, manual_data, "warning_checkboxes").items():
         if not _safe_bool(active):
             continue
         mapped = WARNING_CONTRIBUTIONS.get(_norm_key(raw_key))
@@ -588,7 +600,7 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             tranche_signals.append(_signal(
                 signal_id, label, contribution,
                 signal_date=as_of_date,
-                event_note="Manuell aktiviertes Warnzeichen im Live-Monitor",
+                event_note="Automatisch erkannt oder manuell aktiviertes Warnzeichen im Live-Monitor",
                 sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
                 sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
             ))
