@@ -137,6 +137,22 @@ class SellDecisionRulesTest(unittest.TestCase):
         self.assertEqual(loss_signal["sell_mode"], "Defensiv verkaufen: Verluste begrenzen")
         self.assertEqual(result["sell_mode"], "Defensiv verkaufen: Verluste begrenzen")
 
+    def test_auto_warning_checkboxes_feed_rule_engine(self):
+        result = evaluate_sell_decision({
+            "ticker": "TEST",
+            "buy_price": 100.0,
+            "shares": 10.0,
+            "metrics": {"current_price": 112.0, "pnl_pct": 12.0, "as_of_date": "2026-05-18"},
+            "auto_checkboxes": {
+                "warning_checkboxes": {"low_closes": True},
+                "strength_checkboxes": {},
+                "reasons": {"low_closes": "3 der letzten 5 Schlusskurse im unteren Kerzenviertel"},
+            },
+        })
+        signal = next(sig for sig in result["tranche_signals"] if sig["id"] == "warning_low_closes")
+        self.assertEqual(signal["contribution_percent"], 15)
+        self.assertIn("Automatisch", signal["event_note"])
+
     def test_health_score_for_five_synthetic_tickers(self):
         samples = [
             {"pnl_pct": 25.0, "current_price": 125.0, "sma21": 110.0, "sma50": 105.0, "rs_line": 1.2, "rs_ma21": 1.1, "rs_ma50": 1.0, "distribution_days_25": 1},
