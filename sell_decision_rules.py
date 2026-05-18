@@ -10,6 +10,12 @@ import math
 
 ALLOWED_RECOMMENDATION_LEVELS = [0, 25, 33, 50, 66, 75, 100]
 BEARISH_MARKET_LABEL = "Bärisch"
+DEFENSIVE_MODE = "Defensiv verkaufen: Verluste begrenzen"
+STRENGTH_OFFENSIVE_MODE = "Stärke offensiv verkaufen: Gewinn in weiter laufender Aktie mitnehmen"
+STRENGTH_DEFENSIVE_MODE = "Stärke defensiv verkaufen: Gewinn nach Rückzug sichern"
+LOSS_LIMIT_STYLE = "Verlustbegrenzung"
+STRENGTH_OFFENSIVE_STYLE = "Gewinn in Stärke mitnehmen"
+STRENGTH_DEFENSIVE_STYLE = "Gewinn nach Rückzug sichern"
 
 BOOK_REFERENCES = {
     "killer_loss_7": "Risikoregel: 7%-Notbremse",
@@ -354,9 +360,9 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     is_bearish = market_environment == BEARISH_MARKET_LABEL
     positive_pnl = pnl > 0
     negative_pnl = pnl < 0
-    defensive_mode = "Defensives Verkaufen: Verlust reduzieren"
-    offensive_strength_mode = "Offensives Verkaufen: Gewinn in Stärke mitnehmen"
-    offensive_weakness_mode = "Offensives Verkaufen: Gewinn in Schwäche sichern"
+    defensive_mode = DEFENSIVE_MODE
+    strength_offensive_mode = STRENGTH_OFFENSIVE_MODE
+    strength_defensive_mode = STRENGTH_DEFENSIVE_MODE
 
     low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_1"))
     low_day_0 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_0"))
@@ -377,33 +383,69 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     watch_signals: list[RuleSignal] = []
 
     if pnl <= -7:
-        killer_signals.append(_signal("killer_loss_7", "7%-Notbremse", 100))
+        killer_signals.append(_signal(
+            "killer_loss_7", "7%-Notbremse", 100,
+            signal_date=_event_date(metrics, "first_loss_7_date", fallback=as_of_date),
+            event_note=f"P&L {pnl:.1f}%",
+            sell_mode=defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE,
+        ))
     if is_bearish and pnl <= -5:
-        killer_signals.append(_signal("killer_bear_loss_5", "Bärenmarkt-Notbremse", 100))
+        killer_signals.append(_signal(
+            "killer_bear_loss_5", "Bärenmarkt-Notbremse", 100,
+            signal_date=_event_date(metrics, "first_loss_5_date", fallback=as_of_date),
+            event_note=f"Bärenmarkt · P&L {pnl:.1f}%",
+            sell_mode=defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE,
+        ))
     if current is not None and sma200 and current < sma200 and volume_ratio is not None and volume_ratio > 1.5:
-        killer_signals.append(_signal("killer_sma200_volume", "200-MA-Bruch mit Volumen", 100))
+        killer_signals.append(_signal(
+            "killer_sma200_volume", "200-MA-Bruch mit Volumen", 100,
+            signal_date=_event_date(metrics, "first_sma200_volume_break_date", fallback=as_of_date),
+            event_note=_event_note(f"Kurs {current:.2f} unter 200-MA {sma200:.2f}", f"Volumenfaktor {volume_ratio:.2f}"),
+            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
+        ))
     if current is not None and low_day_1 and current < low_day_1 and volume_ratio is not None and volume_ratio > 1.2 and negative_pnl:
-        killer_signals.append(_signal("killer_breakout_failed_volume", "Ausbruch ohne Kraft mit Volumen-Rückfall", 100))
+        killer_signals.append(_signal(
+            "killer_breakout_failed_volume", "Ausbruch ohne Kraft mit Volumen-Rückfall", 100,
+            signal_date=_event_date(metrics, "first_low_day_1_loss_date", fallback=as_of_date),
+            event_note=_event_note(f"Kurs {current:.2f} unter Tief Tag 1 {low_day_1:.2f}", f"Volumenfaktor {volume_ratio:.2f}"),
+            sell_mode=defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE,
+        ))
     if _safe_bool(metrics.get("three_loss_weeks_rising_volume")) or (_metric(metrics, "consecutive_loss_weeks_rising_volume", 0) or 0) >= 3:
-        killer_signals.append(_signal("killer_three_loss_weeks_rising_volume", "Drei Verlustwochen mit steigendem Wochenvolumen", 100))
+        killer_signals.append(_signal(
+            "killer_three_loss_weeks_rising_volume", "Drei Verlustwochen mit steigendem Wochenvolumen", 100,
+            signal_date=_event_date(metrics, "three_loss_weeks_rising_volume_start_date", fallback=as_of_date),
+            event_note=f"{int(_metric(metrics, 'consecutive_loss_weeks_rising_volume', 0) or 0)} Verlustwochen mit steigendem Volumen",
+            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
+        ))
     if (_metric(metrics, "weekly_closes_under_10w", 0) or 0) >= 8:
-        killer_signals.append(_signal("killer_eight_weeks_under_10w", "Acht oder mehr Wochenschlüsse unter 10-Wochen-Linie", 100))
+        killer_signals.append(_signal(
+            "killer_eight_weeks_under_10w", "Acht oder mehr Wochenschlüsse unter 10-Wochen-Linie", 100,
+            signal_date=_event_date(metrics, "under_weekly_sma10_start_date", fallback=as_of_date),
+            event_note=f"{int(_metric(metrics, 'weekly_closes_under_10w', 0) or 0)} Wochenschlüsse unter 10-Wochen-Linie",
+            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
+        ))
 
     if current is not None and low_day_1 and current < low_day_1 and negative_pnl:
         tranche_signals.append(_signal(
             "tranche_low_day_1_loss", "Schluss unter Tief Tag 1 im Verlustfall", 33,
-            signal_date=as_of_date,
+            signal_date=_event_date(metrics, "first_low_day_1_loss_date", fallback=as_of_date),
             event_note=_event_note(f"Kurs {current:.2f} unter Tief Tag 1 {low_day_1:.2f}", _event_date(metrics, "low_day_1_date")),
             sell_mode=defensive_mode,
-            sell_style="Verlustbegrenzung",
+            sell_style=LOSS_LIMIT_STYLE,
         ))
     if current is not None and low_day_0 and current < low_day_0 and negative_pnl:
         tranche_signals.append(_signal(
             "tranche_low_day_0_loss", "Schluss unter Tief Tag 0 im Verlustfall", 33,
-            signal_date=as_of_date,
+            signal_date=_event_date(metrics, "first_low_day_0_loss_date", fallback=as_of_date),
             event_note=_event_note(f"Kurs {current:.2f} unter Tief Tag 0 {low_day_0:.2f}", _event_date(metrics, "low_day_0_date")),
             sell_mode=defensive_mode,
-            sell_style="Verlustbegrenzung",
+            sell_style=LOSS_LIMIT_STYLE,
         ))
     days_under_sma21 = int(_metric(metrics, "days_under_sma21", 0) or 0)
     if positive_pnl and days_under_sma21 >= 1:
@@ -411,24 +453,24 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             "tranche_first_sma21_break_gain", "Erstmaliger Bruch der 21-MA im Gewinnfall", 25,
             signal_date=_event_date(metrics, "under_sma21_start_date", fallback=as_of_date),
             event_note=_event_note(f"{days_under_sma21} Tag(e) unter der 21-MA", f"21-MA {sma21:.2f}" if sma21 else ""),
-            sell_mode=offensive_weakness_mode,
-            sell_style="Gewinn in Schwäche sichern",
+            sell_mode=strength_defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE,
         ))
     if positive_pnl and days_under_sma21 >= 3:
         tranche_signals.append(_signal(
             "tranche_three_days_under_sma21_gain", "Drei Tage in Folge unter 21-MA im Gewinnfall", 25,
             signal_date=_event_date(metrics, "under_sma21_start_date", fallback=as_of_date),
             event_note=_event_note(f"{days_under_sma21} Tage in Folge unter der 21-MA", f"21-MA {sma21:.2f}" if sma21 else ""),
-            sell_mode=offensive_weakness_mode,
-            sell_style="Gewinn in Schwäche sichern",
+            sell_mode=strength_defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE,
         ))
     if current is not None and sma50 and current < sma50 * 0.98 and volume_ratio is not None and volume_ratio > 1.2:
         tranche_signals.append(_signal(
             "tranche_sma50_break_volume", "Bruch der 50-MA mit mindestens 2% Abstand und erhöhtem Volumen", 50,
-            signal_date=as_of_date,
+            signal_date=_event_date(metrics, "first_sma50_volume_break_date", "under_sma50_start_date", fallback=as_of_date),
             event_note=_event_note(f"Kurs {current:.2f} unter 50-MA {sma50:.2f}", f"Volumenfaktor {volume_ratio:.2f}" if volume_ratio is not None else ""),
-            sell_mode=defensive_mode if negative_pnl else offensive_weakness_mode,
-            sell_style="Verlustbegrenzung" if negative_pnl else "Gewinn in Schwäche sichern",
+            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
+            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
         ))
 
     already_sold = _sum_already_sold(ticker, tranche_log)
@@ -438,35 +480,35 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             "tranche_profit_zone_20_25", "Erreichen der Gewinnmitnahme-Zone", 33,
             signal_date=_event_date(metrics, "first_10_pct_gain_date" if is_bearish else "first_20_pct_gain_date", fallback=as_of_date),
             event_note=f"P&L {pnl:.1f}% in der Gewinnmitnahme-Zone",
-            sell_mode=offensive_strength_mode,
-            sell_style="Gewinn in Stärke mitnehmen",
+            sell_mode=strength_offensive_mode,
+            sell_style=STRENGTH_OFFENSIVE_STYLE,
         ))
 
     drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
     if positive_pnl and drawdown >= 15:
         tranche_signals.append(_signal(
             "tranche_drawdown_15_full", "Drawdown vom Peak >= 15% bei positivem P&L", 100,
-            signal_date=as_of_date,
+            signal_date=_event_date(metrics, "first_drawdown_15_date", fallback=as_of_date),
             event_note=_event_note(f"Drawdown vom Peak {drawdown:.1f}%", _event_date(metrics, "high_since_buy_date")),
-            sell_mode=offensive_weakness_mode,
-            sell_style="Gewinn in Schwäche sichern",
+            sell_mode=strength_defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE,
         ))
     else:
         if positive_pnl and drawdown >= 8:
             tranche_signals.append(_signal(
                 "tranche_drawdown_8", "Drawdown vom Peak >= 8% bei positivem P&L", 25,
-                signal_date=as_of_date,
+                signal_date=_event_date(metrics, "first_drawdown_8_date", fallback=as_of_date),
                 event_note=_event_note(f"Drawdown vom Peak {drawdown:.1f}%", _event_date(metrics, "high_since_buy_date")),
-                sell_mode=offensive_weakness_mode,
-                sell_style="Gewinn in Schwäche sichern",
+                sell_mode=strength_defensive_mode,
+                sell_style=STRENGTH_DEFENSIVE_STYLE,
             ))
         if positive_pnl and drawdown >= 12:
             tranche_signals.append(_signal(
                 "tranche_drawdown_12", "Drawdown vom Peak >= 12% bei positivem P&L", 25,
-                signal_date=as_of_date,
+                signal_date=_event_date(metrics, "first_drawdown_12_date", fallback=as_of_date),
                 event_note=_event_note(f"Drawdown vom Peak {drawdown:.1f}%", _event_date(metrics, "high_since_buy_date")),
-                sell_mode=offensive_weakness_mode,
-                sell_style="Gewinn in Schwäche sichern",
+                sell_mode=strength_defensive_mode,
+                sell_style=STRENGTH_DEFENSIVE_STYLE,
             ))
 
     if positive_pnl and price_vs_sma50_pct is not None and price_vs_sma50_pct > 25:
@@ -474,16 +516,16 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             "tranche_extended_sma50", "Kurs mehr als 25% über der 50-MA", 33,
             signal_date=_event_date(metrics, "first_sma50_extension_date", fallback=as_of_date),
             event_note=f"Abstand zur 50-MA {price_vs_sma50_pct:.1f}%",
-            sell_mode=offensive_strength_mode,
-            sell_style="Gewinn in Stärke mitnehmen",
+            sell_mode=strength_offensive_mode,
+            sell_style=STRENGTH_OFFENSIVE_STYLE,
         ))
     if positive_pnl and price_vs_sma200_pct is not None and price_vs_sma200_pct > 70:
         tranche_signals.append(_signal(
             "tranche_extended_sma200", "Kurs mehr als 70% über der 200-MA", 33,
             signal_date=_event_date(metrics, "first_sma200_extension_date", fallback=as_of_date),
             event_note=f"Abstand zur 200-MA {price_vs_sma200_pct:.1f}%",
-            sell_mode=offensive_strength_mode,
-            sell_style="Gewinn in Stärke mitnehmen",
+            sell_mode=strength_offensive_mode,
+            sell_style=STRENGTH_OFFENSIVE_STYLE,
         ))
 
     days_under_rs21 = int(_metric(metrics, "days_under_rs_ma21", 0) or 0)
@@ -492,24 +534,24 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             "tranche_rs_first_21_break", "RS-Linie bricht erstmalig ihren 21-MA", 20,
             signal_date=_event_date(metrics, "under_rs_ma21_start_date", fallback=as_of_date),
             event_note=f"RS-Linie {days_under_rs21} Tag(e) unter 21-MA",
-            sell_mode=offensive_weakness_mode if positive_pnl else defensive_mode,
-            sell_style="Gewinn in Schwäche sichern" if positive_pnl else "Verlustbegrenzung",
+            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
         ))
     if days_under_rs21 >= 3:
         tranche_signals.append(_signal(
             "tranche_rs_three_days_under_21", "RS-Linie schließt drei Tage in Folge unter 21-MA", 30,
             signal_date=_event_date(metrics, "under_rs_ma21_start_date", fallback=as_of_date),
             event_note=f"RS-Linie {days_under_rs21} Tage in Folge unter 21-MA",
-            sell_mode=offensive_weakness_mode if positive_pnl else defensive_mode,
-            sell_style="Gewinn in Schwäche sichern" if positive_pnl else "Verlustbegrenzung",
+            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
         ))
     if rs_line is not None and rs_ma50 is not None and rs_line < rs_ma50:
         tranche_signals.append(_signal(
             "tranche_rs_50_break", "RS-Linie bricht ihren 50-MA", 50,
             signal_date=_event_date(metrics, "under_rs_ma50_start_date", fallback=as_of_date),
             event_note=_event_note(f"RS-Linie {rs_line:.4f}" if rs_line is not None else "", f"RS-50-MA {rs_ma50:.4f}" if rs_ma50 is not None else ""),
-            sell_mode=offensive_weakness_mode if positive_pnl else defensive_mode,
-            sell_style="Gewinn in Schwäche sichern" if positive_pnl else "Verlustbegrenzung",
+            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
         ))
 
     if positive_pnl and pnl > 15 and _safe_bool(metrics.get("worst_day_loss_high_volume")):
@@ -517,24 +559,24 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             "tranche_worst_day_high_volume", "Größter Tagesverlust seit Einstieg bei erhöhtem Volumen", 33,
             signal_date=_event_date(metrics, "worst_day_loss_date", fallback=as_of_date),
             event_note=f"Tagesverlust {(_metric(metrics, 'worst_day_loss_pct_since_buy', 0.0) or 0.0):.1f}% bei erhöhtem Volumen",
-            sell_mode=offensive_weakness_mode,
-            sell_style="Gewinn in Schwäche sichern",
+            sell_mode=strength_defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE,
         ))
     if _safe_bool(manual_data.get("personality_changed")):
         tranche_signals.append(_signal(
             "tranche_personality_changed", "Persönlichkeits-Check angekreuzt", 25,
             signal_date=as_of_date,
             event_note="Manuelle Einschätzung im Live-Monitor",
-            sell_mode=offensive_weakness_mode if positive_pnl else defensive_mode,
-            sell_style="Gewinn in Schwäche sichern" if positive_pnl else "Verlustbegrenzung",
+            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
         ))
     if industry_group_status == "Schwach" and pnl > 10:
         tranche_signals.append(_signal(
             "tranche_weak_industry_gain", "Industriegruppe schwach und P&L > 10%", 33,
             signal_date=as_of_date,
             event_note=f"Industriegruppe: {industry_group_status} · P&L {pnl:.1f}%",
-            sell_mode=offensive_weakness_mode,
-            sell_style="Gewinn in Schwäche sichern",
+            sell_mode=strength_defensive_mode,
+            sell_style=STRENGTH_DEFENSIVE_STYLE,
         ))
 
     for raw_key, active in (manual_data.get("warning_checkboxes") or {}).items():
@@ -547,8 +589,8 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
                 signal_id, label, contribution,
                 signal_date=as_of_date,
                 event_note="Manuell aktiviertes Warnzeichen im Live-Monitor",
-                sell_mode=offensive_weakness_mode if positive_pnl else defensive_mode,
-                sell_style="Gewinn in Schwäche sichern" if positive_pnl else "Verlustbegrenzung",
+                sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
+                sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
             ))
 
     if positive_pnl and 1 <= days_under_sma21 <= 2:
@@ -609,13 +651,13 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         sell_style_summary = ""
     elif killer_signals or negative_pnl:
         sell_mode_summary = defensive_mode
-        sell_style_summary = "Verlustbegrenzung"
-    elif "Gewinn in Schwäche sichern" in tranche_styles or drawdown >= 5:
-        sell_mode_summary = offensive_weakness_mode
-        sell_style_summary = "Gewinn in Schwäche sichern"
+        sell_style_summary = LOSS_LIMIT_STYLE
+    elif STRENGTH_DEFENSIVE_STYLE in tranche_styles or drawdown >= 5:
+        sell_mode_summary = strength_defensive_mode
+        sell_style_summary = STRENGTH_DEFENSIVE_STYLE
     else:
-        sell_mode_summary = offensive_strength_mode
-        sell_style_summary = "Gewinn in Stärke mitnehmen"
+        sell_mode_summary = strength_offensive_mode
+        sell_style_summary = STRENGTH_OFFENSIVE_STYLE
 
     return {
         "recommendation_percent": int(recommendation_percent),

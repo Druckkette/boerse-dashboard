@@ -271,7 +271,10 @@ def build_sell_decision_metrics_payload(
 
     under_sma21_days = _trailing_true_count(close < sma21)
     under_sma50_days = _trailing_true_count(close < sma50)
-    weekly_under_10w_count = _trailing_true_count(weekly_close < weekly_sma10)
+    weekly_under_10w_mask = weekly_close < weekly_sma10
+    weekly_under_10w_count = _trailing_true_count(weekly_under_10w_mask)
+    under_weekly_sma10_start_date = _trailing_true_start_date(weekly_under_10w_mask)
+    three_loss_weeks_rising_volume_start_date = _trailing_true_start_date(weekly_loss & weekly_rising_volume)
 
     since_entry = df[df.index >= buy_ts].copy()
     worst_day_loss_pct = None
@@ -308,12 +311,24 @@ def build_sell_decision_metrics_payload(
     first_drawdown_8_date = _first_true_date(drawdown_since_buy <= -8)
     first_drawdown_12_date = _first_true_date(drawdown_since_buy <= -12)
     first_drawdown_15_date = _first_true_date(drawdown_since_buy <= -15)
+    pnl_since_buy = ((close_since_buy / entry_price) - 1) * 100 if entry_price else pd.Series(dtype=float)
+    first_loss_5_date = _first_true_date(pnl_since_buy <= -5)
+    first_loss_7_date = _first_true_date(pnl_since_buy <= -7)
+    first_low_day_1_loss_date = _first_true_date((close_since_buy < low_day_1_default) & (pnl_since_buy < 0)) if low_day_1_default else ""
+    first_low_day_0_loss_date = _first_true_date((close_since_buy < low_day_0_default) & (pnl_since_buy < 0)) if low_day_0_default else ""
     sma50_since_buy = sma50.reindex(close_since_buy.index)
     sma200_since_buy = sma200.reindex(close_since_buy.index)
     sma50_extension_mask = (close_since_buy / sma50_since_buy - 1) * 100 > 25
     sma200_extension_mask = (close_since_buy / sma200_since_buy - 1) * 100 > 70
-    first_10_pct_gain_date = _first_true_date(((close_since_buy / entry_price) - 1) * 100 >= 10)
-    first_20_pct_gain_date = _first_true_date(((close_since_buy / entry_price) - 1) * 100 >= 20)
+    volume_since_buy = volume.reindex(close_since_buy.index)
+    vol_sma50_since_buy = vol_sma50.reindex(close_since_buy.index)
+    sma50_volume_break_mask = (close_since_buy < sma50_since_buy * 0.98) & (volume_since_buy > vol_sma50_since_buy * 1.2)
+    sma200_since_buy = sma200.reindex(close_since_buy.index)
+    sma200_volume_break_mask = (close_since_buy < sma200_since_buy) & (volume_since_buy > vol_sma50_since_buy * 1.5)
+    first_sma50_volume_break_date = _first_true_date(sma50_volume_break_mask)
+    first_sma200_volume_break_date = _first_true_date(sma200_volume_break_mask)
+    first_10_pct_gain_date = _first_true_date(pnl_since_buy >= 10)
+    first_20_pct_gain_date = _first_true_date(pnl_since_buy >= 20)
     first_sma50_extension_date = _first_true_date(sma50_extension_mask)
     first_sma200_extension_date = _first_true_date(sma200_extension_mask)
     current_sma50_extension_start_date = _trailing_true_start_date(sma50_extension_mask)
@@ -352,6 +367,8 @@ def build_sell_decision_metrics_payload(
         "days_under_sma21": under_sma21_days,
         "days_under_sma50": under_sma50_days,
         "weekly_closes_under_10w": weekly_under_10w_count,
+        "under_weekly_sma10_start_date": under_weekly_sma10_start_date,
+        "three_loss_weeks_rising_volume_start_date": three_loss_weeks_rising_volume_start_date,
         "as_of_date": as_of_date,
         "high_since_buy_date": high_since_buy_date,
         "low_day_1_date": low_day_1_date,
@@ -362,6 +379,12 @@ def build_sell_decision_metrics_payload(
         "under_rs_ma50_start_date": under_rs_ma50_start_date,
         "first_10_pct_gain_date": first_10_pct_gain_date,
         "first_20_pct_gain_date": first_20_pct_gain_date,
+        "first_loss_5_date": first_loss_5_date,
+        "first_loss_7_date": first_loss_7_date,
+        "first_low_day_1_loss_date": first_low_day_1_loss_date,
+        "first_low_day_0_loss_date": first_low_day_0_loss_date,
+        "first_sma50_volume_break_date": first_sma50_volume_break_date,
+        "first_sma200_volume_break_date": first_sma200_volume_break_date,
         "first_drawdown_8_date": first_drawdown_8_date,
         "first_drawdown_12_date": first_drawdown_12_date,
         "first_drawdown_15_date": first_drawdown_15_date,

@@ -100,8 +100,8 @@ class SellDecisionRulesTest(unittest.TestCase):
         }))
         sma_signal = next(sig for sig in result["tranche_signals"] if sig["id"] == "tranche_three_days_under_sma21_gain")
         self.assertEqual(sma_signal["signal_date"], "2026-05-14")
-        self.assertEqual(sma_signal["sell_mode"], "Offensives Verkaufen: Gewinn in Schwäche sichern")
-        self.assertEqual(result["sell_mode"], "Offensives Verkaufen: Gewinn in Schwäche sichern")
+        self.assertEqual(sma_signal["sell_mode"], "Stärke defensiv verkaufen: Gewinn nach Rückzug sichern")
+        self.assertEqual(result["sell_mode"], "Stärke defensiv verkaufen: Gewinn nach Rückzug sichern")
         self.assertIn("Tag", sma_signal["event_note"])
 
     def test_profit_zone_signal_is_offensive_strength_sale(self):
@@ -113,7 +113,29 @@ class SellDecisionRulesTest(unittest.TestCase):
         profit_signal = next(sig for sig in result["tranche_signals"] if sig["id"] == "tranche_profit_zone_20_25")
         self.assertEqual(profit_signal["signal_date"], "2026-05-10")
         self.assertEqual(profit_signal["sell_style"], "Gewinn in Stärke mitnehmen")
-        self.assertEqual(result["sell_mode"], "Offensives Verkaufen: Gewinn in Stärke mitnehmen")
+        self.assertEqual(result["sell_mode"], "Stärke offensiv verkaufen: Gewinn in weiter laufender Aktie mitnehmen")
+
+    def test_drawdown_signal_uses_first_trigger_date(self):
+        result = evaluate_sell_decision(payload({
+            "pnl_pct": 30.0,
+            "drawdown_from_high_since_buy_pct": -9.0,
+            "first_drawdown_8_date": "2026-05-08",
+            "as_of_date": "2026-05-18",
+        }))
+        drawdown_signal = next(sig for sig in result["tranche_signals"] if sig["id"] == "tranche_drawdown_8")
+        self.assertEqual(drawdown_signal["signal_date"], "2026-05-08")
+        self.assertEqual(drawdown_signal["sell_mode"], "Stärke defensiv verkaufen: Gewinn nach Rückzug sichern")
+
+    def test_loss_signal_is_defensive_sale(self):
+        result = evaluate_sell_decision(payload({
+            "pnl_pct": -8.0,
+            "first_loss_7_date": "2026-05-03",
+            "as_of_date": "2026-05-18",
+        }))
+        loss_signal = next(sig for sig in result["killer_signals"] if sig["id"] == "killer_loss_7")
+        self.assertEqual(loss_signal["signal_date"], "2026-05-03")
+        self.assertEqual(loss_signal["sell_mode"], "Defensiv verkaufen: Verluste begrenzen")
+        self.assertEqual(result["sell_mode"], "Defensiv verkaufen: Verluste begrenzen")
 
     def test_health_score_for_five_synthetic_tickers(self):
         samples = [
