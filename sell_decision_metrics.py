@@ -302,12 +302,22 @@ def build_sell_decision_metrics_payload(
     under_rs_ma21_start_date = _trailing_true_start_date(rs_line < rs_ma21)
     under_rs_ma50_start_date = _trailing_true_start_date(rs_line < rs_ma50)
     close_since_buy = close[close.index >= buy_ts]
+    high_since_buy_series = high[high.index >= buy_ts]
+    running_high_since_buy = high_since_buy_series.cummax() if not high_since_buy_series.empty else pd.Series(dtype=float)
+    drawdown_since_buy = (close_since_buy / running_high_since_buy.reindex(close_since_buy.index) - 1) * 100 if not close_since_buy.empty else pd.Series(dtype=float)
+    first_drawdown_8_date = _first_true_date(drawdown_since_buy <= -8)
+    first_drawdown_12_date = _first_true_date(drawdown_since_buy <= -12)
+    first_drawdown_15_date = _first_true_date(drawdown_since_buy <= -15)
     sma50_since_buy = sma50.reindex(close_since_buy.index)
     sma200_since_buy = sma200.reindex(close_since_buy.index)
+    sma50_extension_mask = (close_since_buy / sma50_since_buy - 1) * 100 > 25
+    sma200_extension_mask = (close_since_buy / sma200_since_buy - 1) * 100 > 70
     first_10_pct_gain_date = _first_true_date(((close_since_buy / entry_price) - 1) * 100 >= 10)
     first_20_pct_gain_date = _first_true_date(((close_since_buy / entry_price) - 1) * 100 >= 20)
-    first_sma50_extension_date = _first_true_date((close_since_buy / sma50_since_buy - 1) * 100 > 25)
-    first_sma200_extension_date = _first_true_date((close_since_buy / sma200_since_buy - 1) * 100 > 70)
+    first_sma50_extension_date = _first_true_date(sma50_extension_mask)
+    first_sma200_extension_date = _first_true_date(sma200_extension_mask)
+    current_sma50_extension_start_date = _trailing_true_start_date(sma50_extension_mask)
+    current_sma200_extension_start_date = _trailing_true_start_date(sma200_extension_mask)
 
     metrics = {
         "current_price": current_price,
@@ -352,8 +362,13 @@ def build_sell_decision_metrics_payload(
         "under_rs_ma50_start_date": under_rs_ma50_start_date,
         "first_10_pct_gain_date": first_10_pct_gain_date,
         "first_20_pct_gain_date": first_20_pct_gain_date,
+        "first_drawdown_8_date": first_drawdown_8_date,
+        "first_drawdown_12_date": first_drawdown_12_date,
+        "first_drawdown_15_date": first_drawdown_15_date,
         "first_sma50_extension_date": first_sma50_extension_date,
         "first_sma200_extension_date": first_sma200_extension_date,
+        "current_sma50_extension_start_date": current_sma50_extension_start_date,
+        "current_sma200_extension_start_date": current_sma200_extension_start_date,
         "worst_day_loss_pct_since_buy": worst_day_loss_pct,
         "worst_day_loss_date": worst_day_date,
         "worst_day_loss_high_volume": worst_day_high_volume,
