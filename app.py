@@ -10249,6 +10249,7 @@ def _sell_decision_ui_css() -> None:
       .sell-signal-card__title { font-weight:800; font-size:.86rem; line-height:1.35; }
       .sell-signal-card__meta { color:var(--muted); font-size:.74rem; line-height:1.45; margin-top:4px; }
       .sell-signal-card__reason { color:var(--text); font-size:.76rem; line-height:1.45; margin-top:5px; }
+      .sell-mode-pill { display:inline-block; border-radius:999px; padding:3px 8px; font-size:.72rem; font-weight:800; background:#eef2ff; color:#3730a3; margin-top:5px; }
       .sell-diagnostic-table [data-testid="stDataFrame"] { font-size:.82rem; }
       @media (max-width: 640px) {
         .sell-rec-hero__row { align-items:flex-start; gap:10px; }
@@ -10368,7 +10369,7 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
             <div class="sell-rec-hero__pct" style="color:{tone};">Konkrete Tranche: {pct}% jetzt verkaufen</div>
           </div>
           <div style="margin-top:8px;color:#334155;font-size:.9rem;line-height:1.45;">{html.escape(str(result.get('explanation_short', '')))}</div>
-          <div class="mini-help">{html.escape(str(result.get('sell_mode') or ''))}{(' · ' + html.escape(str(result.get('sell_style')))) if result.get('sell_style') else ''}</div>
+          <div class="sell-mode-pill">{html.escape(str(result.get('sell_mode') or ''))}{(' · ' + html.escape(str(result.get('sell_style')))) if result.get('sell_style') else ''}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -10515,10 +10516,10 @@ def _render_sell_monitor_signals(result: dict) -> None:
                 f"""
                 <div class="sell-signal-card" style="background:{bg};">
                   <div class="sell-signal-card__title" style="color:{color};">{html.escape(str(signal.get('label', 'Signal')))}{html.escape(contrib_text)}</div>
-                  <div class="sell-signal-card__meta">Ausgelöst am/seit: {html.escape(signal_date)} · Kapitelverweis: {html.escape(book_ref)}</div>
+                  <div class="sell-signal-card__meta">Erster Auslöser: {html.escape(signal_date)} · Kapitelverweis: {html.escape(book_ref)}</div>
                   <div class="sell-signal-card__reason">Begründung: {html.escape(reason)}</div>
                   {f'<div class="sell-signal-card__reason">Datenpunkt: {html.escape(event_note)}</div>' if event_note else ''}
-                  {f'<div class="sell-signal-card__meta">Einordnung: {html.escape(mode_line)}</div>' if mode_line else ''}
+                  {f'<div class="sell-mode-pill">Einordnung: {html.escape(mode_line)}</div>' if mode_line else ''}
                 </div>
                 """,
                 unsafe_allow_html=True,
