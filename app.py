@@ -11256,52 +11256,11 @@ def _render_sell_strategy_hub() -> None:
         "atr_basiert": "Volatilitätsbasierte Verkäufe/Stops mit ATR statt fixer Prozentwerte.",
     }
     aktive = st.multiselect("Aktive Strategien", alle, default=alle, key=f"strat_hub_multi_{t}")
-    atr_ziel = 3.0
-    atr_stopp = 1.5
-    atr_override = None
-    if "atr_basiert" in aktive:
-        st.markdown("##### ⚙️ ATR-Strategie Einstellungen")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            atr_ziel = st.number_input(
-                "Gewinnziel (ATR-Multiplikator)",
-                min_value=1.0,
-                max_value=10.0,
-                value=3.0,
-                step=0.5,
-                key=f"strat_hub_atr_target_{t}",
-                help="Bei Erreichen dieses Vielfachen der ATR wird eine Gewinn-Tranche signalisiert (Standard: 3.0 ATR).",
-            )
-        with c2:
-            atr_stopp = st.number_input(
-                "Stopp-Multiplikator (ATR)",
-                min_value=0.5,
-                max_value=5.0,
-                value=1.5,
-                step=0.1,
-                key=f"strat_hub_atr_stop_mult_{t}",
-                help="Initialer Not-Stopp relativ zum Einstieg als ATR-Multiplikator (Standard: 1.5 ATR).",
-            )
-        with c3:
-            atr_override = st.number_input(
-                "ATR Override (%) optional",
-                min_value=0.0,
-                max_value=50.0,
-                value=0.0,
-                step=0.1,
-                key=f"strat_hub_atr_override_{t}",
-                help="0.0 = ATR(14) automatisch aus Kursdaten. >0 überschreibt ATR in Prozent für manuelle Szenarien.",
-            )
-        st.info("ATR-Strategie: Du kannst mit den Standardwerten starten (Ziel 3.0 ATR, Stopp 1.5 ATR). "
-                "Für volatile Aktien ggf. Ziel höher setzen; Override nur nutzen, wenn du bewusst manuell testen willst.")
     with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
         for key in aktive:
             st.markdown(f"**{key}** – {strategie_info.get(key, 'Keine Beschreibung hinterlegt.')}")
     markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
-    res = verkaufs_empfehlung_gesamt(
-        p, daily, weekly, None, None, markt, man.get("industry_group_status","Neutral"), aktive,
-        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(atr_ziel), "atr_stopp_multiplikator": float(atr_stopp), "atr_override_pct": float(atr_override) if atr_override and atr_override > 0 else None}
-    )
+    res = verkaufs_empfehlung_gesamt(p, daily, weekly, None, None, markt, man.get("industry_group_status","Neutral"), aktive, {"ma21_variante":"gestaffelt"})
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
     st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
     st.caption(f"Hauptgrund: {res['haupt_grund']}")
