@@ -265,12 +265,12 @@ def strategie_einfache_verluststufen(position,daten):
     if pnl<=-7:return [_signal("Verlust ≥ 7%",100,"intraday",True,None,"Kap. 6.4","Rest schließen")]
     return []
 
-def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3):
-    p=pnl_pct(position,daten); s=letzter_schlusskurs(daten); a=atr(daten,14)
+def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3,atr_override_pct=None,atr_stopp_multiplikator=1.5):
+    p=pnl_pct(position,daten); s=letzter_schlusskurs(daten); a=float(atr_override_pct) if atr_override_pct else atr(daten,14)
     if not a:return []
     out=[]; ga=p/a
     if ga>=ziel_atr_multiplikator: out.append(_signal(f"{ga:.1f} ATR Gewinn erreicht",33,"schluss",True,None,"Kap. 6.4","Tranche in Stärke"))
-    stop=position.einstiegspreis*(1-1.5*a/100)
+    stop=position.einstiegspreis*(1-float(atr_stopp_multiplikator)*a/100)
     if s<=stop: out.append(_signal("Stopp bei -1.5 ATR",100,"intraday",True,None,"Kap. 6.4","Volatilitätsstopp"))
     e=_none_if_nan(ema(daten["close"],21).iloc[-1])
     if e:
@@ -313,7 +313,7 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "einfach_halbe_position": lambda: strategie_einfach_halbe_position(position,daten),
         "misslungener_ausbruch_5stufen": lambda: strategie_misslungener_ausbruch_5stufen(position,daten),
         "einfache_verluststufen": lambda: strategie_einfache_verluststufen(position,daten),
-        "atr_basiert": lambda: strategie_atr_basiert(position,daten,o.get("ziel_atr_multiplikator",3)),
+        "atr_basiert": lambda: strategie_atr_basiert(position,daten,o.get("ziel_atr_multiplikator",3),o.get("atr_override_pct"),o.get("atr_stopp_multiplikator",1.5)),
     }
     all_signals=[]
     for k in aktive_strategien:
