@@ -11212,13 +11212,14 @@ def _render_sell_strategy_hub() -> None:
     pos = next((x for x in positions if x.get("ticker")==t), None)
     if not pos:
         return
-    buy_date = pd.Timestamp(pos.get("buy_date") or datetime.now(timezone.utc).date())
+    buy_date = pd.Timestamp(pos.get("buy_date") or datetime.now(timezone.utc).date()).tz_localize(None)
     with st.spinner(f"Lade Kursdaten für {t} …"):
         df, info, *_ = load_stock_full(t)
     if df is None or len(df)<30:
         st.warning("Zu wenig Kursdaten.")
         return
     daily = pd.DataFrame({"open":df["Open"],"high":df["High"],"low":df["Low"],"close":df["Close"],"volume":df["Volume"]}).dropna()
+    daily.index = pd.to_datetime(daily.index).tz_localize(None)
     daily = daily[daily.index >= buy_date]
     weekly = daily.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
     man = get_position_manual_sell_data(t)
