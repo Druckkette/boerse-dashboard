@@ -37,6 +37,7 @@ from sell_decision_metrics import (
     build_sell_decision_metrics_smoke_inputs,
 )
 import sell_decision_rules
+from sell_strategies import Position, verkaufs_empfehlung_gesamt
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
 from ui.theme import APP_CSS, PAGE_CONFIG
@@ -11199,6 +11200,40 @@ def _render_sell_decision_post_mortem() -> None:
         st.rerun()
 
 
+
+
+def _render_sell_strategy_hub() -> None:
+    st.markdown("#### 🧠 Strategien-Hub (Börse ohne Bauchgefühl)")
+    positions = [p for p in st.session_state.get("positions", []) if float(_safe_float(p.get("shares"),0))>0]
+    if not positions:
+        st.info("Keine offenen Positionen im Depot.")
+        return
+    t = st.selectbox("Position", [p.get("ticker","") for p in positions], key="strat_hub_ticker")
+    pos = next((x for x in positions if x.get("ticker")==t), None)
+    if not pos:
+        return
+    buy_date = pd.Timestamp(pos.get("buy_date") or datetime.now(timezone.utc).date()).tz_localize(None)
+    with st.spinner(f"Lade Kursdaten für {t} …"):
+        df, info, *_ = load_stock_full(t)
+    if df is None or len(df)<30:
+        st.warning("Zu wenig Kursdaten.")
+        return
+    daily = pd.DataFrame({"open":df["Open"],"high":df["High"],"low":df["Low"],"close":df["Close"],"volume":df["Volume"]}).dropna()
+    daily.index = pd.to_datetime(daily.index).tz_localize(None)
+    daily = daily[daily.index >= buy_date]
+    weekly = daily.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    man = get_position_manual_sell_data(t)
+    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(man.get("pivot")),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in load_tranche_log() if _normalize_single_ticker(x.get("ticker", "")) == _normalize_single_ticker(t)])
+    alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","rueckkehr_pivot","ma_bruch_defensiv","groesster_anstieg_volumen"]
+    aktive = st.multiselect("Aktive Strategien", alle, default=alle, key=f"strat_hub_multi_{t}")
+    markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
+    res = verkaufs_empfehlung_gesamt(p, daily, weekly, None, None, markt, man.get("industry_group_status","Neutral"), aktive, {"ma21_variante":"gestaffelt"})
+    st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
+    st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
+    st.caption(f"Hauptgrund: {res['haupt_grund']}")
+    if res["alle_signale"]:
+        st.dataframe(pd.DataFrame(res["alle_signale"]))
+
 def _tab_verkaufsentscheidung():
     if not _render_private_gate("🔐 Verkaufs-Entscheidung"):
         return
@@ -11206,12 +11241,14 @@ def _tab_verkaufsentscheidung():
     _sell_decision_ui_css()
     st.markdown("### 🧭 Verkaufs-Entscheidung")
     st.caption("Regelbasierter Verkaufsbereich für Live-Monitor, Portfolio-Ranking und spätere Post-Mortems.")
-    tabs = st.tabs(["📡 Live-Monitor", "🏁 Portfolio-Ranking", "🧾 Post-Mortem"])
+    tabs = st.tabs(["📡 Live-Monitor", "🏁 Portfolio-Ranking", "🧠 Strategien", "🧾 Post-Mortem"])
     with tabs[0]:
         _render_sell_decision_live_monitor()
     with tabs[1]:
         _render_sell_decision_portfolio_ranking()
     with tabs[2]:
+        _render_sell_strategy_hub()
+    with tabs[3]:
         _render_sell_decision_post_mortem()
 
 
