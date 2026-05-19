@@ -265,7 +265,7 @@ def strategie_einfache_verluststufen(position,daten):
     if pnl<=-7:return [_signal("Verlust ≥ 7%",100,"intraday",True,None,"Kap. 6.4","Rest schließen")]
     return []
 
-def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3):
+def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3,ueberdehnung_atr_start=3,ueberdehnung_atr_stark=4):
     p=pnl_pct(position,daten); s=letzter_schlusskurs(daten); a=atr(daten,14)
     if not a:return []
     out=[]; ga=p/a
@@ -275,7 +275,7 @@ def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3):
     e=_none_if_nan(ema(daten["close"],21).iloc[-1])
     if e:
         ab=(s-e)/e*100/a
-        if ab>=3: out.append(_signal(f"{ab:.1f} ATR über 21-EMA",50 if ab>=4 else 33,"schluss",True,e,"Kap. 6.4","Überdehnt — volatilitätsbereinigt überhitzt"))
+        if ab>=ueberdehnung_atr_start: out.append(_signal(f"{ab:.1f} ATR über 21-EMA",50 if ab>=ueberdehnung_atr_stark else 33,"schluss",True,e,"Kap. 6.4","Überdehnt — volatilitätsbereinigt überhitzt"))
     return out
 
 def berechne_watch_signale(position,daten):
@@ -313,7 +313,7 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "einfach_halbe_position": lambda: strategie_einfach_halbe_position(position,daten),
         "misslungener_ausbruch_5stufen": lambda: strategie_misslungener_ausbruch_5stufen(position,daten),
         "einfache_verluststufen": lambda: strategie_einfache_verluststufen(position,daten),
-        "atr_basiert": lambda: strategie_atr_basiert(position,daten,o.get("ziel_atr_multiplikator",3)),
+        "atr_basiert": lambda: strategie_atr_basiert(position,daten,o.get("ziel_atr_multiplikator",3),o.get("ueberdehnung_atr_start",3),o.get("ueberdehnung_atr_stark",4)),
     }
     all_signals=[]
     for k in aktive_strategien:

@@ -79,3 +79,22 @@ def test_atr_basiert_stop_signal_uses_1_5_atr():
     assert stop
     assert stop[0]["tranche_pct"] == 100
     assert stop[0]["trigger_typ"] == "intraday"
+
+
+def test_atr_basiert_custom_ema_extension_thresholds():
+    p = Position("T", 100, "2026-01-01", 10)
+    closes = [100] * 21 + [106]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [c + 1 for c in closes],
+        "low": [c - 1 for c in closes],
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+
+    # Mit Standard 3 ATR kein Überdehnungs-Signal, mit 2 ATR schon
+    std = strategie_atr_basiert(p, d, ziel_atr_multiplikator=99)
+    custom = strategie_atr_basiert(p, d, ziel_atr_multiplikator=99, ueberdehnung_atr_start=2, ueberdehnung_atr_stark=3)
+
+    assert not any("ATR über 21-EMA" in s["name"] for s in std)
+    assert any("ATR über 21-EMA" in s["name"] for s in custom)
