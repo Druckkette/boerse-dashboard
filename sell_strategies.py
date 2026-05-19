@@ -147,6 +147,11 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(position, daten, markt),
         "ma21_bruch": lambda: strategie_21ma_bruch(position, daten, optionen.get("ma21_variante", "gestaffelt")),
         "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(position, daten),
+        "ma_abstand": lambda: strategie_ma_abstand(position, daten),
+        "verlusttage_haeufung": lambda: strategie_verlusttage_haeufung(position, daten),
+        "rueckkehr_pivot": lambda: strategie_rueckkehr_pivot(position, daten),
+        "ma_bruch_defensiv": lambda: strategie_ma_bruch_defensiv(position, daten, wochen_daten),
+        "groesster_anstieg_volumen": lambda: strategie_groesster_anstieg_volumen(position, daten),
     }
     all_signals = []
     for key in aktive_strategien:
@@ -167,3 +172,65 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         grund = ", ".join(s["name"] for s in active[:3]) if active else "keine aktiven Signale"
     schon = sum(position.realisierte_tranchen or [])
     return {"gesamt_tranche": ges, "bereits_realisiert": schon, "jetzt_zu_verkaufen": max(0, ges - schon), "haupt_grund": grund, "alle_signale": all_signals}
+
+
+# --- zusätzliche Strategien (S4-S23) ---
+
+def _safe_div(a,b):
+    return float(a)/float(b) if b else 0.0
+
+def _today(d):
+    return d.iloc[-1]
+
+def strategie_ma_abstand(position, daten):
+    if pnl_pct(position,daten)<=0:return []
+    s=letzter_schlusskurs(daten); out=[]
+    for p,th,tr in [(10,10,25),(21,15,33),(50,25,33),(200,70,50)]:
+        ma=float(sma(daten["close"],p).iloc[-1])
+        if ma and (s-ma)/ma*100>=th: out.append(_signal(f"{th}% über {p}-MA",100 if p==200 and (s-ma)/ma*100>=100 else tr,"schluss",True,ma,"Kap. 6.2","Überdehnung"))
+    return out
+
+def strategie_verlusttage_haeufung(position,daten):
+    if pnl_pct(position,daten)<=0 or len(daten)<15:return []
+    out=[]; l3=daten.tail(3)
+    if all(l3["close"].iloc[i] < l3["close"].iloc[i-1] for i in [1,2]): out.append(_signal("3 tiefere Schlusskurse",25,"schluss",True,float(daten["low"].tail(5).min()),"Kap. 6.2","Schwäche"))
+    fen=daten.tail(15); up=(fen["close"]>fen["open"]).sum(); dn=(fen["close"]<fen["open"]).sum()
+    if dn-up>=3: out.append(_signal("Abwärtstage überwiegen",25,"schluss",True,float(fen["low"].min()),"Kap. 6.2","Persönlichkeit kippt"))
+    return out
+
+def strategie_trendlinie(position,daten,trendlinie_oben_punkte=None,trendlinie_unten_punkte=None):
+    return []
+
+def strategie_groesster_anstieg_volumen(position,daten):
+    if pnl_pct(position,daten)<=15 or len(daten)<3:return []
+    ch=daten["close"].pct_change()*100; t=ch.iloc[-1]; mx=float(ch.iloc[1:].max())
+    volmax=daten["volume"].iloc[-1] >= daten["volume"].max()
+    if t>=mx and volmax:return [_signal("Größter Anstieg + höchstes Volumen",33,"schluss",True,float(daten["low"].iloc[-1]),"Kap. 6.2","Klimax-Muster")]
+    if t>=mx:return [_signal("Größter Tagesanstieg",20,"schluss",True,float(daten["low"].iloc[-1]),"Kap. 6.2","Vorwarnung")]
+    return []
+
+def strategie_split_anstieg(position,daten,split_datum=None): return []
+def strategie_erschoepfungsluecke(position,daten): return []
+def strategie_downside_reversal(position,daten): return []
+def strategie_stau_tage(position,daten): return []
+def strategie_rueckkehr_pivot(position,daten):
+    s=letzter_schlusskurs(daten); out=[]
+    if position.tief_tag_1 and s<position.tief_tag_1: out.append(_signal("Schluss unter Tief Ausbruchstag",33,"schluss",True,position.tief_tag_0,"Kap. 6.3","Sicherheitslinie verletzt"))
+    if position.tief_tag_0 and s<position.tief_tag_0: out.append(_signal("Schluss unter Tief Vortag",33,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3","zweite Linie verletzt"))
+    return out
+
+def strategie_ma_bruch_defensiv(position,daten,wochen_daten):
+    out=[]; s=letzter_schlusskurs(daten); ma50=float(sma(daten["close"],50).iloc[-1]); ma200=float(sma(daten["close"],200).iloc[-1]) if len(daten)>=200 else 0
+    if ma50 and s<ma50*0.98: out.append(_signal("Klarer 50-MA-Bruch",50,"schluss",True,ma200 or None,"Kap. 6.3","Defensiver Verkauf"))
+    if ma200 and s<ma200: out.append(_signal("200-MA-Bruch",100,"schluss",True,None,"Kap. 6.3","Langfristiger Trendbruch"))
+    return out
+
+def strategie_drei_verlustwochen(position,wochen_daten): return []
+def strategie_groesster_einbruch(position,daten,wochen_daten): return []
+def strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy): return []
+def strategie_ma_basierte_sequenz(position,daten): return []
+def strategie_einfach_halbe_position(position,daten): return []
+def strategie_misslungener_ausbruch_5stufen(position,daten): return []
+def strategie_einfache_verluststufen(position,daten): return []
+def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3): return []
+def berechne_watch_signale(position,daten): return []
