@@ -11259,15 +11259,27 @@ def _render_sell_strategy_hub() -> None:
     with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
         for key in aktive:
             st.markdown(f"**{key}** – {strategie_info.get(key, 'Keine Beschreibung hinterlegt.')}")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
-    with c2:
-        ziel_atr = st.number_input("ATR-Ziel (Multiplikator)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_mult_{t}", help="Nur für Strategie 'atr_basiert': Teilverkauf ab x ATR Gewinn.")
-    with c3:
-        atr_ueberdehnung_start = st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Nur für Strategie 'atr_basiert': ab x ATR über 21-EMA wird 33% verkauft.")
-    with c4:
-        atr_ueberdehnung_stark = st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Nur für Strategie 'atr_basiert': ab y ATR über 21-EMA wird 50% verkauft.")
+    st.markdown("#### ⚙️ Strategie-Setup")
+    markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
+
+    ziel_atr = 3.0
+    atr_ueberdehnung_start = 3.0
+    atr_ueberdehnung_stark = 4.0
+
+    for key in aktive:
+        with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
+            st.caption(strategie_info.get(key, "Keine Beschreibung hinterlegt."))
+            if key == "atr_basiert":
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    ziel_atr = st.number_input("ATR-Ziel (Multiplikator)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_mult_{t}", help="Teilverkauf ab x ATR Gewinn.")
+                with c2:
+                    atr_ueberdehnung_start = st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Ab x ATR über 21-EMA wird 33% verkauft.")
+                with c3:
+                    atr_ueberdehnung_stark = st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Ab y ATR über 21-EMA wird 50% verkauft.")
+            else:
+                st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
+
     res = verkaufs_empfehlung_gesamt(
         p,
         daily,
