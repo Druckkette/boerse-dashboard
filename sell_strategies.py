@@ -258,11 +258,12 @@ def strategie_misslungener_ausbruch_5stufen(position,daten):
     if pnl<=-7: out.append(_signal("7%-Notbremse (intraday)",100,"intraday",True,None,"Kap. 6.4","Stufe 3"))
     return out
 
-def strategie_einfache_verluststufen(position,daten):
+def strategie_einfache_verluststufen(position,daten,verlust_stufe_1=3.0,verlust_stufe_2=5.0,verlust_stufe_3=7.0):
     pnl=pnl_pct(position,daten)
-    if -5<pnl<=-3:return [_signal("Verlust ≥ 3%",33,"intraday",True,position.einstiegspreis*0.95,"Kap. 6.4","Erste Tranche")]
-    if -7<pnl<=-5:return [_signal("Verlust ≥ 5%",33,"intraday",True,position.einstiegspreis*0.93,"Kap. 6.4","Zweite Tranche")]
-    if pnl<=-7:return [_signal("Verlust ≥ 7%",100,"intraday",True,None,"Kap. 6.4","Rest schließen")]
+    s1=abs(float(verlust_stufe_1)); s2=max(abs(float(verlust_stufe_2)),s1); s3=max(abs(float(verlust_stufe_3)),s2)
+    if -s2<pnl<=-s1:return [_signal(f"Verlust ≥ {s1:g}%",33,"intraday",True,position.einstiegspreis*(1-s2/100),"Kap. 6.4","Erste Tranche")]
+    if -s3<pnl<=-s2:return [_signal(f"Verlust ≥ {s2:g}%",33,"intraday",True,position.einstiegspreis*(1-s3/100),"Kap. 6.4","Zweite Tranche")]
+    if pnl<=-s3:return [_signal(f"Verlust ≥ {s3:g}%",100,"intraday",True,None,"Kap. 6.4","Rest sofort schließen")]
     return []
 
 def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3,ueberdehnung_atr_start=3,ueberdehnung_atr_stark=4):
@@ -312,7 +313,7 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "ma_basierte_sequenz": lambda: strategie_ma_basierte_sequenz(position,daten),
         "einfach_halbe_position": lambda: strategie_einfach_halbe_position(position,daten),
         "misslungener_ausbruch_5stufen": lambda: strategie_misslungener_ausbruch_5stufen(position,daten),
-        "einfache_verluststufen": lambda: strategie_einfache_verluststufen(position,daten),
+        "einfache_verluststufen": lambda: strategie_einfache_verluststufen(position,daten,o.get("verlust_stufe_1",3.0),o.get("verlust_stufe_2",5.0),o.get("verlust_stufe_3",7.0)),
         "atr_basiert": lambda: strategie_atr_basiert(position,daten,o.get("ziel_atr_multiplikator",3),o.get("ueberdehnung_atr_start",3),o.get("ueberdehnung_atr_stark",4)),
     }
     all_signals=[]
