@@ -5,6 +5,7 @@ from sell_strategies import (
     strategie_21ma_bruch,
     strategie_atr_basiert,
     strategie_notbremse_verlust,
+    strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
 )
 
@@ -98,3 +99,21 @@ def test_atr_basiert_custom_ema_extension_thresholds():
 
     assert not any("ATR über 21-EMA" in s["name"] for s in std)
     assert any("ATR über 21-EMA" in s["name"] for s in custom)
+
+
+def test_einfache_verluststufen_default_entspricht_kapitel():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 96])
+    sigs = strategie_einfache_verluststufen(p, d)
+    assert sigs
+    assert sigs[0]["name"] == "Verlust ≥ 3%"
+    assert sigs[0]["tranche_pct"] == 33
+
+
+def test_einfache_verluststufen_custom_schwellen_werden_genutzt():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 95])
+    sigs = strategie_einfache_verluststufen(p, d, verlust_stufe_1=2, verlust_stufe_2=4, verlust_stufe_3=6)
+    assert sigs
+    assert sigs[0]["name"] == "Verlust ≥ 4%"
+    assert sigs[0]["naechste_marke"] == 94.0

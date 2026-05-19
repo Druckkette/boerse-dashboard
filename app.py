@@ -11265,6 +11265,9 @@ def _render_sell_strategy_hub() -> None:
     ziel_atr = 3.0
     atr_ueberdehnung_start = 3.0
     atr_ueberdehnung_stark = 4.0
+    verlust_stufe_1 = 3.0
+    verlust_stufe_2 = 5.0
+    verlust_stufe_3 = 7.0
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11277,6 +11280,14 @@ def _render_sell_strategy_hub() -> None:
                     atr_ueberdehnung_start = st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Ab x ATR über 21-EMA wird 33% verkauft.")
                 with c3:
                     atr_ueberdehnung_stark = st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Ab y ATR über 21-EMA wird 50% verkauft.")
+            elif key == "einfache_verluststufen":
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    verlust_stufe_1 = st.number_input("Verluststufe 1 (%)", min_value=0.5, max_value=30.0, value=3.0, step=0.5, key=f"strat_hub_loss_stage1_{t}", help="Bei diesem Verlust wird die erste Tranche (33%) verkauft.")
+                with c2:
+                    verlust_stufe_2 = st.number_input("Verluststufe 2 (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_loss_stage2_{t}", help="Bei diesem Verlust folgt die zweite Tranche (33%).")
+                with c3:
+                    verlust_stufe_3 = st.number_input("Verluststufe 3 (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_loss_stage3_{t}", help="Bei diesem Verlust wird die Restposition sofort geschlossen.")
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11289,7 +11300,7 @@ def _render_sell_strategy_hub() -> None:
         markt,
         man.get("industry_group_status","Neutral"),
         aktive,
-        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(ziel_atr), "ueberdehnung_atr_start": float(atr_ueberdehnung_start), "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start))},
+        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(ziel_atr), "ueberdehnung_atr_start": float(atr_ueberdehnung_start), "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start)), "verlust_stufe_1": float(verlust_stufe_1), "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)), "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1)))},
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
     st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
