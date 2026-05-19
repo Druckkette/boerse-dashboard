@@ -269,13 +269,13 @@ def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3):
     p=pnl_pct(position,daten); s=letzter_schlusskurs(daten); a=atr(daten,14)
     if not a:return []
     out=[]; ga=p/a
-    if ga>=ziel_atr_multiplikator: out.append(_signal(f"{ga:.1f} ATR Gewinn erreicht",33,"schluss",True,None,"Kap. 6.4 ATR-basiert",f"Ziel {ziel_atr_multiplikator} ATR erreicht — Tranche in Stärke"))
+    if ga>=ziel_atr_multiplikator: out.append(_signal(f"{ga:.1f} ATR Gewinn erreicht",33,"schluss",True,None,"Kap. 6.4","Tranche in Stärke"))
     stop=position.einstiegspreis*(1-1.5*a/100)
-    if s<=stop: out.append(_signal("Stopp bei -1.5 ATR",100,"intraday",True,None,"Kap. 6.4 ATR-basiert","Volatilitätsangepasste Stoppmarke gerissen"))
+    if s<=stop: out.append(_signal("Stopp bei -1.5 ATR",100,"intraday",True,None,"Kap. 6.4","Volatilitätsstopp"))
     e=_none_if_nan(ema(daten["close"],21).iloc[-1])
     if e:
         ab=(s-e)/e*100/a
-        if ab>=3: out.append(_signal(f"{ab:.1f} ATR über 21-EMA",50 if ab>=4 else 33,"schluss",True,e,"Kap. 6.4 ATR-basiert","Überdehnt — volatilitätsbereinigt überhitzt"))
+        if ab>=3: out.append(_signal(f"{ab:.1f} ATR über 21-EMA",50 if ab>=4 else 33,"schluss",True,e,"Kap. 6.4","Überdehnt"))
     return out
 
 def berechne_watch_signale(position,daten):

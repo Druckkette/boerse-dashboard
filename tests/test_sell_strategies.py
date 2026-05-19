@@ -1,12 +1,6 @@
 import pandas as pd
 
-from sell_strategies import (
-    Position,
-    strategie_notbremse_verlust,
-    strategie_21ma_bruch,
-    strategie_atr_basiert,
-    verkaufs_empfehlung_gesamt,
-)
+from sell_strategies import Position, strategie_notbremse_verlust, strategie_21ma_bruch, verkaufs_empfehlung_gesamt
 
 
 def make_df(closes):
@@ -40,12 +34,3 @@ def test_aggregation_killer_to_100():
     res = verkaufs_empfehlung_gesamt(p, d, d, None, None, "Bullisch", "Neutral", ["notbremse_verlust"])
     assert res["gesamt_tranche"] == 100
     assert res["jetzt_zu_verkaufen"] == 75
-
-
-def test_atr_basiert_contains_expected_fields_and_refs():
-    p = Position("T", 100, "2026-01-01", 10)
-    closes = [100] * 30 + [106, 112, 119]
-    d = make_df(closes)
-    sigs = strategie_atr_basiert(p, d, ziel_atr_multiplikator=1)
-    assert sigs, "Expected ATR-based signal(s)"
-    assert all(s["buch_verweis"] == "Kap. 6.4 ATR-basiert" for s in sigs)

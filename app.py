@@ -11259,8 +11259,22 @@ def _render_sell_strategy_hub() -> None:
     with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
         for key in aktive:
             st.markdown(f"**{key}** – {strategie_info.get(key, 'Keine Beschreibung hinterlegt.')}")
-    markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
-    res = verkaufs_empfehlung_gesamt(p, daily, weekly, None, None, markt, man.get("industry_group_status","Neutral"), aktive, {"ma21_variante":"gestaffelt"})
+    c1, c2 = st.columns(2)
+    with c1:
+        markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
+    with c2:
+        ziel_atr = st.number_input("ATR-Ziel (Multiplikator)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_mult_{t}", help="Nur für Strategie 'atr_basiert': Teilverkauf ab x ATR Gewinn.")
+    res = verkaufs_empfehlung_gesamt(
+        p,
+        daily,
+        weekly,
+        None,
+        None,
+        markt,
+        man.get("industry_group_status","Neutral"),
+        aktive,
+        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(ziel_atr)},
+    )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
     st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
     st.caption(f"Hauptgrund: {res['haupt_grund']}")
