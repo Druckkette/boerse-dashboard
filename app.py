@@ -11223,7 +11223,7 @@ def _render_sell_strategy_hub() -> None:
     daily = daily[daily.index >= buy_date]
     weekly = daily.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
     man = get_position_manual_sell_data(t)
-    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(man.get("pivot")),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in load_tranche_log() if _normalize_single_ticker(x.get("ticker", "")) == _normalize_single_ticker(t)])
+    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(man.get("pivot")),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0)) for x in get_position_tranche_log(t)])
     alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","rueckkehr_pivot","ma_bruch_defensiv","groesster_anstieg_volumen"]
     aktive = st.multiselect("Aktive Strategien", alle, default=alle, key=f"strat_hub_multi_{t}")
     markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
