@@ -250,12 +250,27 @@ def strategie_einfach_halbe_position(position,daten):
 
 def strategie_misslungener_ausbruch_5stufen(position,daten):
     out=[]; h=daten.iloc[-1]; pnl=pnl_pct(position,daten); nb=position.einstiegspreis*0.93
-    if h["open"]<=nb:return [_signal("Gap-down durch 7%-Grenze",100,"intraday",True,None,"Kap. 6.4","Sofort schließen")]
+    g=daten.iloc[-2] if len(daten)>=2 else h
+    gap_down_unter_tag1 = bool(position.tief_tag_1) and h["open"] < position.tief_tag_1 and h["open"] < g["close"]
+    gap_down_unter_tag0 = bool(position.tief_tag_0) and h["open"] < position.tief_tag_0
+    if h["open"]<=nb:return [_signal("Gap-down durch 7%-Grenze",100,"intraday",True,None,"Kap. 6.4 Sonderfall Gap-down","Sofort schließen — nicht auf Schluss warten")]
+    if gap_down_unter_tag1 or gap_down_unter_tag0:
+        out.append(_signal("Gap-down unter Ausbruchsmarken",20,"intraday",True,position.tief_tag_1 if gap_down_unter_tag1 else position.tief_tag_0,"Kap. 6.4 Sonderfall Gap-down","Eröffnung bereits unter kritischer Marke"))
+    tag0_unter_notbremse = bool(position.tief_tag_0) and position.tief_tag_0 <= nb
     if position.tief_tag_1 and h["low"]<position.tief_tag_1: out.append(_signal("Intraday unter Tief Tag 1",20,"intraday",True,position.tief_tag_1,"Kap. 6.4","Stufe 1a"))
     if position.tief_tag_1 and h["close"]<position.tief_tag_1: out.append(_signal("Schluss unter Tief Tag 1",20,"schluss",True,position.tief_tag_0,"Kap. 6.4","Stufe 1b"))
-    if position.tief_tag_0 and h["low"]<position.tief_tag_0: out.append(_signal("Intraday unter Tief Tag 0",20,"intraday",True,position.tief_tag_0,"Kap. 6.4","Stufe 2a"))
-    if position.tief_tag_0 and h["close"]<position.tief_tag_0: out.append(_signal("Schluss unter Tief Tag 0",20,"schluss",True,nb,"Kap. 6.4","Stufe 2b"))
+    if (not tag0_unter_notbremse) and position.tief_tag_0 and h["low"]<position.tief_tag_0: out.append(_signal("Intraday unter Tief Tag 0",20,"intraday",True,position.tief_tag_0,"Kap. 6.4","Stufe 2a"))
+    if (not tag0_unter_notbremse) and position.tief_tag_0 and h["close"]<position.tief_tag_0: out.append(_signal("Schluss unter Tief Tag 0",20,"schluss",True,nb,"Kap. 6.4","Stufe 2b"))
     if pnl<=-7: out.append(_signal("7%-Notbremse (intraday)",100,"intraday",True,None,"Kap. 6.4","Stufe 3"))
+    if (position.realisierte_tranchen or []) and position.pivot:
+        d = daten[daten.index >= pd.Timestamp(position.einstiegsdatum)] if "index" in dir(daten) else daten
+        closes = d["close"] if "close" in d else pd.Series(dtype=float)
+        if len(closes):
+            war_unter_pivot = float(closes.min()) <= float(position.pivot)
+            erholt = float(closes.tail(20).max()) >= float(position.pivot) * 1.03
+            jetzt_wieder = float(h["close"]) <= float(position.pivot)
+            if war_unter_pivot and erholt and jetzt_wieder:
+                out.append(_signal("Zweite Rückkehr zum Pivot",33,"schluss",True,nb,"Kap. 6.4 Ergänzung","Doppelter Rücklauf — klares Schwächesignal"))
     return out
 
 def strategie_einfache_verluststufen(position,daten,verlust_stufe_1=3.0,verlust_stufe_2=5.0,verlust_stufe_3=7.0):
