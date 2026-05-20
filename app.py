@@ -11251,7 +11251,7 @@ def _render_sell_strategy_hub() -> None:
     strategie_info = {
         "notbremse_verlust": "Fixe Verlust-Notbremse je Marktumfeld (Bullisch/Unsicher/Bärisch) für Kapitalschutz.",
         "drei_stufen_nach_kauf": "Frühe Fehl-Ausbrüche in 3 Stufen abfangen (Tag-1/Tag-0/7%-Notbremse).",
-        "gewinn_in_stufen": "Gewinne in definierten Zonen gestaffelt sichern (inkl. Bärenmarkt-Anpassung).",
+        "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
         "ma21_bruch": "Verkaufssignale bei Bruch der 21-Tage-Linie (aggressiv/gestaffelt/geduldig).",
         "drawdown_vom_peak": "Reduktion nach Rückgang vom Zwischenhoch, abgestuft nach Drawdown-Tiefe.",
         "ma_abstand": "Überdehnungen relativ zu 10/21/50/200-MA als Gewinnmitnahme-Signal.",
@@ -11287,6 +11287,12 @@ def _render_sell_strategy_hub() -> None:
     verlust_stufe_2 = 5.0
     verlust_stufe_3 = 7.0
     erste_haelfte_gewinn_pct = 20.0
+    gewinn_nachdenken_schwelle_bull_pct = 15.0
+    gewinn_teilverkauf_unten_bull_pct = 20.0
+    gewinn_teilverkauf_oben_bull_pct = 35.0
+    gewinn_nachdenken_schwelle_bear_pct = 10.0
+    gewinn_teilverkauf_unten_bear_pct = 10.0
+    gewinn_teilverkauf_oben_bear_pct = 15.0
     ma_seq_gewinnzone_min_pct = 20.0
     ma_seq_gewinnzone_max_pct = 25.0
     ma_seq_gewinnzone_tranche_pct = 33.0
@@ -11358,6 +11364,26 @@ def _render_sell_strategy_hub() -> None:
                     atr_ueberdehnung_start = st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Ab x ATR über 21-EMA wird 33% verkauft.")
                 with c3:
                     atr_ueberdehnung_stark = st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Ab y ATR über 21-EMA wird 50% verkauft.")
+            elif key == "gewinn_in_stufen":
+                st.markdown(
+                    """
+**Strategie 3 – Verkauf bei festgelegtem prozentualem Gewinn (Kap. 6.2):**
+- **Nachdenkschwelle**: ab dieser P&L-Marke wird ein Info-Signal erzeugt (noch kein Verkauf).
+- **Pflicht-Teilverkauf**: ab Untergrenze der Gewinnzone wird ein aktives Signal erzeugt:
+  - unterhalb der oberen Gewinnzonen-Grenze: **33%** Tranche
+  - ab oberer Grenze: **50%** Tranche
+- **Bärenmarkt-Modus**: eigene, engere Schwellen möglich.
+                    """
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    gewinn_nachdenken_schwelle_bull_pct = st.number_input("Nachdenkschwelle Bullisch/Unsicher (%)", min_value=0.0, max_value=200.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_think_bull_{t}")
+                    gewinn_teilverkauf_unten_bull_pct = st.number_input("Gewinnzone unten Bullisch/Unsicher (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5, key=f"strat_hub_gainstep_lo_bull_{t}")
+                    gewinn_teilverkauf_oben_bull_pct = st.number_input("Gewinnzone oben Bullisch/Unsicher (%)", min_value=0.0, max_value=300.0, value=35.0, step=0.5, key=f"strat_hub_gainstep_hi_bull_{t}")
+                with c2:
+                    gewinn_nachdenken_schwelle_bear_pct = st.number_input("Nachdenkschwelle Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_think_bear_{t}")
+                    gewinn_teilverkauf_unten_bear_pct = st.number_input("Gewinnzone unten Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_lo_bear_{t}")
+                    gewinn_teilverkauf_oben_bear_pct = st.number_input("Gewinnzone oben Bärisch (%)", min_value=0.0, max_value=300.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_hi_bear_{t}")
             elif key == "einfache_verluststufen":
                 c1, c2, c3 = st.columns(3)
                 with c1:
@@ -11650,6 +11676,12 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "verlust_stufe_1": float(verlust_stufe_1),
             "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)),
             "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1))),
+            "gewinn_nachdenken_schwelle_bull_pct": float(gewinn_nachdenken_schwelle_bull_pct),
+            "gewinn_teilverkauf_unten_bull_pct": float(max(gewinn_teilverkauf_unten_bull_pct, gewinn_nachdenken_schwelle_bull_pct)),
+            "gewinn_teilverkauf_oben_bull_pct": float(max(gewinn_teilverkauf_oben_bull_pct, gewinn_teilverkauf_unten_bull_pct, gewinn_nachdenken_schwelle_bull_pct)),
+            "gewinn_nachdenken_schwelle_bear_pct": float(gewinn_nachdenken_schwelle_bear_pct),
+            "gewinn_teilverkauf_unten_bear_pct": float(max(gewinn_teilverkauf_unten_bear_pct, gewinn_nachdenken_schwelle_bear_pct)),
+            "gewinn_teilverkauf_oben_bear_pct": float(max(gewinn_teilverkauf_oben_bear_pct, gewinn_teilverkauf_unten_bear_pct, gewinn_nachdenken_schwelle_bear_pct)),
             "erste_haelfte_gewinn_pct": float(erste_haelfte_gewinn_pct),
             "ma_seq_gewinnzone_min_pct": float(ma_seq_gewinnzone_min_pct),
             "ma_seq_gewinnzone_max_pct": float(max(ma_seq_gewinnzone_max_pct, ma_seq_gewinnzone_min_pct)),
