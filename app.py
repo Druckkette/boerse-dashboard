@@ -11260,7 +11260,7 @@ def _render_sell_strategy_hub() -> None:
         "groesster_anstieg_volumen": "Klimax-/Spätphasen-Signal: größter Tagesanstieg mit extremem Volumen.",
         "split_anstieg": "Starker Kursanstieg kurz nach Split als Top-Warnung.",
         "erschoepfungsluecke": "Gap-up nach langem Lauf mit hohem Volumen als Erschöpfungssignal.",
-        "downside_reversal": "Umkehrkerze nach Hochlauf (neues Hoch + Schluss nahe Tief) als Warnsignal.",
+        "downside_reversal": "Strategie 12 (Kap. 6.2): Downside Reversal für Gewinnerpositionen. Variante 1 (stark): neues 30-Tage-Hoch, Schluss im unteren Tagesdrittel und Volumenquote ≥ 1.2 erzeugt 33%-Signal („Downside Reversal an neuem Hoch“). Variante 2 (mittel): weite Umkehrkerze (Tagesspanne ≥ 1.5× 10-Tage-Schnitt), Schluss im unteren Drittel und Volumenquote ≥ 1.2 erzeugt 20%-Signal. Variante 3 (Warnstufe): weite Kerze mit Schluss unter Spannenmitte erzeugt 15%-Signal. Nächste Marke ist jeweils das Tageshoch der Umkehrkerze.",
         "stau_tage": "Strategie 13 (Kap. 6.2): Sucht in einem Fenster (Standard 10 Sessions) nach Stau-Tagen mit kaum Fortschritt (|Tagesveränderung| < 1%) bei überdurchschnittlichem Volumen (≥1.3× gegen 50-Tage-Schnitt). Ab mindestens 2 Stau-Tagen entsteht ein aktives Verkaufssignal. Die Tranche ist kontextabhängig: nahe Hoch (Drawdown < 5%) defensiver mit 33%, sonst 20%. Als nächste Marke wird das tiefste Tagestief der erkannten Stau-Tage gesetzt (Stopp-Logik).",
         "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkts. Pivot-Quelle: zuerst Wert aus dem Bereich ‚Meine Positionen‘; falls dort kein Pivot hinterlegt ist, wird der Kauftag als Fallback genutzt.",
         "ma_bruch_defensiv": "Strategie 15 (Kap. 6.3): Defensiver Exit-Prozess bei Trendbruch. Klarer 50-MA-Bruch (mind. max(2%, ATR%) unter MA und Volumenanstieg) triggert 50%, sonst nach 3 Schlusskursen unter 50-MA 33%. Nach 8 Wochen unter der 10-Wochen-Linie folgt ein Vollsignal (100%). Unter 200-MA werden 75% reduziert bzw. 100% bei hohem Volumen; dreht die 200-MA zusätzlich nach unten, wird ein bestätigendes Info-Signal ausgegeben.",
@@ -11314,6 +11314,15 @@ def _render_sell_strategy_hub() -> None:
     stau_nahe_hoch_drawdown_max_pct = 5.0
     stau_tranche_nahe_hoch_pct = 33.0
     stau_tranche_standard_pct = 20.0
+    downside_kerzenweite_lookback_tage = 10
+    downside_volumen_lookback_tage = 50
+    downside_neues_hoch_lookback_tage = 30
+    downside_weite_kerze_faktor = 1.5
+    downside_volumen_ratio_min = 1.2
+    downside_schluss_unteres_drittel_faktor = 3.0
+    downside_tranche_neues_hoch_pct = 33.0
+    downside_tranche_weite_umkehr_pct = 20.0
+    downside_tranche_warnstufe_pct = 15.0
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11453,6 +11462,30 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                 with c3:
                     stau_tranche_nahe_hoch_pct = st.number_input("Tranche nahe Hoch (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_stall_tranche_near_high_{t}")
                     stau_tranche_standard_pct = st.number_input("Standard-Tranche (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_stall_tranche_standard_{t}")
+            elif key == "downside_reversal":
+                st.markdown(
+                    """
+**Strategie 12 – Downside Reversal (Kap. 6.2):**
+- Nur aktiv, wenn die Position im Gewinn ist.
+- **Variante 1 (stark):** neues Hoch + Schluss im unteren Tagesdrittel + erhöhtes Volumen.
+- **Variante 2 (mittel):** weite Umkehrkerze + Schluss im unteren Drittel + erhöhtes Volumen.
+- **Variante 3 (Warnstufe):** weite Kerze + Schluss unter Spannenmitte.
+- Stopp-/Entwarnungsmarke ist das Hoch der Signalkerze.
+                    """
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    downside_kerzenweite_lookback_tage = int(st.number_input("Kerzenweiten-Lookback", min_value=5, max_value=60, value=10, step=1, key=f"strat_hub_downside_candle_lb_{t}"))
+                    downside_neues_hoch_lookback_tage = int(st.number_input("Neues-Hoch-Lookback", min_value=10, max_value=120, value=30, step=1, key=f"strat_hub_downside_high_lb_{t}"))
+                    downside_schluss_unteres_drittel_faktor = st.number_input("Schluss im unteren 1/x", min_value=2.0, max_value=6.0, value=3.0, step=0.1, key=f"strat_hub_downside_lower_third_factor_{t}")
+                with c2:
+                    downside_volumen_lookback_tage = int(st.number_input("Volumen-Lookback", min_value=20, max_value=200, value=50, step=1, key=f"strat_hub_downside_vol_lb_{t}"))
+                    downside_volumen_ratio_min = st.number_input("Min. Volumenquote", min_value=0.8, max_value=5.0, value=1.2, step=0.1, key=f"strat_hub_downside_vol_ratio_{t}")
+                    downside_weite_kerze_faktor = st.number_input("Weite-Kerze-Faktor", min_value=1.0, max_value=4.0, value=1.5, step=0.1, key=f"strat_hub_downside_wide_factor_{t}")
+                with c3:
+                    downside_tranche_neues_hoch_pct = st.number_input("Tranche Variante 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_downside_tranche_high_{t}")
+                    downside_tranche_weite_umkehr_pct = st.number_input("Tranche Variante 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_downside_tranche_wide_{t}")
+                    downside_tranche_warnstufe_pct = st.number_input("Tranche Warnstufe (%)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key=f"strat_hub_downside_tranche_warn_{t}")
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11501,6 +11534,15 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "stau_nahe_hoch_drawdown_max_pct": float(stau_nahe_hoch_drawdown_max_pct),
             "stau_tranche_nahe_hoch_pct": float(stau_tranche_nahe_hoch_pct),
             "stau_tranche_standard_pct": float(stau_tranche_standard_pct),
+            "downside_kerzenweite_lookback_tage": int(downside_kerzenweite_lookback_tage),
+            "downside_volumen_lookback_tage": int(downside_volumen_lookback_tage),
+            "downside_neues_hoch_lookback_tage": int(downside_neues_hoch_lookback_tage),
+            "downside_weite_kerze_faktor": float(downside_weite_kerze_faktor),
+            "downside_volumen_ratio_min": float(downside_volumen_ratio_min),
+            "downside_schluss_unteres_drittel_faktor": float(downside_schluss_unteres_drittel_faktor),
+            "downside_tranche_neues_hoch_pct": float(downside_tranche_neues_hoch_pct),
+            "downside_tranche_weite_umkehr_pct": float(downside_tranche_weite_umkehr_pct),
+            "downside_tranche_warnstufe_pct": float(downside_tranche_warnstufe_pct),
         },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")

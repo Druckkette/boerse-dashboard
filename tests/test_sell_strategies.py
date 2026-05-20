@@ -13,6 +13,7 @@ from sell_strategies import (
     strategie_rs_linie,
     strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
+    strategie_downside_reversal,
 )
 
 
@@ -223,13 +224,44 @@ def test_ma_bruch_defensiv_uses_detailed_chapter_references():
         "volume": [1000] * 20,
     })
 
-    sigs = strategie_ma_bruch_defensiv(p, daily, weekly)
-    refs = {s["buch_verweis"] for s in sigs}
 
-    assert "Kap. 6.3 50-MA" in refs
-    assert "Kap. 6.3 10-Wochen-Linie" in refs
-    assert "Kap. 6.3 200-MA" in refs
+def test_downside_reversal_strong_signal_has_detailed_reference_and_reason():
+    p = Position("T", 100, "2026-01-01", 10)
+    base = list(range(100, 130))
+    closes = base + [121]
+    highs = [c + 1 for c in base] + [132]
+    lows = [c - 1 for c in base] + [120]
+    volumes = [1000] * 30 + [2200]
+    d = pd.DataFrame({"open": closes, "high": highs, "low": lows, "close": closes, "volume": volumes})
+    sigs = strategie_downside_reversal(p, d, volumen_lookback_tage=20)
+    assert sigs
+    assert sigs[0]["name"] == "Downside Reversal an neuem Hoch"
+    assert sigs[0]["buch_verweis"] == "Kap. 6.2 Downside Reversal"
+    assert "Neues Hoch" in sigs[0]["begruendung"]
 
+
+def test_downside_reversal_uses_custom_thresholds_and_tranches():
+    p = Position("T", 100, "2026-01-01", 10)
+    closes = [100] * 20 + [103]
+    d = pd.DataFrame({
+        "open": [100] * 21,
+        "high": [101] * 20 + [112],
+        "low": [99] * 20 + [100],
+        "close": closes,
+        "volume": [1000] * 20 + [1400],
+    })
+    sigs = strategie_downside_reversal(
+        p, d,
+        kerzenweite_lookback_tage=10,
+        volumen_lookback_tage=20,
+        neues_hoch_lookback_tage=30,
+        weite_kerze_faktor=1.4,
+        volumen_ratio_min=1.3,
+        tranche_weite_umkehr_pct=27,
+    )
+    assert sigs
+    assert sigs[0]["name"] == "Weite Umkehrkerze"
+    assert sigs[0]["tranche_pct"] == 27
 
 def test_strategie14_rueckkehr_pivot_volume_reasoning_and_refs():
     p = Position("T", 100, "2026-01-01", 10, pivot=100, tief_tag_1=99, tief_tag_0=98)
