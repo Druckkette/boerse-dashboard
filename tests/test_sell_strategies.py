@@ -7,6 +7,7 @@ from sell_strategies import (
     strategie_einfach_halbe_position,
     strategie_misslungener_ausbruch_5stufen,
     strategie_notbremse_verlust,
+    strategie_rueckkehr_pivot,
     strategie_ma_bruch_defensiv,
     strategie_rs_linie,
     strategie_einfache_verluststufen,
@@ -227,3 +228,35 @@ def test_ma_bruch_defensiv_uses_detailed_chapter_references():
     assert "Kap. 6.3 50-MA" in refs
     assert "Kap. 6.3 10-Wochen-Linie" in refs
     assert "Kap. 6.3 200-MA" in refs
+
+
+def test_strategie14_rueckkehr_pivot_volume_reasoning_and_refs():
+    p = Position("T", 100, "2026-01-01", 10, pivot=100, tief_tag_1=99, tief_tag_0=98)
+    d = pd.DataFrame({
+        "open": [102] * 50 + [98],
+        "high": [103] * 50 + [99],
+        "low": [101] * 50 + [97],
+        "close": [102] * 41 + [99] * 9 + [98.5],
+        "volume": [1000] * 50 + [1800],
+    })
+    sigs = [s for s in strategie_rueckkehr_pivot(p, d) if s["name"] == "Schluss unter Tief Ausbruchstag"]
+    assert sigs
+    assert sigs[0]["tranche_pct"] == 50
+    assert sigs[0]["begruendung"] == "Mit erhöhtem Volumen"
+    assert sigs[0]["buch_verweis"] == "Kap. 6.3 Rückkehr zum Ausbruchspunkt"
+
+
+def test_strategie14_rueckkehr_pivot_zeitkomponente_10_tage():
+    p = Position("T", 100, "2026-01-01", 10, pivot=100)
+    d = pd.DataFrame({
+        "open": [101] * 20,
+        "high": [102] * 20,
+        "low": [97] * 20,
+        "close": [101] * 10 + [99] * 10,
+        "volume": [1000] * 20,
+    })
+    sigs = strategie_rueckkehr_pivot(p, d)
+    pvt = [s for s in sigs if "Tage unter Pivot" in s["name"]]
+    assert pvt
+    assert pvt[0]["tranche_pct"] == 50
+    assert pvt[0]["begruendung"] == "Rückkehr über Ausbruchspunkt nicht gelungen"

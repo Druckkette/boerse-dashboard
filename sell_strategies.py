@@ -178,14 +178,16 @@ def strategie_stau_tage(position,daten):
 
 def strategie_rueckkehr_pivot(position,daten):
     s=letzter_schlusskurs(daten); out=[]; vr=vol_verhaeltnis(daten)
-    if position.tief_tag_1 and s<position.tief_tag_1: out.append(_signal("Schluss unter Tief Ausbruchstag",50 if vr>=1.5 else 33,"schluss",True,position.tief_tag_0,"Kap. 6.3","Sicherheitslinie verletzt"))
-    if position.tief_tag_0 and s<position.tief_tag_0: out.append(_signal("Schluss unter Tief Vortag",33,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3","zweite Linie verletzt"))
+    if position.tief_tag_1 and s<position.tief_tag_1:
+        begr="Mit erhöhtem Volumen" if vr>=1.5 else "Erste Sicherheitslinie verletzt"
+        out.append(_signal("Schluss unter Tief Ausbruchstag",50 if vr>=1.5 else 33,"schluss",True,position.tief_tag_0,"Kap. 6.3 Rückkehr zum Ausbruchspunkt",begr))
+    if position.tief_tag_0 and s<position.tief_tag_0: out.append(_signal("Schluss unter Tief Vortag",33,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3 Rückkehr zum Ausbruchspunkt","Zweite Sicherheitslinie verletzt"))
     if position.pivot:
         under=(daten["close"]<position.pivot).iloc[::-1]; c=0
         for b in under:
             if not b: break
             c+=1
-        if s<position.pivot and c>=10: out.append(_signal(f"{c} Tage unter Pivot",50,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3","Rückkehr nicht gelungen"))
+        if s<position.pivot and c>=10: out.append(_signal(f"{c} Tage unter Pivot",50,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3 Rückkehr zum Ausbruchspunkt","Rückkehr über Ausbruchspunkt nicht gelungen"))
     return out
 
 def strategie_ma_bruch_defensiv(position,daten,wochen_daten):
