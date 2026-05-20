@@ -11287,6 +11287,19 @@ def _render_sell_strategy_hub() -> None:
     verlust_stufe_2 = 5.0
     verlust_stufe_3 = 7.0
     erste_haelfte_gewinn_pct = 20.0
+    ma_seq_gewinnzone_min_pct = 20.0
+    ma_seq_gewinnzone_max_pct = 25.0
+    ma_seq_gewinnzone_tranche_pct = 33.0
+    ma_seq_ueber_ma10_pct = 10.0
+    ma_seq_ueber_ma10_tranche_pct = 20.0
+    ma_seq_unter_ma10_mindestgewinn_pct = 5.0
+    ma_seq_unter_ma10_tranche_pct = 20.0
+    ma_seq_pendel_tranche_pct = 25.0
+    ma_seq_pendel_lookback_tage = 5
+    ma_seq_pendel_wechsel_min = 3
+    ma_seq_unter_ma21_mindestgewinn_pct = 5.0
+    ma_seq_unter_ma21_tranche_pct = 25.0
+    ma_seq_klarer_ma50_bruch_pct = 2.0
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11309,6 +11322,34 @@ def _render_sell_strategy_hub() -> None:
                     verlust_stufe_3 = st.number_input("Verluststufe 3 (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_loss_stage3_{t}", help="Bei diesem Verlust wird die Restposition sofort geschlossen.")
             elif key == "einfach_halbe_position":
                 erste_haelfte_gewinn_pct = st.number_input("Gewinnmitnahme 1. Hälfte (%)", min_value=5.0, max_value=100.0, value=20.0, step=0.5, key=f"strat_hub_first_half_profit_{t}", help="Ab diesem Gewinn wird die erste Hälfte (50%) verkauft.")
+            elif key == "ma_basierte_sequenz":
+                st.markdown(
+                    """
+**Sequenzlogik (Kap. 6.4):**
+- **Punkt 1:** Teilverkauf in der Gewinnzone (Standard: 20–25%).
+- **Punkt 2:** Zusatz-Tranche bei Überdehnung über 10-MA (Standard: +10%).
+- **Punkt 3:** Verkauf bei Schluss unter 10-MA; bei **Pendelverhalten** um die 10-MA höhere Tranche.
+- **Punkt 4:** Weitere Reduktion bei Schluss unter 21-MA.
+- **Punkt 5 (final):** Vollausstieg bei klarem Bruch der 50-MA.
+                    """
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    ma_seq_gewinnzone_min_pct = st.number_input("Gewinnzone min (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5, key=f"strat_hub_ma_seq_gain_min_{t}", help="Untere Grenze für Punkt 1.")
+                    ma_seq_gewinnzone_tranche_pct = st.number_input("Tranche Punkt 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_seq_gain_tranche_{t}", help="Verkaufsgröße in der Gewinnzone.")
+                    ma_seq_unter_ma10_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 3 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under10_minpnl_{t}", help="Punkt 3 erst ab diesem Mindestgewinn.")
+                    ma_seq_pendel_lookback_tage = int(st.number_input("Pendel-Lookback (Tage)", min_value=2, max_value=20, value=5, step=1, key=f"strat_hub_ma_seq_pendel_lb_{t}", help="Anzahl Tage für den Pendel-Check um die 10-MA."))
+                with c2:
+                    ma_seq_gewinnzone_max_pct = st.number_input("Gewinnzone max (%)", min_value=0.0, max_value=200.0, value=25.0, step=0.5, key=f"strat_hub_ma_seq_gain_max_{t}", help="Obere Grenze für Punkt 1.")
+                    ma_seq_ueber_ma10_pct = st.number_input("Überdehnung über 10-MA (%)", min_value=0.5, max_value=100.0, value=10.0, step=0.5, key=f"strat_hub_ma_seq_over10_pct_{t}", help="Schwelle für Punkt 2.")
+                    ma_seq_unter_ma10_tranche_pct = st.number_input("Tranche Punkt 3 normal (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_under10_tranche_{t}", help="Standard-Tranche bei Schluss unter 10-MA.")
+                    ma_seq_pendel_wechsel_min = int(st.number_input("Min. Pendel-Wechsel", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_ma_seq_pendel_switch_{t}", help="Ab so vielen Seitenwechseln gilt das Verhalten als pendelnd."))
+                with c3:
+                    ma_seq_ueber_ma10_tranche_pct = st.number_input("Tranche Punkt 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_over10_tranche_{t}", help="Verkaufsgröße bei Überdehnung über 10-MA.")
+                    ma_seq_pendel_tranche_pct = st.number_input("Tranche Punkt 3 pendelnd (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_pendel_tranche_{t}", help="Erhöhte Tranche, wenn Punkt 3 pendelnd erkannt wird.")
+                    ma_seq_unter_ma21_tranche_pct = st.number_input("Tranche Punkt 4 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_under21_tranche_{t}", help="Verkaufsgröße bei Schluss unter 21-MA.")
+                    ma_seq_klarer_ma50_bruch_pct = st.number_input("Klarer 50-MA-Bruch (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5, key=f"strat_hub_ma_seq_under50_clear_{t}", help="Mindestabstand unter 50-MA für Punkt 5.")
+                ma_seq_unter_ma21_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 4 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under21_minpnl_{t}", help="Punkt 4 erst ab diesem Mindestgewinn.")
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11321,7 +11362,29 @@ def _render_sell_strategy_hub() -> None:
         markt,
         man.get("industry_group_status","Neutral"),
         aktive,
-        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(ziel_atr), "ueberdehnung_atr_start": float(atr_ueberdehnung_start), "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start)), "verlust_stufe_1": float(verlust_stufe_1), "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)), "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1))), "erste_haelfte_gewinn_pct": float(erste_haelfte_gewinn_pct)},
+        {
+            "ma21_variante":"gestaffelt",
+            "ziel_atr_multiplikator": float(ziel_atr),
+            "ueberdehnung_atr_start": float(atr_ueberdehnung_start),
+            "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start)),
+            "verlust_stufe_1": float(verlust_stufe_1),
+            "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)),
+            "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1))),
+            "erste_haelfte_gewinn_pct": float(erste_haelfte_gewinn_pct),
+            "ma_seq_gewinnzone_min_pct": float(ma_seq_gewinnzone_min_pct),
+            "ma_seq_gewinnzone_max_pct": float(max(ma_seq_gewinnzone_max_pct, ma_seq_gewinnzone_min_pct)),
+            "ma_seq_gewinnzone_tranche_pct": float(ma_seq_gewinnzone_tranche_pct),
+            "ma_seq_ueber_ma10_pct": float(ma_seq_ueber_ma10_pct),
+            "ma_seq_ueber_ma10_tranche_pct": float(ma_seq_ueber_ma10_tranche_pct),
+            "ma_seq_unter_ma10_mindestgewinn_pct": float(ma_seq_unter_ma10_mindestgewinn_pct),
+            "ma_seq_unter_ma10_tranche_pct": float(ma_seq_unter_ma10_tranche_pct),
+            "ma_seq_pendel_tranche_pct": float(max(ma_seq_pendel_tranche_pct, ma_seq_unter_ma10_tranche_pct)),
+            "ma_seq_pendel_lookback_tage": int(ma_seq_pendel_lookback_tage),
+            "ma_seq_pendel_wechsel_min": int(ma_seq_pendel_wechsel_min),
+            "ma_seq_unter_ma21_mindestgewinn_pct": float(ma_seq_unter_ma21_mindestgewinn_pct),
+            "ma_seq_unter_ma21_tranche_pct": float(ma_seq_unter_ma21_tranche_pct),
+            "ma_seq_klarer_ma50_bruch_pct": float(ma_seq_klarer_ma50_bruch_pct),
+        },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
     st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
