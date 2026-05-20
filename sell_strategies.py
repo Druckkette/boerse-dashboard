@@ -147,12 +147,53 @@ def strategie_split_anstieg(position,daten,split_datum=None):
     kurs=float(d.loc[split_dt,"close"]); s=letzter_schlusskurs(d); an=(s/kurs-1)*100 if kurs else 0
     if an>=25: return [_signal(f"Anstieg nach Split: {an:.1f}%",50 if an>=50 else 33,"schluss",True,kurs,"Kap. 6.2","Split-Anstieg")]
     return []
-def strategie_erschoepfungsluecke(position,daten):
-    if pnl_pct(position,daten)<=15 or len(daten)<51 or not position.pivot: return []
-    h=daten.iloc[-1]; g=daten.iloc[-2]
-    gap=(h["open"]/g["close"]-1)*100 if g["close"] else 0
-    vr=vol_verhaeltnis(daten); weit=(h["close"]/position.pivot-1)*100 if position.pivot else 0
-    if gap>=3 and vr>=1.5 and weit>=30: return [_signal("Erschöpfungslücke",33,"schluss",True,float(h["low"]),"Kap. 6.2","Gap-up nach langem Lauf")]
+def strategie_erschoepfungsluecke(
+    position,
+    daten,
+    min_pnl_pct: float = 15.0,
+    gap_up_min_pct: float = 3.0,
+    volumen_lookback_tage: int = 50,
+    volumen_ratio_min: float = 1.5,
+    min_distanz_zur_basis_pct: float = 30.0,
+    tranche_pct: float = 33.0,
+):
+    """Strategie 11 (Kap. 6.2): Erschöpfungslücke nach langem Aufwärtstrend.
+
+    Die Strategie identifiziert ein potenzielles Spätphasen-/Klimax-Muster:
+    Ein deutliches Gap-up zur Eröffnung, erhöhtes Volumen und große Distanz
+    zur Ausgangsbasis (Pivot). In dieser Kombination wird ein Teilverkauf
+    ausgelöst und der Rest eng über das aktuelle Tagestief abgesichert.
+
+    Parameter:
+    - min_pnl_pct: Mindestgewinn der Position, ab dem das Muster relevant wird.
+    - gap_up_min_pct: Mindestgröße der Aufwärtslücke gegenüber dem Vortagesschluss.
+    - volumen_lookback_tage: Basisfenster zur Berechnung des Durchschnittsvolumens.
+    - volumen_ratio_min: Mindestverhältnis Tagesvolumen / Durchschnittsvolumen.
+    - min_distanz_zur_basis_pct: Mindestabstand des Schlusskurses zum Pivot.
+    - tranche_pct: Standardgröße der Gewinnmitnahme in Prozent.
+    """
+    if not position.pivot or len(daten) < max(2, int(volumen_lookback_tage) + 1):
+        return []
+
+    pnl = pnl_pct(position, daten)
+    if pnl <= float(min_pnl_pct):
+        return []
+
+    heute = daten.iloc[-1]
+    gestern = daten.iloc[-2]
+
+    gap_up_pct = (heute["open"] - gestern["close"]) / gestern["close"] * 100 if gestern["close"] else 0.0
+    avg_vol = float(daten["volume"].tail(int(volumen_lookback_tage)).mean())
+    vol_ratio = (float(heute["volume"]) / avg_vol) if avg_vol else 0.0
+    distanz_zur_basis_pct = (float(heute["close"]) - float(position.pivot)) / float(position.pivot) * 100
+
+    if gap_up_pct >= float(gap_up_min_pct) and vol_ratio >= float(volumen_ratio_min) and distanz_zur_basis_pct >= float(min_distanz_zur_basis_pct):
+        begruendung = (
+            "Gap-up nach langem Lauf mit hohem Volumen — letzte Kaufwelle "
+            f"(Gap {gap_up_pct:.1f}%, Volumenfaktor {vol_ratio:.2f}, Distanz zur Basis {distanz_zur_basis_pct:.1f}%)."
+        )
+        return [_signal("Erschöpfungslücke", tranche_pct, "schluss", True, float(heute["low"]), "Kap. 6.2 Erschöpfungslücke", begruendung)]
+
     return []
 def strategie_downside_reversal(
     position,
