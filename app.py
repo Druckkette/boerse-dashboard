@@ -970,9 +970,11 @@ def _parse_transaction_export_csv(uploaded_file) -> pd.DataFrame:
     if missing:
         raise ValueError(f"Fehlende Spalten: {', '.join(missing)}")
     df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # Parse all timestamps consistently as UTC, then drop timezone information.
+    # This avoids mixed-aware/naive Timestamp comparisons during sorting.
+    df["date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert(None)
     if "datetime" in df.columns:
-        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce", utc=True).dt.tz_convert(None)
     df["event_ts"] = df["datetime"] if "datetime" in df.columns else df["date"]
     df["event_ts"] = df["event_ts"].fillna(df["date"])
     df["shares_num"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0.0)
