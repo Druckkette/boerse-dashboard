@@ -97,12 +97,31 @@ def strategie_21ma_bruch(position: Position, daten: pd.DataFrame, variante: str 
         if t>=3: out.append(_signal("Dritter Tag unter 21-MA",25,"schluss",True,position.einstiegspreis,"Kap. 6.2","Stufe 3"))
     return out
 
-def strategie_drawdown_vom_peak(position: Position, daten: pd.DataFrame):
+def strategie_drawdown_vom_peak(
+    position: Position,
+    daten: pd.DataFrame,
+    drawdown_stufe1_min_pct: float = 8.0,
+    drawdown_stufe2_min_pct: float = 12.0,
+    drawdown_stufe3_min_pct: float = 15.0,
+    tranche_stufe1_pct: float = 25.0,
+    tranche_stufe2_pct: float = 33.0,
+    tranche_stufe3_ohne_trendbruch_pct: float = 50.0,
+    tranche_stufe3_mit_trendbruch_pct: float = 100.0,
+):
+    """Strategie 5 (Kap. 6.2): Drawdown vom Peak mit 3 Eskalationsstufen.
+
+    Setup/Anpassung:
+    - Stufe 1: erstes Sicherungssignal bei moderatem Rücksetzer vom Peak.
+    - Stufe 2: deutliche Reduktion bei fortgeschrittenem Drawdown.
+    - Stufe 3: harte Reduktion; bei zusätzlichem Trendbruch (Schluss unter 21-MA)
+      vollständiger Ausstieg.
+    """
     if pnl_pct(position,daten)<=0: return []
+    d1=max(0.0,float(drawdown_stufe1_min_pct)); d2=max(d1,float(drawdown_stufe2_min_pct)); d3=max(d2,float(drawdown_stufe3_min_pct))
     dd=drawdown_vom_peak(position,daten); ma21=_none_if_nan(sma(daten["close"],21).iloc[-1]); s=letzter_schlusskurs(daten); peak=float(position.peak or daten["high"].max()); out=[]
-    if 8<=dd<12: out.append(_signal("Drawdown 8% vom Peak",25,"schluss",True,peak*0.88,"Kap. 6.2","erste Sicherung"))
-    if 12<=dd<15: out.append(_signal("Drawdown 12-15% vom Peak",33,"schluss",True,peak*0.85,"Kap. 6.2","deutliche Reduktion"))
-    if dd>=15: out.append(_signal("Drawdown >15% + Trendbruch" if (ma21 and s<ma21) else "Drawdown >15%",100 if (ma21 and s<ma21) else 50,"schluss",True,None if (ma21 and s<ma21) else ma21,"Kap. 6.2","Komplettausstieg" if (ma21 and s<ma21) else "reduzieren"))
+    if d1<=dd<d2: out.append(_signal("Drawdown 8% vom Peak",tranche_stufe1_pct,"schluss",True,peak*(1-d2/100),"Kap. 6.2 Drawdown vom Peak","Erster Schwellwert — Stopps enger ziehen, Teil sichern"))
+    if d2<=dd<d3: out.append(_signal("Drawdown 12-15% vom Peak",tranche_stufe2_pct,"schluss",True,peak*(1-d3/100),"Kap. 6.2","Gewinnsicherung Pflicht — Stoppmarken: Tief schwächste Kerze oder 21-MA"))
+    if dd>=d3: out.append(_signal("Drawdown >15% + Trendbruch" if (ma21 and s<ma21) else "Drawdown >15%",tranche_stufe3_mit_trendbruch_pct if (ma21 and s<ma21) else tranche_stufe3_ohne_trendbruch_pct,"schluss",True,None if (ma21 and s<ma21) else ma21,"Kap. 6.2",">15% Rückgang + Bruch 21-MA — Komplettausstieg" if (ma21 and s<ma21) else "Position deutlich reduzieren"))
     return out
 
 def strategie_ma_abstand(
@@ -496,7 +515,16 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "drei_stufen_nach_kauf": lambda: strategie_drei_stufen_nach_kauf(position,daten),
         "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(position,daten,markt),
         "ma21_bruch": lambda: strategie_21ma_bruch(position,daten,o.get("ma21_variante","gestaffelt")),
-        "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(position,daten),
+        "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(
+            position,daten,
+            o.get("drawdown_stufe1_min_pct",8.0),
+            o.get("drawdown_stufe2_min_pct",12.0),
+            o.get("drawdown_stufe3_min_pct",15.0),
+            o.get("drawdown_tranche_stufe1_pct",25.0),
+            o.get("drawdown_tranche_stufe2_pct",33.0),
+            o.get("drawdown_tranche_stufe3_ohne_trendbruch_pct",50.0),
+            o.get("drawdown_tranche_stufe3_mit_trendbruch_pct",100.0),
+        ),
         "ma_abstand": lambda: strategie_ma_abstand(position,daten,
             o.get("ma_abstand_schwelle_ma10_pct",10.0),
             o.get("ma_abstand_schwelle_ma21_pct",15.0),
