@@ -11261,7 +11261,7 @@ def _render_sell_strategy_hub() -> None:
         "split_anstieg": "Starker Kursanstieg kurz nach Split als Top-Warnung.",
         "erschoepfungsluecke": "Gap-up nach langem Lauf mit hohem Volumen als Erschöpfungssignal.",
         "downside_reversal": "Umkehrkerze nach Hochlauf (neues Hoch + Schluss nahe Tief) als Warnsignal.",
-        "stau_tage": "Mehrere volumenstarke Seitwärts-/Stau-Tage als verdeckte Distribution.",
+        "stau_tage": "Strategie 13 (Kap. 6.2): Sucht in einem Fenster (Standard 10 Sessions) nach Stau-Tagen mit kaum Fortschritt (|Tagesveränderung| < 1%) bei überdurchschnittlichem Volumen (≥1.3× gegen 50-Tage-Schnitt). Ab mindestens 2 Stau-Tagen entsteht ein aktives Verkaufssignal. Die Tranche ist kontextabhängig: nahe Hoch (Drawdown < 5%) defensiver mit 33%, sonst 20%. Als nächste Marke wird das tiefste Tagestief der erkannten Stau-Tage gesetzt (Stopp-Logik).",
         "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkts. Pivot-Quelle: zuerst Wert aus dem Bereich ‚Meine Positionen‘; falls dort kein Pivot hinterlegt ist, wird der Kauftag als Fallback genutzt.",
         "ma_bruch_defensiv": "Strategie 15 (Kap. 6.3): Defensiver Exit-Prozess bei Trendbruch. Klarer 50-MA-Bruch (mind. max(2%, ATR%) unter MA und Volumenanstieg) triggert 50%, sonst nach 3 Schlusskursen unter 50-MA 33%. Nach 8 Wochen unter der 10-Wochen-Linie folgt ein Vollsignal (100%). Unter 200-MA werden 75% reduziert bzw. 100% bei hohem Volumen; dreht die 200-MA zusätzlich nach unten, wird ein bestätigendes Info-Signal ausgegeben.",
         "drei_verlustwochen": "Strategie 16 (Kap. 6.3): Triggert bei drei Verlustwochen in Folge mit jeweils tieferem Wochenschluss als in der Vorwoche und gleichzeitig steigendem Wochenvolumen (Woche 2 > Woche 1, Woche 3 > Woche 2). Vollsignal (100%) nur, wenn alle drei Wochen klare Abwärtswochen sind (Close < Open) – das spricht für ein sauberes Verteilungsmuster und eine komplette Reduktion. Vorwarnstufe (33%) falls nur die Sequenz aus fallenden Wochenschlüssen + steigendem Volumen erfüllt ist; dann Stopps enger nachziehen.",
@@ -11306,6 +11306,14 @@ def _render_sell_strategy_hub() -> None:
     groesster_einbruch_min_tagesverlust_pct = 3.0
     groesster_einbruch_tagesvol_ratio_schwelle = 1.5
     groesster_einbruch_wochenvol_ratio_schwelle = 1.3
+    stau_fenster_tage = 10
+    stau_volumen_lookback_tage = 50
+    stau_max_tagesveraenderung_pct = 1.0
+    stau_min_vol_ratio = 1.3
+    stau_min_tage = 2
+    stau_nahe_hoch_drawdown_max_pct = 5.0
+    stau_tranche_nahe_hoch_pct = 33.0
+    stau_tranche_standard_pct = 20.0
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11420,6 +11428,31 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                         key=f"strat_hub_worst_drop_week_vol_ratio_{t}",
                         help="Ab diesem Faktor (aktuelles Wochenvolumen / 12-Wochen-Durchschnitt) gilt die Wochenwarnung als bestätigt.",
                     )
+            elif key == "stau_tage":
+                st.markdown(
+                    """
+**Strategie 13 – Stau-Tage (Kap. 6.2):**
+- Prüft die letzten **N Sessions** auf verdeckte Distribution.
+- Ein Tag gilt als Stau-Tag, wenn:
+  - **kaum Fortschritt**: \|Close-Open\| in % < Schwelle
+  - **hohes Volumen**: Tagesvolumen / Referenzvolumen ≥ Schwelle
+- Ab **mindestens X Stau-Tagen** im Fenster wird ein Signal aktiv.
+- Die Tranche ist höher, wenn die Aktie noch **nahe am Hoch** notiert (geringer Drawdown).
+- Als Stopp-Marke wird das **Tief des schwächsten Stau-Tags** genutzt.
+                    """
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    stau_fenster_tage = int(st.number_input("Fenster (Sessions)", min_value=5, max_value=30, value=10, step=1, key=f"strat_hub_stall_window_{t}"))
+                    stau_max_tagesveraenderung_pct = st.number_input("Max. Tagesveränderung (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key=f"strat_hub_stall_max_day_change_{t}")
+                    stau_min_tage = int(st.number_input("Min. Stau-Tage", min_value=1, max_value=10, value=2, step=1, key=f"strat_hub_stall_min_days_{t}"))
+                with c2:
+                    stau_volumen_lookback_tage = int(st.number_input("Volumen-Lookback (Tage)", min_value=10, max_value=200, value=50, step=1, key=f"strat_hub_stall_vol_lookback_{t}"))
+                    stau_min_vol_ratio = st.number_input("Min. Volumenfaktor", min_value=0.8, max_value=5.0, value=1.3, step=0.1, key=f"strat_hub_stall_min_vol_ratio_{t}")
+                    stau_nahe_hoch_drawdown_max_pct = st.number_input("Nahe-Hoch Drawdown max (%)", min_value=0.5, max_value=20.0, value=5.0, step=0.5, key=f"strat_hub_stall_near_high_dd_{t}")
+                with c3:
+                    stau_tranche_nahe_hoch_pct = st.number_input("Tranche nahe Hoch (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_stall_tranche_near_high_{t}")
+                    stau_tranche_standard_pct = st.number_input("Standard-Tranche (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_stall_tranche_standard_{t}")
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11460,6 +11493,14 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "groesster_einbruch_min_tagesverlust_pct": float(groesster_einbruch_min_tagesverlust_pct),
             "groesster_einbruch_tagesvol_ratio_schwelle": float(groesster_einbruch_tagesvol_ratio_schwelle),
             "groesster_einbruch_wochenvol_ratio_schwelle": float(groesster_einbruch_wochenvol_ratio_schwelle),
+            "stau_fenster_tage": int(stau_fenster_tage),
+            "stau_volumen_lookback_tage": int(stau_volumen_lookback_tage),
+            "stau_max_tagesveraenderung_pct": float(stau_max_tagesveraenderung_pct),
+            "stau_min_vol_ratio": float(stau_min_vol_ratio),
+            "stau_min_tage": int(stau_min_tage),
+            "stau_nahe_hoch_drawdown_max_pct": float(stau_nahe_hoch_drawdown_max_pct),
+            "stau_tranche_nahe_hoch_pct": float(stau_tranche_nahe_hoch_pct),
+            "stau_tranche_standard_pct": float(stau_tranche_standard_pct),
         },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
