@@ -15,6 +15,7 @@ from sell_strategies import (
     verkaufs_empfehlung_gesamt,
     strategie_downside_reversal,
     strategie_verlusttage_haeufung,
+    strategie_ma_abstand,
 )
 
 
@@ -358,4 +359,51 @@ def test_strategie13_stau_tage_custom_setup_and_near_high_tranche():
         tranche_standard_pct=15.0,
     )
     assert sigs
+    assert sigs[0]["tranche_pct"] == 40
+
+
+def test_ma_abstand_kapitel_6_2_stufen_und_texte():
+    p = Position("T", 100, "2026-01-01", 10)
+    closes = [100.0] * 220 + [220.0]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": closes,
+        "low": closes,
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+
+    sigs = strategie_ma_abstand(p, d)
+    names = [s["name"] for s in sigs]
+
+    assert "10% über 10-MA" in names
+    assert "15% über 21-MA" in names
+    assert "25% über 50-MA" in names
+    assert any("über 200-MA (Klimaxzone)" in n for n in names)
+    assert all(s["buch_verweis"] == "Kap. 6.2 MA-Abstand" for s in sigs)
+
+
+def test_ma_abstand_custom_schwelle_und_tranche_werden_uebernommen():
+    p = Position("T", 100, "2026-01-01", 10)
+    closes = [100.0] * 220 + [113.0]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": closes,
+        "low": closes,
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+
+    sigs = strategie_ma_abstand(
+        p,
+        d,
+        schwelle_ma10_pct=11.0,
+        tranche_ma10_pct=40.0,
+        schwelle_ma21_pct=50.0,
+        schwelle_ma50_pct=50.0,
+        schwelle_ma200_pct=50.0,
+    )
+
+    assert len(sigs) == 1
+    assert sigs[0]["name"] == "10% über 10-MA"
     assert sigs[0]["tranche_pct"] == 40

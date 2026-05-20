@@ -105,12 +105,42 @@ def strategie_drawdown_vom_peak(position: Position, daten: pd.DataFrame):
     if dd>=15: out.append(_signal("Drawdown >15% + Trendbruch" if (ma21 and s<ma21) else "Drawdown >15%",100 if (ma21 and s<ma21) else 50,"schluss",True,None if (ma21 and s<ma21) else ma21,"Kap. 6.2","Komplettausstieg" if (ma21 and s<ma21) else "reduzieren"))
     return out
 
-def strategie_ma_abstand(position,daten):
+def strategie_ma_abstand(
+    position,
+    daten,
+    schwelle_ma10_pct: float = 10.0,
+    schwelle_ma21_pct: float = 15.0,
+    schwelle_ma50_pct: float = 25.0,
+    schwelle_ma200_pct: float = 70.0,
+    klimax_ma200_vollausstieg_pct: float = 100.0,
+    tranche_ma10_pct: float = 25.0,
+    tranche_ma21_pct: float = 33.0,
+    tranche_ma50_pct: float = 33.0,
+    tranche_ma200_basis_pct: float = 50.0,
+):
+    """Strategie 6 (Kap. 6.2): Teilverkäufe bei Überdehnung über gleitende Durchschnitte."""
     if pnl_pct(position,daten)<=0:return []
+
     s=letzter_schlusskurs(daten); out=[]
-    for p,th,tr in [(10,10,25),(21,15,33),(50,25,33),(200,70,50)]:
-        m=_none_if_nan(sma(daten["close"],p).iloc[-1]);
-        if m and (s-m)/m*100>=th: out.append(_signal(f"{th}% über {p}-MA",100 if p==200 and (s-m)/m*100>=100 else tr,"schluss",True,m,"Kap. 6.2","Überdehnung"))
+    ma10=_none_if_nan(sma(daten["close"],10).iloc[-1]); ma21=_none_if_nan(sma(daten["close"],21).iloc[-1]); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1]); ma200=_none_if_nan(sma(daten["close"],200).iloc[-1])
+
+    if ma10:
+        abstand_10=(s-ma10)/ma10*100
+        if abstand_10>=float(schwelle_ma10_pct):
+            out.append(_signal("10% über 10-MA",tranche_ma10_pct,"schluss",True,ma10,"Kap. 6.2 MA-Abstand","Überhitzt zur 10-MA — Stoppmarke Tagestief Kerze mit großer Spanne + hohem Volumen"))
+    if ma21:
+        abstand_21=(s-ma21)/ma21*100
+        if abstand_21>=float(schwelle_ma21_pct):
+            out.append(_signal("15% über 21-MA",tranche_ma21_pct,"schluss",True,ma21,"Kap. 6.2 MA-Abstand","Erste klare Überdehnung"))
+    if ma50:
+        abstand_50=(s-ma50)/ma50*100
+        if abstand_50>=float(schwelle_ma50_pct):
+            out.append(_signal("25% über 50-MA",tranche_ma50_pct,"schluss",True,ma50,"Kap. 6.2 MA-Abstand","Spätphasen-Signal"))
+    if ma200:
+        abstand_200=(s-ma200)/ma200*100
+        if abstand_200>=float(schwelle_ma200_pct):
+            tranche=100 if abstand_200>=float(klimax_ma200_vollausstieg_pct) else float(tranche_ma200_basis_pct)
+            out.append(_signal(f"{abstand_200:.1f}% über 200-MA (Klimaxzone)",tranche,"schluss",True,ma50,"Kap. 6.2 MA-Abstand","Klimaxzone — historisch häufigste Top-Region"))
     return out
 
 def strategie_verlusttage_haeufung(
@@ -467,7 +497,17 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(position,daten,markt),
         "ma21_bruch": lambda: strategie_21ma_bruch(position,daten,o.get("ma21_variante","gestaffelt")),
         "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(position,daten),
-        "ma_abstand": lambda: strategie_ma_abstand(position,daten),
+        "ma_abstand": lambda: strategie_ma_abstand(position,daten,
+            o.get("ma_abstand_schwelle_ma10_pct",10.0),
+            o.get("ma_abstand_schwelle_ma21_pct",15.0),
+            o.get("ma_abstand_schwelle_ma50_pct",25.0),
+            o.get("ma_abstand_schwelle_ma200_pct",70.0),
+            o.get("ma_abstand_klimax_ma200_vollausstieg_pct",100.0),
+            o.get("ma_abstand_tranche_ma10_pct",25.0),
+            o.get("ma_abstand_tranche_ma21_pct",33.0),
+            o.get("ma_abstand_tranche_ma50_pct",33.0),
+            o.get("ma_abstand_tranche_ma200_basis_pct",50.0),
+        ),
         "verlusttage_haeufung": lambda: strategie_verlusttage_haeufung(
             position,daten,
             o.get("verlusttage_min_tiefere_schlusskurse_in_folge", 3),

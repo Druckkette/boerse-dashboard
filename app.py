@@ -11335,6 +11335,16 @@ def _render_sell_strategy_hub() -> None:
     split_signal_schwelle_pct = 25.0
     split_starke_schwelle_pct = 50.0
     split_datum = None
+    ma_abstand_schwelle_ma10_pct = 10.0
+    ma_abstand_schwelle_ma21_pct = 15.0
+    ma_abstand_schwelle_ma50_pct = 25.0
+    ma_abstand_schwelle_ma200_pct = 70.0
+    ma_abstand_klimax_ma200_vollausstieg_pct = 100.0
+    ma_abstand_tranche_ma10_pct = 25.0
+    ma_abstand_tranche_ma21_pct = 33.0
+    ma_abstand_tranche_ma50_pct = 33.0
+    ma_abstand_tranche_ma200_basis_pct = 50.0
+
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11495,6 +11505,34 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                     verlusttage_updown_fenster_tage = int(st.number_input("Up/Down-Fenster (Tage)", min_value=5, max_value=40, value=15, step=1, key=f"strat_hub_losscluster_ud_window_{t}"))
                     verlusttage_updown_diff_min = int(st.number_input("Min. Abwärts-Überhang (Tage)", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_losscluster_ud_diff_{t}"))
                     verlusttage_tranche_pct = st.number_input("Tranche je Signal (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_losscluster_tranche_{t}")
+            elif key == "ma_abstand":
+                st.markdown(
+                    """
+**Strategie 6 – Abstand zu gleitenden Durchschnitten (Kap. 6.2):**
+- Nur aktiv, wenn die Position im Gewinn ist (**P&L > 0**).
+- Es werden vier Überdehnungen gemessen: Abstand zum **10/21/50/200-MA** in Prozent.
+- Signalstufen (Standard):
+  - **10-MA ab 10%** → kurzfristig überhitzt, **25%** Tranche
+  - **21-MA ab 15%** → klare Überdehnung, **33%** Tranche
+  - **50-MA ab 25%** → Spätphasen-Signal, **33%** Tranche
+  - **200-MA ab 70%** → Klimaxzone, **50%** Tranche
+  - **200-MA ab 100%** → Extrem-Klimax, **100%** Tranche
+- Nächste Marke: jeweiliger MA (bei 200-MA-Klimax als engere Kontrolllinie die 50-MA).
+                    """
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    ma_abstand_schwelle_ma10_pct = st.number_input("Schwelle 10-MA (%)", min_value=1.0, max_value=50.0, value=10.0, step=0.5, key=f"strat_hub_ma_dist_th10_{t}")
+                    ma_abstand_schwelle_ma21_pct = st.number_input("Schwelle 21-MA (%)", min_value=1.0, max_value=80.0, value=15.0, step=0.5, key=f"strat_hub_ma_dist_th21_{t}")
+                    ma_abstand_schwelle_ma50_pct = st.number_input("Schwelle 50-MA (%)", min_value=1.0, max_value=120.0, value=25.0, step=0.5, key=f"strat_hub_ma_dist_th50_{t}")
+                with c2:
+                    ma_abstand_schwelle_ma200_pct = st.number_input("Klimax-Schwelle 200-MA (%)", min_value=10.0, max_value=200.0, value=70.0, step=1.0, key=f"strat_hub_ma_dist_th200_{t}")
+                    ma_abstand_klimax_ma200_vollausstieg_pct = st.number_input("Vollausstieg ab 200-MA (%)", min_value=20.0, max_value=300.0, value=100.0, step=1.0, key=f"strat_hub_ma_dist_th200_full_{t}")
+                with c3:
+                    ma_abstand_tranche_ma10_pct = st.number_input("Tranche 10-MA (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_dist_tr10_{t}")
+                    ma_abstand_tranche_ma21_pct = st.number_input("Tranche 21-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr21_{t}")
+                    ma_abstand_tranche_ma50_pct = st.number_input("Tranche 50-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr50_{t}")
+                    ma_abstand_tranche_ma200_basis_pct = st.number_input("Tranche 200-MA Basis (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0, key=f"strat_hub_ma_dist_tr200_{t}")
             elif key == "downside_reversal":
                 st.markdown(
                     """
@@ -11638,6 +11676,15 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "split_datum": split_datum,
             "split_signal_schwelle_pct": float(split_signal_schwelle_pct),
             "split_starke_schwelle_pct": float(max(split_starke_schwelle_pct, split_signal_schwelle_pct)),
+            "ma_abstand_schwelle_ma10_pct": float(ma_abstand_schwelle_ma10_pct),
+            "ma_abstand_schwelle_ma21_pct": float(max(ma_abstand_schwelle_ma21_pct, ma_abstand_schwelle_ma10_pct)),
+            "ma_abstand_schwelle_ma50_pct": float(max(ma_abstand_schwelle_ma50_pct, ma_abstand_schwelle_ma21_pct)),
+            "ma_abstand_schwelle_ma200_pct": float(max(ma_abstand_schwelle_ma200_pct, ma_abstand_schwelle_ma50_pct)),
+            "ma_abstand_klimax_ma200_vollausstieg_pct": float(max(ma_abstand_klimax_ma200_vollausstieg_pct, ma_abstand_schwelle_ma200_pct)),
+            "ma_abstand_tranche_ma10_pct": float(ma_abstand_tranche_ma10_pct),
+            "ma_abstand_tranche_ma21_pct": float(ma_abstand_tranche_ma21_pct),
+            "ma_abstand_tranche_ma50_pct": float(ma_abstand_tranche_ma50_pct),
+            "ma_abstand_tranche_ma200_basis_pct": float(ma_abstand_tranche_ma200_basis_pct),
         },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
