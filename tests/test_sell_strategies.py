@@ -4,6 +4,7 @@ from sell_strategies import (
     Position,
     strategie_21ma_bruch,
     strategie_atr_basiert,
+    strategie_misslungener_ausbruch_5stufen,
     strategie_notbremse_verlust,
     strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
@@ -117,3 +118,32 @@ def test_einfache_verluststufen_custom_schwellen_werden_genutzt():
     assert sigs
     assert sigs[0]["name"] == "Verlust ≥ 4%"
     assert sigs[0]["naechste_marke"] == 94.0
+
+
+def test_strategie21_skip_tag0_when_below_notbremse():
+    p = Position("T", 100, "2026-01-01", 10, tief_tag_1=97, tief_tag_0=92)
+    d = pd.DataFrame({
+        "open": [101, 96],
+        "high": [102, 97],
+        "low": [99, 91],
+        "close": [100, 91.5],
+        "volume": [1000, 1000],
+    })
+    sigs = strategie_misslungener_ausbruch_5stufen(p, d)
+    names = [s["name"] for s in sigs]
+    assert "Intraday unter Tief Tag 0" not in names
+    assert "Schluss unter Tief Tag 0" not in names
+
+
+def test_strategie21_pivot_return_extension():
+    p = Position("T", 100, "2026-01-01", 10, pivot=100, realisierte_tranchen=[33])
+    idx = pd.date_range("2026-01-01", periods=6, freq="D")
+    d = pd.DataFrame({
+        "open": [101, 98, 101, 104, 102, 99],
+        "high": [102, 100, 104, 105, 103, 100],
+        "low": [99, 97, 100, 103, 100, 98],
+        "close": [101, 99, 101, 104, 102, 100],
+        "volume": [1000] * 6,
+    }, index=idx)
+    sigs = strategie_misslungener_ausbruch_5stufen(p, d)
+    assert any(s["name"] == "Zweite Rückkehr zum Pivot" for s in sigs)

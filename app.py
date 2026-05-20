@@ -2988,13 +2988,19 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                                  help="Tipp: Stückzahl im Tab „Rechner“ vorab kalkulieren.")
     with stop_col:
         stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=stop_pct_default, step=0.1, key="pf_stop_pct")
-    date_col, curr_col, note_col = st.columns([1, 0.8, 1.4])
+    date_col, pivot_col, curr_col, note_col = st.columns([1, 1, 0.8, 1.2])
     with date_col:
         try:
             default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.now(timezone.utc).date()
         except Exception:
             default_date = datetime.now(timezone.utc).date()
         buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
+    with pivot_col:
+        try:
+            pivot_tag_default = pd.Timestamp((selected_pos or {}).get("pivot_tag")).date() if (selected_pos or {}).get("pivot_tag") else buy_date
+        except Exception:
+            pivot_tag_default = buy_date
+        pivot_tag = st.date_input("Pivot-Tag", value=pivot_tag_default, key="pf_pivot_tag")
     with curr_col:
         curr_default = (selected_pos or {}).get("currency", "EUR")
         currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if curr_default != "USD" else 1, key="pf_currency")
@@ -3016,6 +3022,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                 "buy_price": float(buy_price),
                 "buy_price_eur": float(buy_price_eur),
                 "buy_date": str(buy_date),
+                "pivot_tag": str(pivot_tag),
                 "currency": currency,
                 "shares": float(shares),
                 "stop_pct": float(stop_pct),
@@ -11223,12 +11230,23 @@ def _render_sell_strategy_hub() -> None:
     if df is None or len(df)<30:
         st.warning("Zu wenig Kursdaten.")
         return
-    daily = pd.DataFrame({"open":df["Open"],"high":df["High"],"low":df["Low"],"close":df["Close"],"volume":df["Volume"]}).dropna()
-    daily.index = pd.to_datetime(daily.index).tz_localize(None)
-    daily = daily[daily.index >= buy_date]
+    daily_all = pd.DataFrame({"open":df["Open"],"high":df["High"],"low":df["Low"],"close":df["Close"],"volume":df["Volume"]}).dropna()
+    daily_all.index = pd.to_datetime(daily_all.index).tz_localize(None)
+    daily = daily_all[daily_all.index >= buy_date]
     weekly = daily.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
     man = get_position_manual_sell_data(t)
-    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(man.get("pivot")),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
+    manual_pivot = _safe_float(man.get("pivot"), np.nan)
+    pivot_tag_ts = pd.to_datetime(pos.get("pivot_tag"), errors="coerce")
+    pivot_tag_ts = pivot_tag_ts.tz_localize(None) if pd.notna(pivot_tag_ts) and getattr(pivot_tag_ts, "tzinfo", None) else pivot_tag_ts
+    pivot_from_tag = np.nan
+    if pd.notna(pivot_tag_ts):
+        row = daily_all.loc[daily_all.index == pivot_tag_ts]
+        if not row.empty:
+            pivot_from_tag = _safe_float(row["low"].iloc[-1], np.nan)
+    entry_row = daily_all.loc[daily_all.index >= buy_date].head(1)
+    pivot_from_entry_low = _safe_float(entry_row["low"].iloc[0], np.nan) if not entry_row.empty else np.nan
+    effective_pivot = manual_pivot if not np.isnan(manual_pivot) and manual_pivot > 0 else (pivot_from_tag if not np.isnan(pivot_from_tag) and pivot_from_tag > 0 else pivot_from_entry_low)
+    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
     alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","trendlinie","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
     strategie_info = {
         "notbremse_verlust": "Fixe Verlust-Notbremse je Marktumfeld (Bullisch/Unsicher/Bärisch) für Kapitalschutz.",
