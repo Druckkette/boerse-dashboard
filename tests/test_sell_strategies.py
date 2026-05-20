@@ -14,6 +14,7 @@ from sell_strategies import (
     strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
     strategie_downside_reversal,
+    strategie_verlusttage_haeufung,
 )
 
 
@@ -216,6 +217,33 @@ def test_ma_bruch_defensiv_uses_detailed_chapter_references():
         "close": [300 - i for i in range(240)],
         "volume": [1000] * 239 + [1700],
     })
+
+
+def test_verlusttage_haeufung_signals_match_chapter_logic():
+    p = Position("T", 100, "2026-01-01", 10)
+    closes = [105, 104, 103, 102, 101, 106, 105, 104, 103, 102, 107, 106, 115, 113, 110]
+    opens =  [106, 105, 104, 103, 102, 105, 106, 105, 104, 103, 106, 107, 116, 114, 111]
+    volumes = [1000] * 12 + [1300, 1400, 1500]
+    d = pd.DataFrame({
+        "open": opens,
+        "high": [max(o, c) + 1 for o, c in zip(opens, closes)],
+        "low": [min(o, c) - 1 for o, c in zip(opens, closes)],
+        "close": closes,
+        "volume": volumes,
+    })
+
+    sigs = strategie_verlusttage_haeufung(
+        p,
+        d,
+        min_tiefere_schlusskurse_in_folge=3,
+        volumen_lookback_tage=10,
+        volumen_ratio_min=1.1,
+        updown_fenster_tage=15,
+        updown_diff_min=3,
+    )
+    names = [s["name"] for s in sigs]
+    assert "3 tiefere Schlusskurse mit Volumen" in names
+    assert "Abwärtstage überwiegen im 15-Tage-Fenster" in names
     weekly = pd.DataFrame({
         "open": [120 - i for i in range(20)],
         "high": [121 - i for i in range(20)],

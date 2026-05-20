@@ -113,12 +113,31 @@ def strategie_ma_abstand(position,daten):
         if m and (s-m)/m*100>=th: out.append(_signal(f"{th}% über {p}-MA",100 if p==200 and (s-m)/m*100>=100 else tr,"schluss",True,m,"Kap. 6.2","Überdehnung"))
     return out
 
-def strategie_verlusttage_haeufung(position,daten):
-    if pnl_pct(position,daten)<=0 or len(daten)<15:return []
-    out=[]; l3=daten.tail(3)
-    if all(l3["close"].iloc[i] < l3["close"].iloc[i-1] for i in [1,2]) and (l3["volume"].mean()/daten["volume"].tail(50).mean() if len(daten)>=50 else 1)>=1.1: out.append(_signal("3 tiefere Schlusskurse mit Volumen",25,"schluss",True,float(daten["low"].tail(5).min()),"Kap. 6.2","Schwäche"))
-    fen=daten.tail(15); up=(fen["close"]>fen["open"]).sum(); dn=(fen["close"]<fen["open"]).sum()
-    if dn-up>=3: out.append(_signal("Abwärtstage überwiegen",25,"schluss",True,float(fen["low"].min()),"Kap. 6.2","Persönlichkeit kippt"))
+def strategie_verlusttage_haeufung(
+    position,
+    daten,
+    min_tiefere_schlusskurse_in_folge: int = 3,
+    volumen_lookback_tage: int = 50,
+    volumen_ratio_min: float = 1.1,
+    tief_marker_lookback_tage: int = 5,
+    updown_fenster_tage: int = 15,
+    updown_diff_min: int = 3,
+    tranche_pct: float = 25.0,
+):
+    if pnl_pct(position,daten)<=0 or len(daten)<max(3, int(updown_fenster_tage)):return []
+    out=[]; l3=daten.tail(3); seq=1
+    for i in [1,2]:
+        if l3["close"].iloc[i] < l3["close"].iloc[i-1]: seq += 1
+        else: seq = 1
+    if len(daten) >= int(volumen_lookback_tage):
+        avg_vol = float(daten["volume"].tail(int(volumen_lookback_tage)).mean())
+        vol_ratio = (float(l3["volume"].mean()) / avg_vol) if avg_vol else 0.0
+    else:
+        vol_ratio = 1.0
+    if seq>=int(min_tiefere_schlusskurse_in_folge) and vol_ratio>=float(volumen_ratio_min):
+        out.append(_signal("3 tiefere Schlusskurse mit Volumen",tranche_pct,"schluss",True,float(daten["low"].tail(int(tief_marker_lookback_tage)).min()),"Kap. 6.2 Häufung Verlusttage","Rebound nach 2,5 Tagen ausgeblieben"))
+    fen=daten.tail(int(updown_fenster_tage)); up=(fen["close"]>fen["open"]).sum(); dn=(fen["close"]<fen["open"]).sum()
+    if dn>up and (dn-up)>=int(updown_diff_min): out.append(_signal("Abwärtstage überwiegen im 15-Tage-Fenster",tranche_pct,"schluss",True,float(fen["low"].min()),"Kap. 6.2 Häufung Verlusttage","Persönlichkeit der Aktie kippt — Reduktion in Gegenbewegung"))
     return out
 
 def strategie_groesster_anstieg_volumen(position,daten):
@@ -449,7 +468,16 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "ma21_bruch": lambda: strategie_21ma_bruch(position,daten,o.get("ma21_variante","gestaffelt")),
         "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(position,daten),
         "ma_abstand": lambda: strategie_ma_abstand(position,daten),
-        "verlusttage_haeufung": lambda: strategie_verlusttage_haeufung(position,daten),
+        "verlusttage_haeufung": lambda: strategie_verlusttage_haeufung(
+            position,daten,
+            o.get("verlusttage_min_tiefere_schlusskurse_in_folge", 3),
+            o.get("verlusttage_volumen_lookback_tage", 50),
+            o.get("verlusttage_volumen_ratio_min", 1.1),
+            o.get("verlusttage_tief_marker_lookback_tage", 5),
+            o.get("verlusttage_updown_fenster_tage", 15),
+            o.get("verlusttage_updown_diff_min", 3),
+            o.get("verlusttage_tranche_pct", 25.0),
+        ),
         "groesster_anstieg_volumen": lambda: strategie_groesster_anstieg_volumen(position,daten),
         "split_anstieg": lambda: strategie_split_anstieg(
             position,daten,
