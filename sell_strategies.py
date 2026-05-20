@@ -165,15 +165,26 @@ def strategie_downside_reversal(position,daten):
     if span>=1.5*avg and h["close"]<h["low"]+span/2:return [_signal("Schluss unter Spannenmitte",15,"schluss",True,float(h["high"]),"Kap. 6.2","Warnstufe")]
     return []
 
-def strategie_stau_tage(position,daten):
-    if pnl_pct(position,daten)<=0 or len(daten)<10:return []
-    fen=daten.tail(10); avgv=float(daten["volume"].tail(50).mean()) if len(daten)>=50 else float(daten["volume"].mean()); st=[]
+def strategie_stau_tage(
+    position,
+    daten,
+    fenster_tage: int = 10,
+    volumen_lookback_tage: int = 50,
+    max_tagesveraenderung_pct: float = 1.0,
+    min_vol_ratio: float = 1.3,
+    min_stau_tage: int = 2,
+    nahe_hoch_drawdown_max_pct: float = 5.0,
+    tranche_nahe_hoch_pct: float = 33.0,
+    tranche_standard_pct: float = 20.0,
+):
+    if pnl_pct(position,daten)<=0 or len(daten)<int(fenster_tage):return []
+    fen=daten.tail(int(fenster_tage)); avgv=float(daten["volume"].tail(int(volumen_lookback_tage)).mean()) if len(daten)>=int(volumen_lookback_tage) else float(daten["volume"].mean()); st=[]
     for _,r in fen.iterrows():
         ch=(r["close"]-r["open"])/r["open"]*100 if r["open"] else 0
-        if abs(ch)<1 and (r["volume"]/avgv if avgv else 0)>=1.3: st.append(r)
-    if len(st)>=2:
-        dd=drawdown_vom_peak(position,daten); tr=33 if dd<5 else 20
-        return [_signal(f"{len(st)} Stau-Tage in 10 Sessions",tr,"schluss",True,float(min(x["low"] for x in st)),"Kap. 6.2","Verdeckte Distribution")]
+        if abs(ch)<float(max_tagesveraenderung_pct) and (r["volume"]/avgv if avgv else 0)>=float(min_vol_ratio): st.append(r)
+    if len(st)>=int(min_stau_tage):
+        dd=drawdown_vom_peak(position,daten); tr=float(tranche_nahe_hoch_pct) if dd<float(nahe_hoch_drawdown_max_pct) else float(tranche_standard_pct)
+        return [_signal(f"{len(st)} Stau-Tage in {int(fenster_tage)} Sessions",tr,"schluss",True,float(min(x["low"] for x in st)),"Kap. 6.2 Stau-Tage","Verdeckte Distribution — Stopp auf Tief des Stau-Tags")]
     return []
 
 def strategie_rueckkehr_pivot(position,daten):
@@ -392,7 +403,17 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "split_anstieg": lambda: strategie_split_anstieg(position,daten,o.get("split_datum")),
         "erschoepfungsluecke": lambda: strategie_erschoepfungsluecke(position,daten),
         "downside_reversal": lambda: strategie_downside_reversal(position,daten),
-        "stau_tage": lambda: strategie_stau_tage(position,daten),
+        "stau_tage": lambda: strategie_stau_tage(
+            position,daten,
+            o.get("stau_fenster_tage",10),
+            o.get("stau_volumen_lookback_tage",50),
+            o.get("stau_max_tagesveraenderung_pct",1.0),
+            o.get("stau_min_vol_ratio",1.3),
+            o.get("stau_min_tage",2),
+            o.get("stau_nahe_hoch_drawdown_max_pct",5.0),
+            o.get("stau_tranche_nahe_hoch_pct",33.0),
+            o.get("stau_tranche_standard_pct",20.0),
+        ),
         "rueckkehr_pivot": lambda: strategie_rueckkehr_pivot(position,daten),
         "ma_bruch_defensiv": lambda: strategie_ma_bruch_defensiv(position,daten,wochen_daten),
         "drei_verlustwochen": lambda: strategie_drei_verlustwochen(position,wochen_daten),

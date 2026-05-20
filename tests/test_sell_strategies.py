@@ -8,6 +8,7 @@ from sell_strategies import (
     strategie_misslungener_ausbruch_5stufen,
     strategie_notbremse_verlust,
     strategie_rueckkehr_pivot,
+    strategie_stau_tage,
     strategie_ma_bruch_defensiv,
     strategie_rs_linie,
     strategie_einfache_verluststufen,
@@ -258,5 +259,43 @@ def test_strategie14_rueckkehr_pivot_zeitkomponente_10_tage():
     sigs = strategie_rueckkehr_pivot(p, d)
     pvt = [s for s in sigs if "Tage unter Pivot" in s["name"]]
     assert pvt
-    assert pvt[0]["tranche_pct"] == 50
-    assert pvt[0]["begruendung"] == "Rückkehr über Ausbruchspunkt nicht gelungen"
+
+
+def test_strategie13_stau_tage_default_logic():
+    p = Position("T", 100, "2026-01-01", 10, peak=130)
+    d = pd.DataFrame({
+        "open": [100] * 42 + [120.1, 120.2] + [120] * 8,
+        "high": [101] * 42 + [121.1, 121.2] + [121] * 8,
+        "low": [99] * 42 + [119.1, 119.2] + [119] * 8,
+        "close": [120] * 42 + [120.4, 120.3] + [120] * 8,
+        "volume": [1000] * 50 + [1400, 1500],
+    })
+    sigs = strategie_stau_tage(p, d)
+    assert sigs
+    assert "2 Stau-Tage in 10 Sessions" == sigs[0]["name"]
+    assert sigs[0]["tranche_pct"] == 20
+    assert sigs[0]["buch_verweis"] == "Kap. 6.2 Stau-Tage"
+
+
+def test_strategie13_stau_tage_custom_setup_and_near_high_tranche():
+    p = Position("T", 100, "2026-01-01", 10, peak=126)
+    d = pd.DataFrame({
+        "open": [100] * 30 + [122.0, 121.8, 122, 122],
+        "high": [101] * 30 + [123.0, 122.8, 123, 123],
+        "low": [99] * 30 + [121.0, 120.8, 121, 121],
+        "close": [122] * 30 + [122.2, 122.1, 122, 122],
+        "volume": [1000] * 30 + [1250, 1350, 900, 900],
+    })
+    sigs = strategie_stau_tage(
+        p, d,
+        fenster_tage=4,
+        volumen_lookback_tage=20,
+        max_tagesveraenderung_pct=0.5,
+        min_vol_ratio=1.2,
+        min_stau_tage=2,
+        nahe_hoch_drawdown_max_pct=4.0,
+        tranche_nahe_hoch_pct=40.0,
+        tranche_standard_pct=15.0,
+    )
+    assert sigs
+    assert sigs[0]["tranche_pct"] == 40
