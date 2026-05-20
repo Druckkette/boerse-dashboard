@@ -943,6 +943,169 @@ def _ticker_display_names(tickers: tuple[str, ...]) -> dict[str, str]:
         names[ticker] = name or ticker
     return names
 
+ISIN_TO_YAHOO: dict[str, str] = {
+    "US0378331005": "AAPL",
+    "US5949181045": "MSFT",
+    "US67066G1040": "NVDA",
+    "US02079K3059": "GOOGL",
+    "US0231351067": "AMZN",
+    "US30303M1027": "META",
+    "US88160R1014": "TSLA",
+    "US1912161007": "KO",
+    "DE0007236101": "SIE.DE",
+    "DE0007164600": "SAP.DE",
+    "DE000BAY0017": "BAYN.DE",
+}
+
+
+def _parse_transaction_export_csv(uploaded_file) -> pd.DataFrame:
+    required = {"date", "type", "asset_class", "name", "symbol", "shares", "price", "currency"}
+    try:
+        df = pd.read_csv(uploaded_file)
+    except Exception as exc:
+        raise ValueError(f"CSV konnte nicht gelesen werden: {exc}") from exc
+    if df.empty:
+        raise ValueError("Die CSV-Datei ist leer.")
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"Fehlende Spalten: {', '.join(missing)}")
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "datetime" in df.columns:
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df["event_ts"] = df["datetime"] if "datetime" in df.columns else df["date"]
+    df["event_ts"] = df["event_ts"].fillna(df["date"])
+    df["shares_num"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0.0)
+    df["price_num"] = pd.to_numeric(df["price"], errors="coerce").fillna(0.0)
+    df["type"] = df["type"].astype(str).str.upper().str.strip()
+    df["asset_class"] = df["asset_class"].astype(str).str.upper().str.strip()
+    df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+    return df.sort_values("event_ts")
+
+
+def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    states: dict[str, dict] = {}
+    for row in df.to_dict("records"):
+        isin = str(row.get("symbol", "") or "").strip().upper()
+        if not isin:
+            continue
+        typ = str(row.get("type", "") or "").strip().upper()
+        shares = float(_safe_float(row.get("shares_num"), 0.0))
+        price = float(_safe_float(row.get("price_num"), 0.0))
+        state = states.setdefault(isin, {"shares": 0.0, "cost": 0.0, "first_buy_date": None, "name": row.get("name", ""), "asset_class": row.get("asset_class", ""), "currency": row.get("currency", "EUR")})
+        state["name"] = row.get("name", state["name"])
+        state["asset_class"] = row.get("asset_class", state["asset_class"])
+        state["currency"] = row.get("currency", state["currency"])
+        current_date = row.get("date")
+
+        if typ in {"BUY", "SELL_CANCELLED"}:
+            if state["shares"] <= 0:
+                state["first_buy_date"] = current_date
+            state["shares"] += shares
+            state["cost"] += shares * price
+        elif typ == "SELL":
+            sell_shares = min(max(shares, 0.0), max(state["shares"], 0.0))
+            avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else 0.0
+            state["shares"] -= sell_shares
+            state["cost"] -= sell_shares * avg
+        elif typ == "SPLIT":
+            state["shares"] += shares
+        elif typ in {"WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS"}:
+            red = min(max(shares, 0.0), max(state["shares"], 0.0))
+            avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else 0.0
+            state["shares"] -= red
+            state["cost"] -= red * avg
+        elif typ == "DIVIDEND":
+            continue
+        if state["shares"] <= 1e-9:
+            state["shares"] = 0.0
+            state["cost"] = 0.0
+            state["first_buy_date"] = None
+
+    rows = []
+    deriv_rows = []
+    for isin, state in states.items():
+        if state["shares"] <= 0:
+            continue
+        avg = state["cost"] / state["shares"] if state["shares"] > 0 else 0.0
+        item = {
+            "name": state["name"],
+            "isin": isin,
+            "shares": float(state["shares"]),
+            "avg_buy_price": float(avg),
+            "first_buy_date": pd.Timestamp(state["first_buy_date"]).date().isoformat() if state["first_buy_date"] is not None and not pd.isna(state["first_buy_date"]) else "",
+            "currency": str(state["currency"] or "EUR").upper(),
+            "asset_class": str(state["asset_class"] or "").upper(),
+        }
+        if item["asset_class"] in {"STOCK", "FUND"}:
+            rows.append(item)
+        else:
+            deriv_rows.append(item)
+    return pd.DataFrame(rows), pd.DataFrame(deriv_rows)
+
+
+def _suggest_yahoo_ticker(isin: str, name: str, asset_class: str) -> str:
+    mapped = _normalize_single_ticker(ISIN_TO_YAHOO.get(str(isin or "").upper(), ""))
+    if mapped:
+        return mapped
+    if str(asset_class or "").upper() not in {"STOCK", "FUND"}:
+        return ""
+    try:
+        candidates = search_symbol_candidates(name)
+        if candidates:
+            return _normalize_single_ticker(candidates[0].get("symbol", ""))
+    except Exception:
+        return ""
+    return ""
+
+
+def _render_transaction_importer() -> None:
+    st.markdown("#### 📥 CSV-Import aus Transaktionsexport")
+    st.warning("Bitte prüfe die vorgeschlagenen Yahoo-Ticker vor dem Import. Die CSV enthält ISINs, nicht automatisch Yahoo-Symbole.")
+    uploaded_file = st.file_uploader("Transaktionsexport (CSV)", type=["csv"], key="pf_transaction_csv")
+    if not uploaded_file:
+        return
+    try:
+        tx_df = _parse_transaction_export_csv(uploaded_file)
+        import_df, skipped_df = _reconstruct_open_positions_from_transactions(tx_df)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    if import_df.empty and skipped_df.empty:
+        st.info("Keine offenen Positionen gefunden.")
+        return
+    if not import_df.empty:
+        import_df = import_df.copy()
+        import_df["importieren"] = True
+        import_df["ticker"] = import_df.apply(lambda r: _suggest_yahoo_ticker(r.get("isin", ""), r.get("name", ""), r.get("asset_class", "")), axis=1)
+        preview = import_df[["importieren", "name", "isin", "ticker", "shares", "avg_buy_price", "first_buy_date", "currency", "asset_class"]]
+        edited = st.data_editor(preview, width="stretch", hide_index=True, key="pf_import_preview")
+        if st.button("Positionen importieren", key="pf_import_positions_btn", type="primary", width="stretch"):
+            selected = edited[(edited["importieren"] == True) & edited["ticker"].astype(str).str.strip().ne("")]
+            if selected.empty:
+                st.warning("Keine importierbaren Zeilen ausgewählt.")
+            else:
+                for row in selected.to_dict("records"):
+                    currency = str(row.get("currency") or "EUR").upper()
+                    avg_price = float(_safe_float(row.get("avg_buy_price"), 0.0))
+                    position = {
+                        "ticker": _normalize_single_ticker(row.get("ticker", "")),
+                        "shares": float(_safe_float(row.get("shares"), 0.0)),
+                        "buy_price": avg_price,
+                        "buy_price_eur": avg_price if currency == "EUR" else None,
+                        "buy_date": str(row.get("first_buy_date") or ""),
+                        "currency": currency or "EUR",
+                        "note": f"Import aus Transaktionsexport.csv / ISIN {row.get('isin', '')}",
+                    }
+                    if position["ticker"] and position["shares"] > 0:
+                        _upsert_position(position)
+                _sync_workspace()
+                st.success(f"{len(selected)} Position(en) importiert.")
+                st.rerun()
+    if not skipped_df.empty:
+        st.caption("Nicht automatisch importiert (z. B. Derivate/Optionsscheine):")
+        st.dataframe(skipped_df, width="stretch", hide_index=True)
+
 def _is_mobile_client() -> bool:
     try:
         headers = getattr(st.context, "headers", {}) or {}
@@ -2969,6 +3132,8 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                 with name_col:
                     st.markdown(html.escape(str(row["Name"])), unsafe_allow_html=True)
 
+    st.markdown("---")
+    _render_transaction_importer()
     st.markdown("---")
     st.markdown("#### ➕ Neue Position erfassen oder bestehende aktualisieren")
     pos_ticker = _render_ticker_picker("portfolio_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
