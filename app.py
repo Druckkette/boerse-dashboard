@@ -11265,7 +11265,7 @@ def _render_sell_strategy_hub() -> None:
         "rueckkehr_pivot": "Rückfall zum/unter Ausbruchspunkt (Pivot) als defensives Reduktionssignal.",
         "ma_bruch_defensiv": "Defensive Regeln für Bruch von 50-MA / 10-Wochen / 200-MA.",
         "drei_verlustwochen": "Drei schwache Wochen mit steigenden Volumina als Verteilungsmuster.",
-        "groesster_einbruch": "Größter Tages-/Wocheneinbruch seit Einstieg als Trendwendewarnung.",
+        "groesster_einbruch": "Strategie 17 (Kap. 6.3): Reagiert auf den größten Einbruch seit Einstieg nach bereits gelaufener Position. Tagesregel: wenn der heutige Verlust der größte seit Einstieg ist und über einer Mindestschwelle liegt, wird defensiv reduziert (33%) oder bei deutlich erhöhtem Volumen stärker (50%). Wochenregel: wenn die aktuelle Verlustwoche die größte seit Einstieg ist und gleichzeitig das Wochenvolumen überdurchschnittlich hoch ist, folgt eine starke Reduktion (66%). Ziel: späte Rally-Phasen mit möglicher Verteilung früh absichern.",
         "rs_linie": "3-Stufen-Strategie auf Basis relativer Stärke gegen Benchmark (z. B. SPY).",
         "ma_basierte_sequenz": "Geschlossene MA-Verkaufssequenz von Gewinnzone bis klarem 50-MA-Bruch.",
         "einfach_halbe_position": "Einfache 50/50-Logik: erste Hälfte sichern, Rest über BE/erneute Stärke managen.",
@@ -11302,6 +11302,10 @@ def _render_sell_strategy_hub() -> None:
     ma_seq_klarer_ma50_bruch_pct = 2.0
     rs_pnl_tag_zu_woche = 20.0
     rs_pnl_woche_zu_monat = 80.0
+    groesster_einbruch_min_pnl_pct = 10.0
+    groesster_einbruch_min_tagesverlust_pct = 3.0
+    groesster_einbruch_tagesvol_ratio_schwelle = 1.5
+    groesster_einbruch_wochenvol_ratio_schwelle = 1.3
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11379,6 +11383,43 @@ def _render_sell_strategy_hub() -> None:
                         key=f"strat_hub_rs_pnl_week_month_{t}",
                         help="Ab diesem Gewinn wechselt Strategie 18 von Wochen- auf Monatssignale.",
                     )
+            elif key == "groesster_einbruch":
+                st.markdown(
+                    """
+**Strategie 17 – Größter Tages-/Wocheneinbruch seit Beginn (Kap. 6.3):**
+- Nur aktiv, wenn die Position bereits mindestens die definierte **Mindest-P&L-Schwelle** erreicht hat.
+- **Tagesregel**: Aktueller Tagesverlust ist der größte seit Einstieg und über der Mindest-Verlustschwelle.
+  - Bei normalem Volumen: **33%** Tranche (defensive Reduktion).
+  - Bei hohem Volumen (Volumenfaktor ≥ Schwelle): **50%** Tranche (stärkeres Warnsignal).
+- **Wochenregel**: Aktuelle Verlustwoche ist die größte seit Einstieg und Wochenvolumen liegt über dem 12-Wochen-Durchschnitt (Faktor ≥ Schwelle).
+  - Signal: **66%** Tranche.
+
+Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnlich große Abgaben auftreten.
+                    """
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    groesster_einbruch_min_pnl_pct = st.number_input(
+                        "Mindest-P&L vor Aktivierung (%)", min_value=0.0, max_value=300.0, value=10.0, step=0.5,
+                        key=f"strat_hub_worst_drop_min_pnl_{t}",
+                        help="Strategie 17 wird erst geprüft, wenn die Position mindestens diesen Gewinn erreicht hat.",
+                    )
+                    groesster_einbruch_tagesvol_ratio_schwelle = st.number_input(
+                        "Volumenfaktor Tagesregel", min_value=0.5, max_value=10.0, value=1.5, step=0.1,
+                        key=f"strat_hub_worst_drop_day_vol_ratio_{t}",
+                        help="Ab diesem Faktor (heutiges Volumen / 50-Tage-Durchschnitt) gilt die Tageswarnung als volumenbestätigt (50%-Tranche).",
+                    )
+                with c2:
+                    groesster_einbruch_min_tagesverlust_pct = st.number_input(
+                        "Mindest-Tagesverlust (%)", min_value=0.5, max_value=30.0, value=3.0, step=0.1,
+                        key=f"strat_hub_worst_drop_day_loss_{t}",
+                        help="Nur wenn der größte Tagesverlust zugleich über dieser Schwelle liegt, wird ein Signal ausgelöst.",
+                    )
+                    groesster_einbruch_wochenvol_ratio_schwelle = st.number_input(
+                        "Volumenfaktor Wochenregel", min_value=0.5, max_value=10.0, value=1.3, step=0.1,
+                        key=f"strat_hub_worst_drop_week_vol_ratio_{t}",
+                        help="Ab diesem Faktor (aktuelles Wochenvolumen / 12-Wochen-Durchschnitt) gilt die Wochenwarnung als bestätigt.",
+                    )
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11415,6 +11456,10 @@ def _render_sell_strategy_hub() -> None:
             "ma_seq_klarer_ma50_bruch_pct": float(ma_seq_klarer_ma50_bruch_pct),
             "rs_pnl_tag_zu_woche": float(rs_pnl_tag_zu_woche),
             "rs_pnl_woche_zu_monat": float(max(rs_pnl_woche_zu_monat, rs_pnl_tag_zu_woche)),
+            "groesster_einbruch_min_pnl_pct": float(groesster_einbruch_min_pnl_pct),
+            "groesster_einbruch_min_tagesverlust_pct": float(groesster_einbruch_min_tagesverlust_pct),
+            "groesster_einbruch_tagesvol_ratio_schwelle": float(groesster_einbruch_tagesvol_ratio_schwelle),
+            "groesster_einbruch_wochenvol_ratio_schwelle": float(groesster_einbruch_wochenvol_ratio_schwelle),
         },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")

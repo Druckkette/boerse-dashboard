@@ -206,13 +206,25 @@ def strategie_drei_verlustwochen(position,wochen_daten):
     if three and vol:return [_signal("Vorbereitung Drei-Wochen-Regel",33,"schluss",True,None,"Kap. 6.3","Muster im Aufbau")]
     return []
 
-def strategie_groesster_einbruch(position,daten,wochen_daten):
-    if pnl_pct(position,daten)<=10 or len(daten)<4:return []
+def strategie_groesster_einbruch(
+    position,
+    daten,
+    wochen_daten,
+    min_pnl_pct: float = 10.0,
+    min_tagesverlust_pct: float = 3.0,
+    tagesvol_ratio_schwelle: float = 1.5,
+    wochenvol_ratio_schwelle: float = 1.3,
+):
+    if pnl_pct(position,daten)<=float(min_pnl_pct) or len(daten)<4:return []
     out=[]; d=(daten["close"].shift(1)-daten["close"])/daten["close"].shift(1)*100; h=float(d.iloc[-1]); mx=float(d.iloc[1:-1].max()) if len(d)>3 else 0; vr=vol_verhaeltnis(daten)
-    if h>=mx and h>3: out.append(_signal("Größter Tagesverlust" + (" + hohes Volumen" if vr>=1.5 else " seit Beginn"),50 if vr>=1.5 else 33,"schluss",True,tagestief(daten),"Kap. 6.3","Spätphasen-Warnsignal"))
-    if len(wochen_daten)>=4:
-        w=(wochen_daten["close"].shift(1)-wochen_daten["close"])/wochen_daten["close"].shift(1)*100; cur=float(w.iloc[-1]); mxw=float(w.iloc[1:-1].max()) if len(w)>3 else 0; wr=float(wochen_daten["volume"].iloc[-1]/wochen_daten["volume"].tail(12).mean()) if len(wochen_daten)>=12 else 1
-        if cur>=mxw and wr>=1.3: out.append(_signal("Größte Verlustwoche seit Beginn",66,"schluss",True,None,"Kap. 6.3","Wahrscheinliches Rally-Ende"))
+    if h>=mx and h>float(min_tagesverlust_pct):
+        if vr>=float(tagesvol_ratio_schwelle):
+            out.append(_signal("Größter Tagesverlust + hohes Volumen",50,"schluss",True,tagestief(daten),"Kap. 6.3 Größter Einbruch","Spätphasen-Warnsignal mit Volumen"))
+        else:
+            out.append(_signal("Größter Tagesverlust seit Beginn",33,"schluss",True,tagestief(daten),"Kap. 6.3","Defensive Reduktion"))
+    if len(wochen_daten)>=12:
+        w=(wochen_daten["close"].shift(1)-wochen_daten["close"])/wochen_daten["close"].shift(1)*100; cur=float(w.iloc[-1]); mxw=float(w.iloc[1:-1].max()) if len(w)>3 else 0; wr=float(wochen_daten["volume"].iloc[-1]/wochen_daten["volume"].tail(12).mean())
+        if cur>=mxw and wr>=float(wochenvol_ratio_schwelle): out.append(_signal("Größte Verlustwoche seit Beginn",66,"schluss",True,None,"Kap. 6.3","Wahrscheinliches Rally-Ende"))
     return out
 
 def strategie_rs_linie(
@@ -377,7 +389,13 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "rueckkehr_pivot": lambda: strategie_rueckkehr_pivot(position,daten),
         "ma_bruch_defensiv": lambda: strategie_ma_bruch_defensiv(position,daten,wochen_daten),
         "drei_verlustwochen": lambda: strategie_drei_verlustwochen(position,wochen_daten),
-        "groesster_einbruch": lambda: strategie_groesster_einbruch(position,daten,wochen_daten),
+        "groesster_einbruch": lambda: strategie_groesster_einbruch(
+            position,daten,wochen_daten,
+            o.get("groesster_einbruch_min_pnl_pct",10.0),
+            o.get("groesster_einbruch_min_tagesverlust_pct",3.0),
+            o.get("groesster_einbruch_tagesvol_ratio_schwelle",1.5),
+            o.get("groesster_einbruch_wochenvol_ratio_schwelle",1.3),
+        ),
         "rs_linie": lambda: strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy,o.get("rs_pnl_tag_zu_woche",20.0),o.get("rs_pnl_woche_zu_monat",80.0)),
         "ma_basierte_sequenz": lambda: strategie_ma_basierte_sequenz(
             position,daten,
