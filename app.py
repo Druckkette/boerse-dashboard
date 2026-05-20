@@ -11255,7 +11255,7 @@ def _render_sell_strategy_hub() -> None:
         "ma21_bruch": "Verkaufssignale bei Bruch der 21-Tage-Linie (aggressiv/gestaffelt/geduldig).",
         "drawdown_vom_peak": "Reduktion nach Rückgang vom Zwischenhoch, abgestuft nach Drawdown-Tiefe.",
         "ma_abstand": "Überdehnungen relativ zu 10/21/50/200-MA als Gewinnmitnahme-Signal.",
-        "verlusttage_haeufung": "Distribution über gehäufte schwache Tage und ungünstiges Up/Down-Verhältnis erkennen.",
+        "verlusttage_haeufung": "Strategie 7 (Kap. 6.2): Erkennt Distribution über eine Häufung schwacher Tage. Signal 1: drei tiefere Schlusskurse in Folge mit erhöhter 3-Tage-Volumenquote gegen den Referenz-Lookback. Signal 2: im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen deutlich (Mindestdifferenz). Beide Trigger erzeugen standardmäßig eine 25%-Tranche mit Stop-/Marker-Logik auf lokale Tiefs.",
         "groesster_anstieg_volumen": "Klimax-/Spätphasen-Signal: größter Tagesanstieg mit extremem Volumen.",
         "split_anstieg": "Strategie 10 (Kap. 6.2): Warnt vor möglichem Gipfel, wenn die Aktie innerhalb der ersten 1-2 Wochen nach Aktiensplit stark steigt. Trigger nur, wenn ein Split-Datum bekannt ist. Ab +25% seit Split wird ein aktives Signal erzeugt (33% Tranche), ab +50% erhöht auf 50%. Referenz-/Stoppmarke ist der Schlusskurs am Split-Tag. Split-Datum wird bevorzugt automatisch via Yahoo Finance gesucht; falls dort kein verwertbarer Split in den letzten 14 Tagen gefunden wird, kann das Datum manuell gesetzt werden.",
         "erschoepfungsluecke": "Gap-up nach langem Lauf mit hohem Volumen als Erschöpfungssignal.",
@@ -11314,6 +11314,13 @@ def _render_sell_strategy_hub() -> None:
     stau_nahe_hoch_drawdown_max_pct = 5.0
     stau_tranche_nahe_hoch_pct = 33.0
     stau_tranche_standard_pct = 20.0
+    verlusttage_min_tiefere_schlusskurse_in_folge = 3
+    verlusttage_volumen_lookback_tage = 50
+    verlusttage_volumen_ratio_min = 1.1
+    verlusttage_tief_marker_lookback_tage = 5
+    verlusttage_updown_fenster_tage = 15
+    verlusttage_updown_diff_min = 3
+    verlusttage_tranche_pct = 25.0
     downside_kerzenweite_lookback_tage = 10
     downside_volumen_lookback_tage = 50
     downside_neues_hoch_lookback_tage = 30
@@ -11467,6 +11474,27 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                 with c3:
                     stau_tranche_nahe_hoch_pct = st.number_input("Tranche nahe Hoch (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_stall_tranche_near_high_{t}")
                     stau_tranche_standard_pct = st.number_input("Standard-Tranche (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_stall_tranche_standard_{t}")
+            elif key == "verlusttage_haeufung":
+                st.markdown(
+                    """
+**Strategie 7 – Häufung Verlusttage / Verhältnis Auf-/Abwärtstage (Kap. 6.2):**
+- Nur aktiv bei Gewinnerpositionen (P&L > 0).
+- **Signal A (Sequenz):** Mehrere tiefere Schlusskurse in Folge (Standard 3) + erhöhte Volumenquote (Ø letzte 3 Tage / Ø Lookback-Volumen).
+- **Signal B (Persönlichkeitswechsel):** Im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen mit Mindestdifferenz.
+- Beide Signale verwenden standardmäßig **25%** Tranche und setzen die nächste Marke auf lokale Tiefs.
+                    """
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    verlusttage_min_tiefere_schlusskurse_in_folge = int(st.number_input("Min. tiefere Schlusskurse in Folge", min_value=2, max_value=5, value=3, step=1, key=f"strat_hub_losscluster_min_seq_{t}"))
+                    verlusttage_tief_marker_lookback_tage = int(st.number_input("Tief-Marker Lookback", min_value=2, max_value=20, value=5, step=1, key=f"strat_hub_losscluster_low_marker_lb_{t}"))
+                with c2:
+                    verlusttage_volumen_lookback_tage = int(st.number_input("Volumen-Lookback (Tage)", min_value=10, max_value=200, value=50, step=1, key=f"strat_hub_losscluster_vol_lb_{t}"))
+                    verlusttage_volumen_ratio_min = st.number_input("Min. Volumenquote (3T / LB)", min_value=0.8, max_value=3.0, value=1.1, step=0.05, key=f"strat_hub_losscluster_vol_ratio_{t}")
+                with c3:
+                    verlusttage_updown_fenster_tage = int(st.number_input("Up/Down-Fenster (Tage)", min_value=5, max_value=40, value=15, step=1, key=f"strat_hub_losscluster_ud_window_{t}"))
+                    verlusttage_updown_diff_min = int(st.number_input("Min. Abwärts-Überhang (Tage)", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_losscluster_ud_diff_{t}"))
+                    verlusttage_tranche_pct = st.number_input("Tranche je Signal (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_losscluster_tranche_{t}")
             elif key == "downside_reversal":
                 st.markdown(
                     """
@@ -11591,6 +11619,13 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "stau_nahe_hoch_drawdown_max_pct": float(stau_nahe_hoch_drawdown_max_pct),
             "stau_tranche_nahe_hoch_pct": float(stau_tranche_nahe_hoch_pct),
             "stau_tranche_standard_pct": float(stau_tranche_standard_pct),
+            "verlusttage_min_tiefere_schlusskurse_in_folge": int(verlusttage_min_tiefere_schlusskurse_in_folge),
+            "verlusttage_volumen_lookback_tage": int(verlusttage_volumen_lookback_tage),
+            "verlusttage_volumen_ratio_min": float(verlusttage_volumen_ratio_min),
+            "verlusttage_tief_marker_lookback_tage": int(verlusttage_tief_marker_lookback_tage),
+            "verlusttage_updown_fenster_tage": int(verlusttage_updown_fenster_tage),
+            "verlusttage_updown_diff_min": int(verlusttage_updown_diff_min),
+            "verlusttage_tranche_pct": float(verlusttage_tranche_pct),
             "downside_kerzenweite_lookback_tage": int(downside_kerzenweite_lookback_tage),
             "downside_volumen_lookback_tage": int(downside_volumen_lookback_tage),
             "downside_neues_hoch_lookback_tage": int(downside_neues_hoch_lookback_tage),
