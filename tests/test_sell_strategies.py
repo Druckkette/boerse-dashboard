@@ -45,6 +45,29 @@ def test_21ma_gestaffelt_day1():
     assert any(s["name"].startswith("Erster Schluss") for s in sigs)
 
 
+def test_21ma_aggressiv_mit_volumen():
+    p = Position("T", 80, "2026-01-01", 10)
+    closes = [100] * 59 + [96]
+    volumes = [1000] * 59 + [2000]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [c * 1.01 for c in closes],
+        "low": [c * 0.99 for c in closes],
+        "close": closes,
+        "volume": volumes[-len(closes):],
+    })
+    sigs = strategie_21ma_bruch(p, d, "aggressiv")
+    assert any("Deutlicher 21-MA-Bruch" in s["name"] for s in sigs)
+
+
+def test_21ma_geduldig_nach_drei_tagen():
+    p = Position("T", 80, "2026-01-01", 10)
+    closes = list(range(100, 121)) + [98, 97, 96]
+    d = make_df(closes)
+    sigs = strategie_21ma_bruch(p, d, "geduldig")
+    assert any("seit 3 Tagen gebrochen" in s["name"] for s in sigs)
+
+
 def test_aggregation_killer_to_100():
     p = Position("T", 100, "2026-01-01", 10, realisierte_tranchen=[25])
     d = make_df([100, 92])
