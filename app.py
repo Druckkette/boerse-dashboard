@@ -882,6 +882,28 @@ def _remove_position(ticker: str) -> None:
     st.session_state["positions"] = [p for p in st.session_state["positions"] if p.get("ticker") != ticker]
     _sync_workspace()
 
+def _remove_positions_bulk(tickers: list[str]) -> int:
+    _init_workspace_state()
+    normalized = {str(t or "").strip().upper() for t in (tickers or []) if str(t or "").strip()}
+    if not normalized:
+        return 0
+    before = st.session_state.get("positions", [])
+    remaining = [p for p in before if str(p.get("ticker", "")).strip().upper() not in normalized]
+    removed = len(before) - len(remaining)
+    if removed > 0:
+        st.session_state["positions"] = remaining
+        _sync_workspace()
+    return removed
+
+def _remove_all_positions() -> int:
+    _init_workspace_state()
+    before = st.session_state.get("positions", [])
+    if not before:
+        return 0
+    st.session_state["positions"] = []
+    _sync_workspace()
+    return len(before)
+
 @st.cache_data(ttl=900, show_spinner=False)
 def search_symbol_candidates(query: str):
     query = (query or "").strip()
@@ -3129,19 +3151,44 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f €"),
                 },
             )
-            st.caption("Zum Entfernen den Mülleimer drücken. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
-            for _, row in overview[["Ticker", "Name"]].iterrows():
-                ticker = str(row["Ticker"])
-                del_col, ticker_col, name_col = st.columns([0.12, 0.22, 0.66])
-                with del_col:
-                    if st.button("🗑", key=f"pf_delete_{ticker}", help=f"{ticker} aus dem Depot entfernen"):
-                        _remove_position(ticker)
-                        st.success(f"{ticker} aus dem Depot entfernt.")
+            st.caption("Mehrfach-Löschen: Positionen auswählen und gesammelt entfernen. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
+            selection_df = overview[["Ticker", "Name"]].copy()
+            selection_df.insert(0, "Auswählen", False)
+            selected_table = st.data_editor(
+                selection_df,
+                width="stretch",
+                hide_index=True,
+                key="pf_bulk_delete_table",
+                column_config={
+                    "Auswählen": st.column_config.CheckboxColumn("Auswählen", help="Markiere Positionen für das Sammel-Löschen."),
+                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+                    "Name": st.column_config.TextColumn("Name", width="medium"),
+                },
+                disabled=["Ticker", "Name"],
+            )
+            action_col_1, action_col_2 = st.columns(2)
+            with action_col_1:
+                if st.button("☑️ Alle auswählen", key="pf_select_all_positions", width="stretch"):
+                    st.session_state["pf_bulk_delete_table"] = [
+                        {"Auswählen": True, "Ticker": row["Ticker"], "Name": row["Name"]}
+                        for _, row in selection_df.iterrows()
+                    ]
+                    st.rerun()
+            with action_col_2:
+                if st.button("🗑️ Alle ausgewählten löschen", key="pf_delete_selected_positions", width="stretch", type="primary"):
+                    checked_rows = selected_table[selected_table["Auswählen"] == True] if not selected_table.empty else selected_table
+                    selected_tickers = checked_rows["Ticker"].astype(str).tolist() if not checked_rows.empty else []
+                    removed_count = _remove_positions_bulk(selected_tickers)
+                    if removed_count > 0:
+                        st.success(f"{removed_count} ausgewählte Position(en) gelöscht.")
                         st.rerun()
-                with ticker_col:
-                    st.markdown(f'<span class="ws-mono">{html.escape(ticker)}</span>', unsafe_allow_html=True)
-                with name_col:
-                    st.markdown(html.escape(str(row["Name"])), unsafe_allow_html=True)
+                    st.warning("Keine Positionen ausgewählt.")
+            if st.button("🧹 Gesamtes Depot löschen", key="pf_delete_all_positions", width="stretch"):
+                removed_total = _remove_all_positions()
+                if removed_total > 0:
+                    st.success(f"Gesamtes Depot gelöscht ({removed_total} Positionen).")
+                    st.rerun()
+                st.info("Depot ist bereits leer.")
 
     st.markdown("---")
     _render_transaction_importer()
