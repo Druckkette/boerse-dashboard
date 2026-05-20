@@ -11258,7 +11258,7 @@ def _render_sell_strategy_hub() -> None:
         "verlusttage_haeufung": "Distribution über gehäufte schwache Tage und ungünstiges Up/Down-Verhältnis erkennen.",
         "trendlinie": "Reaktion auf Überdehnung über obere oder Bruch untere Trendlinie.",
         "groesster_anstieg_volumen": "Klimax-/Spätphasen-Signal: größter Tagesanstieg mit extremem Volumen.",
-        "split_anstieg": "Starker Kursanstieg kurz nach Split als Top-Warnung.",
+        "split_anstieg": "Strategie 10 (Kap. 6.2): Warnt vor möglichem Gipfel, wenn die Aktie innerhalb der ersten 1-2 Wochen nach Aktiensplit stark steigt. Trigger nur, wenn ein Split-Datum bekannt ist. Ab +25% seit Split wird ein aktives Signal erzeugt (33% Tranche), ab +50% erhöht auf 50%. Referenz-/Stoppmarke ist der Schlusskurs am Split-Tag. Split-Datum wird bevorzugt automatisch via Yahoo Finance gesucht; falls dort kein verwertbarer Split in den letzten 14 Tagen gefunden wird, kann das Datum manuell gesetzt werden.",
         "erschoepfungsluecke": "Gap-up nach langem Lauf mit hohem Volumen als Erschöpfungssignal.",
         "downside_reversal": "Strategie 12 (Kap. 6.2): Downside Reversal für Gewinnerpositionen. Variante 1 (stark): neues 30-Tage-Hoch, Schluss im unteren Tagesdrittel und Volumenquote ≥ 1.2 erzeugt 33%-Signal („Downside Reversal an neuem Hoch“). Variante 2 (mittel): weite Umkehrkerze (Tagesspanne ≥ 1.5× 10-Tage-Schnitt), Schluss im unteren Drittel und Volumenquote ≥ 1.2 erzeugt 20%-Signal. Variante 3 (Warnstufe): weite Kerze mit Schluss unter Spannenmitte erzeugt 15%-Signal. Nächste Marke ist jeweils das Tageshoch der Umkehrkerze.",
         "stau_tage": "Strategie 13 (Kap. 6.2): Sucht in einem Fenster (Standard 10 Sessions) nach Stau-Tagen mit kaum Fortschritt (|Tagesveränderung| < 1%) bei überdurchschnittlichem Volumen (≥1.3× gegen 50-Tage-Schnitt). Ab mindestens 2 Stau-Tagen entsteht ein aktives Verkaufssignal. Die Tranche ist kontextabhängig: nahe Hoch (Drawdown < 5%) defensiver mit 33%, sonst 20%. Als nächste Marke wird das tiefste Tagestief der erkannten Stau-Tage gesetzt (Stopp-Logik).",
@@ -11323,6 +11323,11 @@ def _render_sell_strategy_hub() -> None:
     downside_tranche_neues_hoch_pct = 33.0
     downside_tranche_weite_umkehr_pct = 20.0
     downside_tranche_warnstufe_pct = 15.0
+    split_lookback_tage = 30
+    split_auto_tagefenster = 14
+    split_signal_schwelle_pct = 25.0
+    split_starke_schwelle_pct = 50.0
+    split_datum = None
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11486,6 +11491,58 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                     downside_tranche_neues_hoch_pct = st.number_input("Tranche Variante 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_downside_tranche_high_{t}")
                     downside_tranche_weite_umkehr_pct = st.number_input("Tranche Variante 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_downside_tranche_wide_{t}")
                     downside_tranche_warnstufe_pct = st.number_input("Tranche Warnstufe (%)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key=f"strat_hub_downside_tranche_warn_{t}")
+            elif key == "split_anstieg":
+                st.markdown(
+                    """
+**Strategie 10 – Preisanstieg nach Split (Kap. 6.2):**
+- Die Regel ist nur kurz nach einem Split relevant (**erste 14 Tage**).
+- Gemessen wird der prozentuale Anstieg vom **Schlusskurs am Split-Tag** zum aktuellen Schluss.
+- Signalstufen:
+  - ab **+25%**: Teilverkauf (Standard **33%**)
+  - ab **+50%**: stärkere Reduktion (Standard **50%**)
+- Datumsquelle:
+  1. bevorzugt automatische Yahoo-Split-Historie,
+  2. falls nicht verfügbar/ungeeignet: manuelle Datumseingabe.
+                    """
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    split_lookback_tage = int(st.number_input("Yahoo Split-Lookback (Tage)", min_value=14, max_value=365, value=30, step=1, key=f"strat_hub_split_lookback_{t}", help="So weit zurück wird nach dem letzten Split-Ereignis in Yahoo gesucht."))
+                    split_auto_tagefenster = int(st.number_input("Max. Tage seit Split", min_value=7, max_value=30, value=14, step=1, key=f"strat_hub_split_age_window_{t}", help="Nur Splits innerhalb dieses Fensters werden für Strategie 10 automatisch berücksichtigt."))
+                with c2:
+                    split_signal_schwelle_pct = st.number_input("Signal-Schwelle (%)", min_value=5.0, max_value=100.0, value=25.0, step=0.5, key=f"strat_hub_split_signal_threshold_{t}", help="Ab diesem Kursanstieg seit Split wird ein Signal ausgelöst.")
+                    split_starke_schwelle_pct = st.number_input("Starke Tranche ab (%)", min_value=10.0, max_value=200.0, value=50.0, step=0.5, key=f"strat_hub_split_strong_threshold_{t}", help="Ab diesem Anstieg wird die stärkere Tranche verwendet.")
+                split_auto_datum = None
+                try:
+                    splits = yf.Ticker(t).splits
+                    if isinstance(splits, pd.Series) and not splits.empty:
+                        splits_idx = pd.to_datetime(splits.index).tz_localize(None)
+                        cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=int(split_lookback_tage))
+                        recent_idx = splits_idx[splits_idx >= cutoff]
+                        if len(recent_idx) > 0:
+                            candidate = recent_idx.max()
+                            age_days = int((pd.Timestamp.now(tz="UTC").tz_localize(None) - candidate).days)
+                            if age_days <= int(split_auto_tagefenster):
+                                split_auto_datum = candidate
+                                st.success(f"Yahoo-Split erkannt: {candidate.date().isoformat()} ({age_days} Tage alt).")
+                            else:
+                                st.info(f"Yahoo-Split gefunden ({candidate.date().isoformat()}), aber älter als {split_auto_tagefenster} Tage.")
+                        else:
+                            st.info("Yahoo lieferte keine Splits im gewählten Lookback.")
+                    else:
+                        st.info("Yahoo lieferte keine Split-Historie für diesen Ticker.")
+                except Exception as exc:
+                    st.warning(f"Yahoo-Splitabfrage fehlgeschlagen: {exc}")
+                manual_default = split_auto_datum.date() if split_auto_datum is not None else None
+                manual_split = st.date_input(
+                    "Manuelles Split-Datum (Fallback)",
+                    value=manual_default,
+                    key=f"strat_hub_split_manual_date_{t}",
+                    help="Falls Yahoo keinen passenden Split liefert, hier Split-Datum manuell setzen.",
+                )
+                split_datum = split_auto_datum if split_auto_datum is not None else (pd.Timestamp(manual_split) if manual_split else None)
+                if split_datum is not None:
+                    st.caption(f"Aktives Split-Datum für Strategie 10: {pd.Timestamp(split_datum).date().isoformat()}")
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11543,6 +11600,9 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "downside_tranche_neues_hoch_pct": float(downside_tranche_neues_hoch_pct),
             "downside_tranche_weite_umkehr_pct": float(downside_tranche_weite_umkehr_pct),
             "downside_tranche_warnstufe_pct": float(downside_tranche_warnstufe_pct),
+            "split_datum": split_datum,
+            "split_signal_schwelle_pct": float(split_signal_schwelle_pct),
+            "split_starke_schwelle_pct": float(max(split_starke_schwelle_pct, split_signal_schwelle_pct)),
         },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")

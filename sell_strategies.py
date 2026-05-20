@@ -138,14 +138,18 @@ def strategie_groesster_anstieg_volumen(position,daten):
     if t>=mx:return [_signal("Größter Tagesanstieg",20,"schluss",True,float(daten["low"].iloc[-1]),"Kap. 6.2","Vorwarnung")]
     return []
 
-def strategie_split_anstieg(position,daten,split_datum=None):
+def strategie_split_anstieg(position,daten,split_datum=None,signal_schwelle_pct: float = 25.0,starke_tranche_ab_pct: float = 50.0):
     if not split_datum: return []
     split_dt=pd.Timestamp(split_datum).tz_localize(None)
     d=daten.copy(); d.index=pd.to_datetime(d.index).tz_localize(None)
     if split_dt not in d.index: return []
     if (d.index[-1]-split_dt).days > 14: return []
     kurs=float(d.loc[split_dt,"close"]); s=letzter_schlusskurs(d); an=(s/kurs-1)*100 if kurs else 0
-    if an>=25: return [_signal(f"Anstieg nach Split: {an:.1f}%",50 if an>=50 else 33,"schluss",True,kurs,"Kap. 6.2","Split-Anstieg")]
+    signal_schwelle = float(signal_schwelle_pct)
+    starke_schwelle = float(max(starke_tranche_ab_pct, signal_schwelle))
+    if an>=signal_schwelle:
+        tranche = 50 if an>=starke_schwelle else 33
+        return [_signal(f"Anstieg nach Split: {an:.1f}%",tranche,"schluss",True,kurs,"Kap. 6.2 Split-Anstieg","25-50% Anstieg innerhalb 1-2 Wochen nach Split — typische Gipfel-Vorwarnung")]
     return []
 def strategie_erschoepfungsluecke(
     position,
@@ -458,7 +462,12 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "verlusttage_haeufung": lambda: strategie_verlusttage_haeufung(position,daten),
         "trendlinie": lambda: strategie_trendlinie(position,daten,o.get("trendlinie_oben_punkte"),o.get("trendlinie_unten_punkte")),
         "groesster_anstieg_volumen": lambda: strategie_groesster_anstieg_volumen(position,daten),
-        "split_anstieg": lambda: strategie_split_anstieg(position,daten,o.get("split_datum")),
+        "split_anstieg": lambda: strategie_split_anstieg(
+            position,daten,
+            o.get("split_datum"),
+            o.get("split_signal_schwelle_pct", 25.0),
+            o.get("split_starke_schwelle_pct", 50.0),
+        ),
         "erschoepfungsluecke": lambda: strategie_erschoepfungsluecke(position,daten),
         "downside_reversal": lambda: strategie_downside_reversal(
             position,daten,
