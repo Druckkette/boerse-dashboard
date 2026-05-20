@@ -231,14 +231,50 @@ def strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy):
     if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS bricht {lp}-MA",50,"schluss",True,None,"Kap. 6.4","Stufe 3"))
     return out
 
-def strategie_ma_basierte_sequenz(position,daten):
+def strategie_ma_basierte_sequenz(
+    position,
+    daten,
+    gewinnzone_min_pct=20.0,
+    gewinnzone_max_pct=25.0,
+    gewinnzone_tranche_pct=33.0,
+    ueber_ma10_pct=10.0,
+    ueber_ma10_tranche_pct=20.0,
+    unter_ma10_mindestgewinn_pct=5.0,
+    unter_ma10_tranche_pct=20.0,
+    pendel_tranche_pct=25.0,
+    pendel_lookback_tage=5,
+    pendel_wechsel_min=3,
+    unter_ma21_mindestgewinn_pct=5.0,
+    unter_ma21_tranche_pct=25.0,
+    klarer_ma50_bruch_pct=2.0,
+):
     pnl=pnl_pct(position,daten); s=letzter_schlusskurs(daten); r=sum(position.realisierte_tranchen or []); out=[]
     ma10=_none_if_nan(sma(daten["close"],10).iloc[-1]); ma21=_none_if_nan(sma(daten["close"],21).iloc[-1]); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1])
-    if 20<=pnl<=25 and r<33: out.append(_signal("Gewinnzone 20-25%",33,"schluss",True,ma10,"Kap. 6.4","Punkt 1"))
-    if ma10 and (s-ma10)/ma10*100>=10 and r<50: out.append(_signal("10% über 10-MA",20,"schluss",True,ma10,"Kap. 6.4","Punkt 2"))
-    if ma10 and s<ma10 and pnl>5: out.append(_signal("Schluss unter 10-MA",20,"schluss",True,ma21,"Kap. 6.4","Punkt 3"))
-    if ma21 and s<ma21 and pnl>5: out.append(_signal("Schluss unter 21-MA",25,"schluss",True,ma50,"Kap. 6.4","Punkt 4"))
-    if ma50 and s<ma50 and (ma50-s)/ma50*100>=2: out.append(_signal("Klarer 50-MA-Bruch",100,"schluss",True,None,"Kap. 6.4","Punkt 5"))
+    if gewinnzone_min_pct<=pnl<=gewinnzone_max_pct and r<gewinnzone_tranche_pct:
+        out.append(_signal("Gewinnzone 20-25%",gewinnzone_tranche_pct,"schluss",True,ma10,"Kap. 6.4 Sequenz Punkt 1","Objektive Gewinnzone — ersten Teil sichern"))
+    if ma10 and (s-ma10)/ma10*100>=ueber_ma10_pct and r<50:
+        out.append(_signal("10% über 10-MA (überhitzt)",ueber_ma10_tranche_pct,"schluss",True,ma10,"Kap. 6.4 Sequenz Punkt 2","Anstieg überhitzt — Tranche in Stärke"))
+    if ma10 and s<ma10 and pnl>unter_ma10_mindestgewinn_pct:
+        pendelt=False
+        n=max(int(pendel_lookback_tage),2)
+        w=max(int(pendel_wechsel_min),1)
+        if len(daten)>=n and len(sma(daten["close"],10))>=n:
+            last_close=daten["close"].tail(n).reset_index(drop=True)
+            last_ma10=sma(daten["close"],10).tail(n).reset_index(drop=True)
+            wechsel=0
+            for i in range(1,n):
+                if pd.notna(last_ma10.iloc[i]) and pd.notna(last_ma10.iloc[i-1]):
+                    now_below=last_close.iloc[i] < last_ma10.iloc[i]
+                    prev_below=last_close.iloc[i-1] < last_ma10.iloc[i-1]
+                    if now_below != prev_below:
+                        wechsel += 1
+            pendelt = wechsel >= w
+        tranche=pendel_tranche_pct if pendelt else unter_ma10_tranche_pct
+        out.append(_signal("Schluss unter 10-MA (pendelnd)" if pendelt else "Schluss unter 10-MA",tranche,"schluss",True,ma21,"Kap. 6.4 Sequenz Punkt 3","Pendel um 10-MA — Warnzeichen" if pendelt else "Kurzfristige Unterstützung verloren"))
+    if ma21 and s<ma21 and pnl>unter_ma21_mindestgewinn_pct:
+        out.append(_signal("Schluss unter 21-MA",unter_ma21_tranche_pct,"schluss",True,ma50,"Kap. 6.4 Sequenz Punkt 4","Mittelfristige Linie verloren"))
+    if ma50 and s<ma50 and (ma50-s)/ma50*100>=klarer_ma50_bruch_pct:
+        out.append(_signal("Klarer 50-MA-Bruch",100,"schluss",True,None,"Kap. 6.4 Sequenz Punkt 5","Mittelfristiger Trend gebrochen — alle Reste schließen"))
     return out
 
 def strategie_einfach_halbe_position(position,daten,erste_haelfte_gewinn_pct=20.0):
@@ -326,7 +362,22 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "drei_verlustwochen": lambda: strategie_drei_verlustwochen(position,wochen_daten),
         "groesster_einbruch": lambda: strategie_groesster_einbruch(position,daten,wochen_daten),
         "rs_linie": lambda: strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy),
-        "ma_basierte_sequenz": lambda: strategie_ma_basierte_sequenz(position,daten),
+        "ma_basierte_sequenz": lambda: strategie_ma_basierte_sequenz(
+            position,daten,
+            o.get("ma_seq_gewinnzone_min_pct",20.0),
+            o.get("ma_seq_gewinnzone_max_pct",25.0),
+            o.get("ma_seq_gewinnzone_tranche_pct",33.0),
+            o.get("ma_seq_ueber_ma10_pct",10.0),
+            o.get("ma_seq_ueber_ma10_tranche_pct",20.0),
+            o.get("ma_seq_unter_ma10_mindestgewinn_pct",5.0),
+            o.get("ma_seq_unter_ma10_tranche_pct",20.0),
+            o.get("ma_seq_pendel_tranche_pct",25.0),
+            o.get("ma_seq_pendel_lookback_tage",5),
+            o.get("ma_seq_pendel_wechsel_min",3),
+            o.get("ma_seq_unter_ma21_mindestgewinn_pct",5.0),
+            o.get("ma_seq_unter_ma21_tranche_pct",25.0),
+            o.get("ma_seq_klarer_ma50_bruch_pct",2.0),
+        ),
         "einfach_halbe_position": lambda: strategie_einfach_halbe_position(position,daten,o.get("erste_haelfte_gewinn_pct",20.0)),
         "misslungener_ausbruch_5stufen": lambda: strategie_misslungener_ausbruch_5stufen(position,daten),
         "einfache_verluststufen": lambda: strategie_einfache_verluststufen(position,daten,o.get("verlust_stufe_1",3.0),o.get("verlust_stufe_2",5.0),o.get("verlust_stufe_3",7.0)),
