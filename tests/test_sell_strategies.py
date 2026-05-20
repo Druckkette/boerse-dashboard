@@ -16,6 +16,7 @@ from sell_strategies import (
     strategie_downside_reversal,
     strategie_verlusttage_haeufung,
     strategie_ma_abstand,
+    strategie_drawdown_vom_peak,
 )
 
 
@@ -407,3 +408,58 @@ def test_ma_abstand_custom_schwelle_und_tranche_werden_uebernommen():
     assert len(sigs) == 1
     assert sigs[0]["name"] == "10% über 10-MA"
     assert sigs[0]["tranche_pct"] == 40
+
+def test_strategie5_drawdown_stufe1_enthaelt_naechste_marke_12_prozent():
+    p = Position("T", 100, "2026-01-01", 10, peak=120)
+    closes = [100.0] * 30 + [109.5]  # +9.5% PnL und 8.75% Drawdown vom Peak
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [120.0] * len(closes),
+        "low": closes,
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+    sigs = strategie_drawdown_vom_peak(p, d)
+    assert len(sigs) == 1
+    assert sigs[0]["name"] == "Drawdown 8% vom Peak"
+    assert abs(sigs[0]["naechste_marke"] - 105.6) < 1e-9
+
+
+def test_strategie5_drawdown_stufe3_mit_trendbruch_komplettausstieg():
+    p = Position("T", 100, "2026-01-01", 10, peak=150)
+    closes = [120.0] * 25 + [110.0]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [150.0] * len(closes),
+        "low": closes,
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+    sigs = strategie_drawdown_vom_peak(p, d)
+    assert len(sigs) == 1
+    assert sigs[0]["name"] == "Drawdown >15% + Trendbruch"
+    assert sigs[0]["tranche_pct"] == 100
+    assert sigs[0]["naechste_marke"] is None
+
+
+def test_strategie5_drawdown_custom_setup_wird_uebernommen():
+    p = Position("T", 100, "2026-01-01", 10, peak=130)
+    closes = [120.0] * 30 + [118.0]  # +18% PnL, 9.23% Drawdown
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [130.0] * len(closes),
+        "low": closes,
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+    sigs = strategie_drawdown_vom_peak(
+        p,
+        d,
+        drawdown_stufe1_min_pct=9.0,
+        drawdown_stufe2_min_pct=11.0,
+        drawdown_stufe3_min_pct=14.0,
+        tranche_stufe1_pct=22.0,
+    )
+    assert len(sigs) == 1
+    assert sigs[0]["tranche_pct"] == 22
+    assert abs(sigs[0]["naechste_marke"] - (130 * 0.89)) < 1e-9
