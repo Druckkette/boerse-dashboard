@@ -259,9 +259,12 @@ def build_sell_decision_metrics_payload(
     weekly_sma10 = _sma(weekly_close, 10)
     weekly_sma21 = _sma(weekly_close, 21)
     weekly_loss = weekly_close < weekly_close.shift(1)
+    weekly_open = pd.to_numeric(weekly.get("Open", pd.Series(dtype=float)), errors="coerce") if not weekly.empty else pd.Series(dtype=float)
+    weekly_red = weekly_close < weekly_open
     weekly_volume = pd.to_numeric(weekly.get("Volume", pd.Series(dtype=float)), errors="coerce") if not weekly.empty else pd.Series(dtype=float)
     weekly_rising_volume = weekly_volume > weekly_volume.shift(1)
-    consecutive_loss_weeks_rising_volume = _trailing_true_count(weekly_loss & weekly_rising_volume)
+    three_loss_weeks_mask = weekly_loss & weekly_rising_volume & weekly_red
+    consecutive_loss_weeks_rising_volume = _trailing_true_count(three_loss_weeks_mask)
 
     vol_ratio = None
     latest_vol_avg = _last_float(vol_sma50)
@@ -302,7 +305,7 @@ def build_sell_decision_metrics_payload(
     weekly_under_10w_mask = weekly_close < weekly_sma10
     weekly_under_10w_count = _trailing_true_count(weekly_under_10w_mask)
     under_weekly_sma10_start_date = _trailing_true_start_date(weekly_under_10w_mask)
-    three_loss_weeks_rising_volume_start_date = _trailing_true_start_date(weekly_loss & weekly_rising_volume)
+    three_loss_weeks_rising_volume_start_date = _trailing_true_start_date(three_loss_weeks_mask)
 
     since_entry = df[df.index >= buy_ts].copy()
     worst_day_loss_pct = None
@@ -480,7 +483,7 @@ def build_sell_decision_metrics_payload(
         "weak_rebounds": f"Stärkster Rebound 10T {(_safe_float(max_rebound_10, 0.0)):.1f}% bei technischer Schwäche" if weak_recent_rebound else "Rebounds aktuell nicht schwach genug",
         "worst_day_high_volume": f"Größter Tagesverlust seit Kauf am {worst_day_date} mit erhöhtem Volumen" if worst_day_high_volume else "Größter Tagesverlust nicht mit erhöhtem Volumen",
         "downside_reversal_near_high": "Downside Reversal nahe Hoch in den letzten 5 Sessions" if downside_reversal_near_high else "Kein Downside Reversal nahe Hoch",
-        "three_loss_weeks_rising_volume": f"{consecutive_loss_weeks_rising_volume} Verlustwochen mit steigendem Volumen in Folge",
+        "three_loss_weeks_rising_volume": f"{consecutive_loss_weeks_rising_volume} klare Verlustwochen (Close < Open) mit steigendem Volumen in Folge",
     }
     auto_checkboxes = {
         "strength_checkboxes": auto_strength_checkboxes,

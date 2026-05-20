@@ -11264,7 +11264,7 @@ def _render_sell_strategy_hub() -> None:
         "stau_tage": "Mehrere volumenstarke Seitwärts-/Stau-Tage als verdeckte Distribution.",
         "rueckkehr_pivot": "Rückfall zum/unter Ausbruchspunkt (Pivot) als defensives Reduktionssignal.",
         "ma_bruch_defensiv": "Defensive Regeln für Bruch von 50-MA / 10-Wochen / 200-MA.",
-        "drei_verlustwochen": "Drei schwache Wochen mit steigenden Volumina als Verteilungsmuster.",
+        "drei_verlustwochen": "Strategie 16 (Kap. 6.3): Triggert bei drei Verlustwochen in Folge mit jeweils tieferem Wochenschluss als in der Vorwoche und gleichzeitig steigendem Wochenvolumen (Woche 2 > Woche 1, Woche 3 > Woche 2). Vollsignal (100%) nur, wenn alle drei Wochen klare Abwärtswochen sind (Close < Open) – das spricht für ein sauberes Verteilungsmuster und eine komplette Reduktion. Vorwarnstufe (33%) falls nur die Sequenz aus fallenden Wochenschlüssen + steigendem Volumen erfüllt ist; dann Stopps enger nachziehen.",
         "groesster_einbruch": "Strategie 17 (Kap. 6.3): Reagiert auf den größten Einbruch seit Einstieg nach bereits gelaufener Position. Tagesregel: wenn der heutige Verlust der größte seit Einstieg ist und über einer Mindestschwelle liegt, wird defensiv reduziert (33%) oder bei deutlich erhöhtem Volumen stärker (50%). Wochenregel: wenn die aktuelle Verlustwoche die größte seit Einstieg ist und gleichzeitig das Wochenvolumen überdurchschnittlich hoch ist, folgt eine starke Reduktion (66%). Ziel: späte Rally-Phasen mit möglicher Verteilung früh absichern.",
         "rs_linie": "3-Stufen-Strategie auf Basis relativer Stärke gegen Benchmark (z. B. SPY).",
         "ma_basierte_sequenz": "Geschlossene MA-Verkaufssequenz von Gewinnzone bis klarem 50-MA-Bruch.",
