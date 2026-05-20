@@ -11247,7 +11247,7 @@ def _render_sell_strategy_hub() -> None:
     pivot_from_entry_low = _safe_float(entry_row["low"].iloc[0], np.nan) if not entry_row.empty else np.nan
     effective_pivot = manual_pivot if not np.isnan(manual_pivot) and manual_pivot > 0 else (pivot_from_tag if not np.isnan(pivot_from_tag) and pivot_from_tag > 0 else pivot_from_entry_low)
     p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
-    alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","trendlinie","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
+    alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
     strategie_info = {
         "notbremse_verlust": "Fixe Verlust-Notbremse je Marktumfeld (Bullisch/Unsicher/Bärisch) für Kapitalschutz.",
         "drei_stufen_nach_kauf": "Frühe Fehl-Ausbrüche in 3 Stufen abfangen (Tag-1/Tag-0/7%-Notbremse).",
@@ -11256,7 +11256,6 @@ def _render_sell_strategy_hub() -> None:
         "drawdown_vom_peak": "Reduktion nach Rückgang vom Zwischenhoch, abgestuft nach Drawdown-Tiefe.",
         "ma_abstand": "Überdehnungen relativ zu 10/21/50/200-MA als Gewinnmitnahme-Signal.",
         "verlusttage_haeufung": "Distribution über gehäufte schwache Tage und ungünstiges Up/Down-Verhältnis erkennen.",
-        "trendlinie": "Reaktion auf Überdehnung über obere oder Bruch untere Trendlinie.",
         "groesster_anstieg_volumen": "Klimax-/Spätphasen-Signal: größter Tagesanstieg mit extremem Volumen.",
         "split_anstieg": "Strategie 10 (Kap. 6.2): Warnt vor möglichem Gipfel, wenn die Aktie innerhalb der ersten 1-2 Wochen nach Aktiensplit stark steigt. Trigger nur, wenn ein Split-Datum bekannt ist. Ab +25% seit Split wird ein aktives Signal erzeugt (33% Tranche), ab +50% erhöht auf 50%. Referenz-/Stoppmarke ist der Schlusskurs am Split-Tag. Split-Datum wird bevorzugt automatisch via Yahoo Finance gesucht; falls dort kein verwertbarer Split in den letzten 14 Tagen gefunden wird, kann das Datum manuell gesetzt werden.",
         "erschoepfungsluecke": "Gap-up nach langem Lauf mit hohem Volumen als Erschöpfungssignal.",
@@ -11277,6 +11276,7 @@ def _render_sell_strategy_hub() -> None:
     with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
         for key in aktive:
             st.markdown(f"**{key}** – {strategie_info.get(key, 'Keine Beschreibung hinterlegt.')}")
+    st.info("🔎 Hinweis: Prüfe die Aufwärtstrendlinie regelmäßig manuell im Chart (z. B. per eingezeichneter Trendlinie), da Strategie 8 nicht mehr automatisch ausgewertet wird.")
     st.markdown("#### ⚙️ Strategie-Setup")
     markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
 

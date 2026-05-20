@@ -121,16 +121,6 @@ def strategie_verlusttage_haeufung(position,daten):
     if dn-up>=3: out.append(_signal("Abwärtstage überwiegen",25,"schluss",True,float(fen["low"].min()),"Kap. 6.2","Persönlichkeit kippt"))
     return out
 
-def strategie_trendlinie(position,daten,trendlinie_oben_punkte=None,trendlinie_unten_punkte=None):
-    out=[]; s=letzter_schlusskurs(daten); pnl=pnl_pct(position,daten)
-    oben=_linear_marke(trendlinie_oben_punkte, len(daten)-1)
-    unten=_linear_marke(trendlinie_unten_punkte, len(daten)-1)
-    if oben and pnl>10 and s>oben: out.append(_signal("Schluss über oberer Trendlinie",13,"schluss",True,None,"Kap. 6.2","Überdehnt über Trendkanal"))
-    if unten and s<unten:
-        wr = float(daten["volume"].tail(5).mean()/daten["volume"].tail(40).mean()) if len(daten)>=40 else 1.0
-        out.append(_signal("Schluss unter unterer Trendlinie",50 if wr>=1.2 else 33,"schluss",True,tagestief(daten),"Kap. 6.3","Trendlinienbruch"))
-    return out
-
 def strategie_groesster_anstieg_volumen(position,daten):
     if pnl_pct(position,daten)<=15 or len(daten)<3:return []
     ch=daten["close"].pct_change()*100; t=ch.iloc[-1]; mx=float(ch.iloc[1:].max()); v=daten["volume"].iloc[-1] >= daten["volume"].max()
@@ -460,7 +450,6 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(position,daten),
         "ma_abstand": lambda: strategie_ma_abstand(position,daten),
         "verlusttage_haeufung": lambda: strategie_verlusttage_haeufung(position,daten),
-        "trendlinie": lambda: strategie_trendlinie(position,daten,o.get("trendlinie_oben_punkte"),o.get("trendlinie_unten_punkte")),
         "groesster_anstieg_volumen": lambda: strategie_groesster_anstieg_volumen(position,daten),
         "split_anstieg": lambda: strategie_split_anstieg(
             position,daten,
