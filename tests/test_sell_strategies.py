@@ -7,6 +7,7 @@ from sell_strategies import (
     strategie_einfach_halbe_position,
     strategie_misslungener_ausbruch_5stufen,
     strategie_notbremse_verlust,
+    strategie_rs_linie,
     strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
 )
@@ -157,3 +158,24 @@ def test_strategie21_pivot_return_extension():
     }, index=idx)
     sigs = strategie_misslungener_ausbruch_5stufen(p, d)
     assert any(s["name"] == "Zweite Rückkehr zum Pivot" for s in sigs)
+
+
+def test_rs_linie_uses_weekly_between_20_and_80_pct():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100 + i for i in range(60)] + [130])  # +30%
+    spy = make_df([100] * len(d))
+    w = make_df(([100] * 10) + ([140] * 15) + [90])
+    w_spy = make_df([100] * len(w))
+    sigs = strategie_rs_linie(p, d, spy, w, w_spy)
+    assert any("(woche)" in s["name"] for s in sigs)
+
+
+def test_rs_linie_uses_monthly_above_80_pct():
+    p = Position("T", 100, "2026-01-01", 10)
+    idx = pd.date_range("2024-01-31", periods=30, freq="ME")
+    closes = ([300] * 29) + [190]
+    d = pd.DataFrame({"open": closes, "high": closes, "low": closes, "close": closes, "volume": [1000] * 30}, index=idx)
+    spy = pd.DataFrame({"open": [100] * 30, "high": [100] * 30, "low": [100] * 30, "close": [100] * 30, "volume": [1000] * 30}, index=idx)
+    w = make_df([100] * 30)
+    sigs = strategie_rs_linie(p, d, spy, w, w)
+    assert any("(monat)" in s["name"] for s in sigs)

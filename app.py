@@ -11300,6 +11300,8 @@ def _render_sell_strategy_hub() -> None:
     ma_seq_unter_ma21_mindestgewinn_pct = 5.0
     ma_seq_unter_ma21_tranche_pct = 25.0
     ma_seq_klarer_ma50_bruch_pct = 2.0
+    rs_pnl_tag_zu_woche = 20.0
+    rs_pnl_woche_zu_monat = 80.0
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11350,6 +11352,33 @@ def _render_sell_strategy_hub() -> None:
                     ma_seq_unter_ma21_tranche_pct = st.number_input("Tranche Punkt 4 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_under21_tranche_{t}", help="Verkaufsgröße bei Schluss unter 21-MA.")
                     ma_seq_klarer_ma50_bruch_pct = st.number_input("Klarer 50-MA-Bruch (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5, key=f"strat_hub_ma_seq_under50_clear_{t}", help="Mindestabstand unter 50-MA für Punkt 5.")
                 ma_seq_unter_ma21_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 4 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under21_minpnl_{t}", help="Punkt 4 erst ab diesem Mindestgewinn.")
+            elif key == "rs_linie":
+                st.markdown(
+                    """
+**RS-Linien-3-Stufen-Strategie (Kap. 6.4):**
+- **Stufe 1 (20%)**: RS-Linie bricht den schnellen MA erstmalig.
+- **Stufe 2 (30%)**: RS bleibt 3 Perioden in Folge unter dem schnellen MA.
+- **Stufe 3 (50%)**: RS bricht den langsamen MA (Restverkauf).
+
+**Automatischer Zeithorizont:**
+- unter Schwelle 1: **Tag** (21/50-MA)
+- zwischen Schwelle 1 und 2: **Woche** (10/25-MA)
+- ab Schwelle 2: **Monat** (12/24-MA)
+                    """
+                )
+                c1, c2 = st.columns(2)
+                with c1:
+                    rs_pnl_tag_zu_woche = st.number_input(
+                        "PnL-Schwelle Tag → Woche (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5,
+                        key=f"strat_hub_rs_pnl_day_week_{t}",
+                        help="Ab diesem Gewinn wechselt Strategie 18 von Tages- auf Wochensignale.",
+                    )
+                with c2:
+                    rs_pnl_woche_zu_monat = st.number_input(
+                        "PnL-Schwelle Woche → Monat (%)", min_value=0.0, max_value=300.0, value=80.0, step=0.5,
+                        key=f"strat_hub_rs_pnl_week_month_{t}",
+                        help="Ab diesem Gewinn wechselt Strategie 18 von Wochen- auf Monatssignale.",
+                    )
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11384,6 +11413,8 @@ def _render_sell_strategy_hub() -> None:
             "ma_seq_unter_ma21_mindestgewinn_pct": float(ma_seq_unter_ma21_mindestgewinn_pct),
             "ma_seq_unter_ma21_tranche_pct": float(ma_seq_unter_ma21_tranche_pct),
             "ma_seq_klarer_ma50_bruch_pct": float(ma_seq_klarer_ma50_bruch_pct),
+            "rs_pnl_tag_zu_woche": float(rs_pnl_tag_zu_woche),
+            "rs_pnl_woche_zu_monat": float(max(rs_pnl_woche_zu_monat, rs_pnl_tag_zu_woche)),
         },
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")

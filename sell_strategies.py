@@ -215,20 +215,37 @@ def strategie_groesster_einbruch(position,daten,wochen_daten):
         if cur>=mxw and wr>=1.3: out.append(_signal("Größte Verlustwoche seit Beginn",66,"schluss",True,None,"Kap. 6.3","Wahrscheinliches Rally-Ende"))
     return out
 
-def strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy):
+def strategie_rs_linie(
+    position,
+    daten,
+    daten_spy,
+    wochen_daten,
+    wochen_daten_spy,
+    pnl_tag_zu_woche=20.0,
+    pnl_woche_zu_monat=80.0,
+):
     if daten_spy is None or len(daten_spy)==0:return []
-    rs=(daten["close"]/daten_spy["close"].reindex(daten.index).ffill()).dropna();
-    if len(rs)<60:return []
-    pnl=pnl_pct(position,daten); sp,lp=(21,50) if pnl<20 else (10,25)
-    if pnl>=80: sp,lp=(12,24)
+    pnl=pnl_pct(position,daten)
+    schwelle_tag_woche=float(pnl_tag_zu_woche)
+    schwelle_woche_monat=float(max(pnl_woche_zu_monat, schwelle_tag_woche))
+    if pnl < schwelle_tag_woche:
+        zeitebene="tag"; basis=daten; basis_spy=daten_spy; sp,lp=21,50
+    elif pnl < schwelle_woche_monat:
+        if wochen_daten is None or wochen_daten_spy is None or len(wochen_daten)==0 or len(wochen_daten_spy)==0:return []
+        zeitebene="woche"; basis=wochen_daten; basis_spy=wochen_daten_spy; sp,lp=10,25
+    else:
+        zeitebene="monat"; basis=daten.resample("ME").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"})
+        basis_spy=daten_spy.resample("ME").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}); sp,lp=12,24
+    rs=(basis["close"]/basis_spy["close"].reindex(basis.index).ffill()).dropna()
+    if len(rs)<max(lp+1,4):return []
     rsf=sma(rs,sp); rsl=sma(rs,lp); out=[]
-    if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS bricht {sp}-MA",20,"schluss",True,None,"Kap. 6.4","Stufe 1"))
+    if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS bricht {sp}-MA ({zeitebene})",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1","Erstes Warnsignal — RS-Linie bricht schnellen MA"))
     cnt=0
     for a,b in zip(rs.iloc[::-1], rsf.iloc[::-1]):
         if pd.isna(b) or a>=b: break
         cnt+=1
-    if cnt>=3: out.append(_signal(f"RS 3 Perioden unter {sp}-MA",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4","Stufe 2"))
-    if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS bricht {lp}-MA",50,"schluss",True,None,"Kap. 6.4","Stufe 3"))
+    if cnt>=3: out.append(_signal(f"RS 3 {zeitebene} unter {sp}-MA",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2","Bestätigte Schwäche — zweite Tranche"))
+    if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS bricht {lp}-MA ({zeitebene})",50,"schluss",True,None,"Kap. 6.4 RS-Stufe 3","Endgültiger Ausstieg — Rest verkaufen"))
     return out
 
 def strategie_ma_basierte_sequenz(
@@ -361,7 +378,7 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "ma_bruch_defensiv": lambda: strategie_ma_bruch_defensiv(position,daten,wochen_daten),
         "drei_verlustwochen": lambda: strategie_drei_verlustwochen(position,wochen_daten),
         "groesster_einbruch": lambda: strategie_groesster_einbruch(position,daten,wochen_daten),
-        "rs_linie": lambda: strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy),
+        "rs_linie": lambda: strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy,o.get("rs_pnl_tag_zu_woche",20.0),o.get("rs_pnl_woche_zu_monat",80.0)),
         "ma_basierte_sequenz": lambda: strategie_ma_basierte_sequenz(
             position,daten,
             o.get("ma_seq_gewinnzone_min_pct",20.0),
