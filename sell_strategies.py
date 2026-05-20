@@ -71,9 +71,23 @@ def strategie_drei_stufen_nach_kauf(position: Position, daten: pd.DataFrame):
     if pnl <= -7: out.append(_signal("7%-Notbremse",100,"intraday",True,None,"Kap. 5.3 / 6.1 / 6.4","Maximalverlust"))
     return out
 
-def strategie_notbremse_verlust(position: Position, daten: pd.DataFrame, markt: str):
-    pnl = pnl_pct(position, daten); s = -4 if markt=="Bärisch" else -5 if markt=="Unsicher" else -7
-    return [_signal("Notbremse nach Verlusthöhe",100,"intraday",True,None,"Kap. 6.1",f"Verlustgrenze {s}% erreicht")] if pnl <= s else [_signal("Notbremse-Marke",0,"info",False,position.einstiegspreis*(1+s/100),"Kap. 6.1","Info-Marke")]
+def strategie_notbremse_verlust(
+    position: Position,
+    daten: pd.DataFrame,
+    markt: str,
+    schwelle_baerisch_pct: float = 4.0,
+    schwelle_unsicher_pct: float = 5.0,
+    schwelle_bullisch_pct: float = 7.0,
+):
+    pnl = pnl_pct(position, daten)
+    b = -abs(float(schwelle_baerisch_pct))
+    u = -abs(float(schwelle_unsicher_pct))
+    bull = -abs(float(schwelle_bullisch_pct))
+    s = b if markt=="Bärisch" else u if markt=="Unsicher" else bull
+    if pnl <= s:
+        return [_signal("Notbremse nach Verlusthöhe",100,"intraday",True,None,"Kap. 6.1",f"Verlustgrenze {s:g}% erreicht (Markt: {markt})")]
+    kritischer_kurs = position.einstiegspreis*(1+s/100)
+    return [_signal("Notbremse-Marke",0,"info",False,kritischer_kurs,"Kap. 6.1",f"Komplettausstieg bei Schluss/Intraday unter {kritischer_kurs:.2f} (Markt: {markt}, Schwelle: {s:g}%)")]
 
 def strategie_gewinn_in_stufen(
     position: Position,
@@ -537,7 +551,12 @@ def berechne_watch_signale(position,daten):
 def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_daten: pd.DataFrame, daten_spy: pd.DataFrame | None, wochen_daten_spy: pd.DataFrame | None, markt: str, industrie: str, aktive_strategien: list[str], strategie_optionen: dict | None = None):
     o = strategie_optionen or {}
     r = {
-        "notbremse_verlust": lambda: strategie_notbremse_verlust(position,daten,markt),
+        "notbremse_verlust": lambda: strategie_notbremse_verlust(
+            position,daten,markt,
+            o.get("notbremse_verlust_schwelle_baerisch_pct",4.0),
+            o.get("notbremse_verlust_schwelle_unsicher_pct",5.0),
+            o.get("notbremse_verlust_schwelle_bullisch_pct",7.0),
+        ),
         "drei_stufen_nach_kauf": lambda: strategie_drei_stufen_nach_kauf(position,daten),
         "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(
             position,daten,markt,

@@ -38,6 +38,26 @@ def test_notbremse_triggered():
     assert sig[0]["tranche_pct"] == 100
 
 
+
+
+def test_notbremse_info_signal_enthaelt_kritischen_kurs_und_markt():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 97])
+    sig = strategie_notbremse_verlust(p, d, "Bullisch")
+    assert sig[0]["name"] == "Notbremse-Marke"
+    assert sig[0]["naechste_marke"] == 93.0
+    assert "Bullisch" in sig[0]["begruendung"]
+
+
+def test_notbremse_custom_thresholds_from_setup():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 94])
+    res = verkaufs_empfehlung_gesamt(
+        p, d, d, None, None, "Bullisch", "Neutral", ["notbremse_verlust"],
+        {"notbremse_verlust_schwelle_bullisch_pct": 6.0, "notbremse_verlust_schwelle_unsicher_pct": 5.0, "notbremse_verlust_schwelle_baerisch_pct": 4.0},
+    )
+    assert res["gesamt_tranche"] == 100
+    assert any("Verlustgrenze -6%" in s.get("begruendung", "") for s in res["alle_signale"])
 def test_gewinn_in_stufen_default_bulkowski_bullisch():
     p = Position("T", 100, "2026-01-01", 10)
     d = make_df([100, 125])

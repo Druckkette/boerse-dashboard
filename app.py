@@ -11249,7 +11249,7 @@ def _render_sell_strategy_hub() -> None:
     p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
     alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
     strategie_info = {
-        "notbremse_verlust": "Fixe Verlust-Notbremse je Marktumfeld (Bullisch/Unsicher/Bärisch) für Kapitalschutz.",
+        "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
         "drei_stufen_nach_kauf": "Frühe Fehl-Ausbrüche in 3 Stufen abfangen (Tag-1/Tag-0/7%-Notbremse).",
         "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
         "ma21_bruch": "Verkaufssignale bei Bruch der 21-Tage-Linie (aggressiv/gestaffelt/geduldig).",
@@ -11286,6 +11286,9 @@ def _render_sell_strategy_hub() -> None:
     verlust_stufe_1 = 3.0
     verlust_stufe_2 = 5.0
     verlust_stufe_3 = 7.0
+    notbremse_verlust_schwelle_baerisch_pct = 4.0
+    notbremse_verlust_schwelle_unsicher_pct = 5.0
+    notbremse_verlust_schwelle_bullisch_pct = 7.0
     erste_haelfte_gewinn_pct = 20.0
     gewinn_nachdenken_schwelle_bull_pct = 15.0
     gewinn_teilverkauf_unten_bull_pct = 20.0
@@ -11364,6 +11367,23 @@ def _render_sell_strategy_hub() -> None:
                     atr_ueberdehnung_start = st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Ab x ATR über 21-EMA wird 33% verkauft.")
                 with c3:
                     atr_ueberdehnung_stark = st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Ab y ATR über 21-EMA wird 50% verkauft.")
+            elif key == "notbremse_verlust":
+                st.markdown(
+                    """
+**Strategie 2 – Notbremse nach Verlusthöhe (Kap. 6.1):**
+- **Immer aktiv** und unabhängig von allen anderen Strategien.
+- Bei Erreichen/Unterschreiten der Verlustschwelle folgt **Vollausstieg (100%) intraday**.
+- Die Schwelle ist je Marktumfeld frei definierbar (Bärisch/Unsicher/Bullisch).
+- Falls noch nicht ausgelöst, zeigt das Infosignal den **kritischen Kurs** der Notbremse.
+                    """
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    notbremse_verlust_schwelle_baerisch_pct = st.number_input("Notbremse Bärisch (%)", min_value=0.5, max_value=30.0, value=4.0, step=0.5, key=f"strat_hub_notbremse_bear_{t}")
+                with c2:
+                    notbremse_verlust_schwelle_unsicher_pct = st.number_input("Notbremse Unsicher (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_notbremse_uncertain_{t}")
+                with c3:
+                    notbremse_verlust_schwelle_bullisch_pct = st.number_input("Notbremse Bullisch (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_notbremse_bull_{t}")
             elif key == "gewinn_in_stufen":
                 st.markdown(
                     """
@@ -11676,6 +11696,9 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "verlust_stufe_1": float(verlust_stufe_1),
             "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)),
             "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1))),
+            "notbremse_verlust_schwelle_baerisch_pct": float(notbremse_verlust_schwelle_baerisch_pct),
+            "notbremse_verlust_schwelle_unsicher_pct": float(notbremse_verlust_schwelle_unsicher_pct),
+            "notbremse_verlust_schwelle_bullisch_pct": float(notbremse_verlust_schwelle_bullisch_pct),
             "gewinn_nachdenken_schwelle_bull_pct": float(gewinn_nachdenken_schwelle_bull_pct),
             "gewinn_teilverkauf_unten_bull_pct": float(max(gewinn_teilverkauf_unten_bull_pct, gewinn_nachdenken_schwelle_bull_pct)),
             "gewinn_teilverkauf_oben_bull_pct": float(max(gewinn_teilverkauf_oben_bull_pct, gewinn_teilverkauf_unten_bull_pct, gewinn_nachdenken_schwelle_bull_pct)),
