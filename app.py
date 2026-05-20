@@ -11335,6 +11335,7 @@ def _render_sell_strategy_hub() -> None:
     split_signal_schwelle_pct = 25.0
     split_starke_schwelle_pct = 50.0
     split_datum = None
+    ma21_variante = "gestaffelt"
     ma_abstand_schwelle_ma10_pct = 10.0
     ma_abstand_schwelle_ma21_pct = 15.0
     ma_abstand_schwelle_ma50_pct = 25.0
@@ -11422,6 +11423,26 @@ def _render_sell_strategy_hub() -> None:
                         key=f"strat_hub_rs_pnl_week_month_{t}",
                         help="Ab diesem Gewinn wechselt Strategie 18 von Wochen- auf Monatssignale.",
                     )
+            elif key == "ma21_bruch":
+                st.markdown(
+                    """
+**Strategie 4 – 21-MA-Bruch (Kap. 6.2):**
+- **Aggressiv:** klarer Bruch (mind. 2% unter 21-MA) mit erhöhtem Volumen (≥1.2) triggert 33%.
+  Zusatzregel: am zweiten Tag unter 21-MA und Tagesverlust ≤ -7% wird sofort 50% reduziert.
+- **Gestaffelt:** 3-stufiges Vorgehen (Tag 1/2/3 jeweils 25% nach Regelwerk).
+- **Geduldig:** erst nach bestätigtem Bruch (mind. 3 Tage unter 21-MA) 33%.
+
+Die Variante wird **einmalig pro Position** gespeichert und beim nächsten Öffnen des Strategien-Hubs wiederverwendet.
+                    """
+                )
+                ma21_variante = st.selectbox(
+                    "Variante 21-MA-Bruch",
+                    ["gestaffelt", "aggressiv", "geduldig"],
+                    index=["gestaffelt", "aggressiv", "geduldig"].index(st.session_state.get(f"strat_hub_ma21_variante_{t}", "gestaffelt")),
+                    key=f"strat_hub_ma21_variante_select_{t}",
+                    help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-MA behandelt.",
+                )
+                st.session_state[f"strat_hub_ma21_variante_{t}"] = ma21_variante
             elif key == "groesster_einbruch":
                 st.markdown(
                     """
@@ -11622,7 +11643,7 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
         man.get("industry_group_status","Neutral"),
         aktive,
         {
-            "ma21_variante":"gestaffelt",
+            "ma21_variante": ma21_variante,
             "ziel_atr_multiplikator": float(ziel_atr),
             "ueberdehnung_atr_start": float(atr_ueberdehnung_start),
             "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start)),

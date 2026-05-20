@@ -83,6 +83,15 @@ def strategie_gewinn_in_stufen(position: Position, daten: pd.DataFrame, markt: s
     return out
 
 def strategie_21ma_bruch(position: Position, daten: pd.DataFrame, variante: str = "gestaffelt"):
+    """Strategie 4 (Kap. 6.2): Bruch der 21-Tage-Linie in drei Risikoprofilen.
+
+    Setup:
+    - variante="aggressiv": schneller Teilverkauf bei klarem Bruch + Volumenbestätigung.
+    - variante="gestaffelt": stufenweises Vorgehen über 3 Tage unter 21-MA.
+    - variante="geduldig": erst nach 3 bestätigten Tagen unter 21-MA aktiv.
+
+    Regel: Nur im Gewinnfall aktiv (pnl > 0). Im Verlustfall greift Strategie 1.
+    """
     if pnl_pct(position,daten) <= 0: return []
     ma21=sma(daten["close"],21); m=float(ma21.iloc[-1]); s=letzter_schlusskurs(daten); t=tage_unter_ma(daten,ma21); out=[]
     if variante=="aggressiv":
