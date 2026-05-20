@@ -992,7 +992,7 @@ def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.
         if not isin:
             continue
         typ = str(row.get("type", "") or "").strip().upper()
-        shares = float(_safe_float(row.get("shares_num"), 0.0))
+        shares = abs(float(_safe_float(row.get("shares_num"), 0.0)))
         price = float(_safe_float(row.get("price_num"), 0.0))
         state = states.setdefault(isin, {"shares": 0.0, "cost": 0.0, "first_buy_date": None, "name": row.get("name", ""), "asset_class": row.get("asset_class", ""), "currency": row.get("currency", "EUR")})
         state["name"] = row.get("name", state["name"])
@@ -1000,19 +1000,19 @@ def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.
         state["currency"] = row.get("currency", state["currency"])
         current_date = row.get("date")
 
-        if typ in {"BUY", "SELL_CANCELLED"}:
+        if typ in {"BUY", "SELL_CANCELLED", "TRANSFER_IN"}:
             if state["shares"] <= 0:
                 state["first_buy_date"] = current_date
             state["shares"] += shares
             state["cost"] += shares * price
-        elif typ == "SELL":
+        elif typ in {"SELL", "TRANSFER_OUT"}:
             sell_shares = min(max(shares, 0.0), max(state["shares"], 0.0))
             avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else 0.0
             state["shares"] -= sell_shares
             state["cost"] -= sell_shares * avg
         elif typ == "SPLIT":
             state["shares"] += shares
-        elif typ in {"WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS"}:
+        elif typ in {"WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS", "DELISTED", "EXPIRATION"}:
             red = min(max(shares, 0.0), max(state["shares"], 0.0))
             avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else 0.0
             state["shares"] -= red
@@ -1087,6 +1087,8 @@ def _render_transaction_importer() -> None:
             if selected.empty:
                 st.warning("Keine importierbaren Zeilen ausgewählt.")
             else:
+                imported_count = 0
+                skipped_count = 0
                 for row in selected.to_dict("records"):
                     currency = str(row.get("currency") or "EUR").upper()
                     avg_price = float(_safe_float(row.get("avg_buy_price"), 0.0))
@@ -1101,8 +1103,15 @@ def _render_transaction_importer() -> None:
                     }
                     if position["ticker"] and position["shares"] > 0:
                         _upsert_position(position)
+                        imported_count += 1
+                    else:
+                        skipped_count += 1
                 _sync_workspace()
-                st.success(f"{len(selected)} Position(en) importiert.")
+                if imported_count:
+                    suffix = f" ({skipped_count} übersprungen)" if skipped_count else ""
+                    st.success(f"{imported_count} Position(en) importiert{suffix}.")
+                else:
+                    st.warning("Keine gültigen Positionen importiert (Ticker/Stückzahl prüfen).")
                 st.rerun()
     if not skipped_df.empty:
         st.caption("Nicht automatisch importiert (z. B. Derivate/Optionsscheine):")
