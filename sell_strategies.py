@@ -154,15 +154,32 @@ def strategie_erschoepfungsluecke(position,daten):
     vr=vol_verhaeltnis(daten); weit=(h["close"]/position.pivot-1)*100 if position.pivot else 0
     if gap>=3 and vr>=1.5 and weit>=30: return [_signal("Erschöpfungslücke",33,"schluss",True,float(h["low"]),"Kap. 6.2","Gap-up nach langem Lauf")]
     return []
-def strategie_downside_reversal(position,daten):
-    if pnl_pct(position,daten)<=0 or len(daten)<12:return []
-    h=daten.iloc[-1]; span=h["high"]-h["low"]; avg=float((daten["high"].tail(10)-daten["low"].tail(10)).mean()); vr=vol_verhaeltnis(daten)
+def strategie_downside_reversal(
+    position,
+    daten,
+    kerzenweite_lookback_tage: int = 10,
+    volumen_lookback_tage: int = 50,
+    neues_hoch_lookback_tage: int = 30,
+    weite_kerze_faktor: float = 1.5,
+    volumen_ratio_min: float = 1.2,
+    schluss_unteres_drittel_faktor: float = 3.0,
+    tranche_neues_hoch_pct: float = 33.0,
+    tranche_weite_umkehr_pct: float = 20.0,
+    tranche_warnstufe_pct: float = 15.0,
+):
+    if pnl_pct(position,daten)<=0 or len(daten)<max(12, int(kerzenweite_lookback_tage)):return []
+    h=daten.iloc[-1]; span=h["high"]-h["low"]; avg=float((daten["high"].tail(int(kerzenweite_lookback_tage))-daten["low"].tail(int(kerzenweite_lookback_tage))).mean())
+    if len(daten) >= int(volumen_lookback_tage):
+        vr = float(daten["volume"].iloc[-1] / daten["volume"].tail(int(volumen_lookback_tage)).mean())
+    else:
+        vr = vol_verhaeltnis(daten)
     if span<=0:return []
-    new_high=h["high"]>=float(daten["high"].tail(30).iloc[:-1].max()) if len(daten)>=31 else False
-    low_third=h["close"]<=h["low"]+span/3
-    if new_high and low_third and vr>=1.2:return [_signal("Downside Reversal an neuem Hoch",33,"schluss",True,float(h["high"]),"Kap. 6.2","Umkehrsignal")]
-    if span>=1.5*avg and low_third and vr>=1.2:return [_signal("Weite Umkehrkerze",20,"schluss",True,float(h["high"]),"Kap. 6.2","Warnsignal")]
-    if span>=1.5*avg and h["close"]<h["low"]+span/2:return [_signal("Schluss unter Spannenmitte",15,"schluss",True,float(h["high"]),"Kap. 6.2","Warnstufe")]
+    new_high=h["high"]>=float(daten["high"].tail(int(neues_hoch_lookback_tage)).iloc[:-1].max()) if len(daten)>=int(neues_hoch_lookback_tage)+1 else False
+    low_third=h["close"]<=h["low"]+span/max(float(schluss_unteres_drittel_faktor), 1.01)
+    wide_candle=span>=float(weite_kerze_faktor)*avg
+    if new_high and low_third and vr>=float(volumen_ratio_min):return [_signal("Downside Reversal an neuem Hoch",tranche_neues_hoch_pct,"schluss",True,float(h["high"]),"Kap. 6.2 Downside Reversal","Neues Hoch und Schluss nahe Tagestief mit erhöhtem Volumen")]
+    if wide_candle and low_third and vr>=float(volumen_ratio_min):return [_signal("Weite Umkehrkerze",tranche_weite_umkehr_pct,"schluss",True,float(h["high"]),"Kap. 6.2","Weite Umkehr — wachsam bleiben, erste Tranche")]
+    if wide_candle and h["close"]<h["low"]+span/2:return [_signal("Schluss unter Spannenmitte",tranche_warnstufe_pct,"schluss",True,float(h["high"]),"Kap. 6.2","Warnstufe — Beobachtung intensivieren")]
     return []
 
 def strategie_stau_tage(
@@ -402,7 +419,18 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "groesster_anstieg_volumen": lambda: strategie_groesster_anstieg_volumen(position,daten),
         "split_anstieg": lambda: strategie_split_anstieg(position,daten,o.get("split_datum")),
         "erschoepfungsluecke": lambda: strategie_erschoepfungsluecke(position,daten),
-        "downside_reversal": lambda: strategie_downside_reversal(position,daten),
+        "downside_reversal": lambda: strategie_downside_reversal(
+            position,daten,
+            o.get("downside_kerzenweite_lookback_tage", 10),
+            o.get("downside_volumen_lookback_tage", 50),
+            o.get("downside_neues_hoch_lookback_tage", 30),
+            o.get("downside_weite_kerze_faktor", 1.5),
+            o.get("downside_volumen_ratio_min", 1.2),
+            o.get("downside_schluss_unteres_drittel_faktor", 3.0),
+            o.get("downside_tranche_neues_hoch_pct", 33.0),
+            o.get("downside_tranche_weite_umkehr_pct", 20.0),
+            o.get("downside_tranche_warnstufe_pct", 15.0),
+        ),
         "stau_tage": lambda: strategie_stau_tage(
             position,daten,
             o.get("stau_fenster_tage",10),
