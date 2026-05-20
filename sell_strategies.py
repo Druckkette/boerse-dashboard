@@ -75,11 +75,28 @@ def strategie_notbremse_verlust(position: Position, daten: pd.DataFrame, markt: 
     pnl = pnl_pct(position, daten); s = -4 if markt=="Bärisch" else -5 if markt=="Unsicher" else -7
     return [_signal("Notbremse nach Verlusthöhe",100,"intraday",True,None,"Kap. 6.1",f"Verlustgrenze {s}% erreicht")] if pnl <= s else [_signal("Notbremse-Marke",0,"info",False,position.einstiegspreis*(1+s/100),"Kap. 6.1","Info-Marke")]
 
-def strategie_gewinn_in_stufen(position: Position, daten: pd.DataFrame, markt: str):
+def strategie_gewinn_in_stufen(
+    position: Position,
+    daten: pd.DataFrame,
+    markt: str,
+    nachdenken_schwelle_bull_pct: float = 15.0,
+    teilverkauf_schwelle_unten_bull_pct: float = 20.0,
+    teilverkauf_schwelle_oben_bull_pct: float = 35.0,
+    nachdenken_schwelle_bear_pct: float = 10.0,
+    teilverkauf_schwelle_unten_bear_pct: float = 10.0,
+    teilverkauf_schwelle_oben_bear_pct: float = 15.0,
+):
     pnl = pnl_pct(position, daten); r = sum(position.realisierte_tranchen or []); out=[]
-    nd, lo, hi = (10,10,15) if markt=="Bärisch" else (15,20,35)
-    if pnl >= nd and r==0: out.append(_signal("Gewinn-Nachdenkschwelle erreicht",0,"info",True,position.einstiegspreis*(1+lo/100),"Kap. 6.2","Teilverkauf planen"))
-    if pnl >= lo and r < 50: out.append(_signal("Pflicht-Teilverkauf Gewinnzone",33 if pnl<hi else 50,"schluss",True,position.einstiegspreis,"Kap. 6.2","Gewinnzone erreicht"))
+    if markt=="Bärisch":
+        nd = float(nachdenken_schwelle_bear_pct)
+        lo = float(max(teilverkauf_schwelle_unten_bear_pct, nd))
+        hi = float(max(teilverkauf_schwelle_oben_bear_pct, lo))
+    else:
+        nd = float(nachdenken_schwelle_bull_pct)
+        lo = float(max(teilverkauf_schwelle_unten_bull_pct, nd))
+        hi = float(max(teilverkauf_schwelle_oben_bull_pct, lo))
+    if pnl >= nd and r==0: out.append(_signal("Gewinn-Nachdenkschwelle erreicht",0,"info",True,position.einstiegspreis*(1+lo/100),"Kap. 6.2 Bulkowski-Schwelle","Über erster Nachdenkschwelle — Teilverkauf planen"))
+    if pnl >= lo and r < 50: out.append(_signal("Pflicht-Teilverkauf Gewinnzone",33 if pnl<hi else 50,"schluss",True,position.einstiegspreis,"Kap. 6.2 Bulkowski 20-35%",f"Gewinnzone {lo:.1f}-{hi:.1f}% — Teilverkauf"))
     return out
 
 def strategie_21ma_bruch(position: Position, daten: pd.DataFrame, variante: str = "gestaffelt"):
@@ -522,7 +539,15 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
     r = {
         "notbremse_verlust": lambda: strategie_notbremse_verlust(position,daten,markt),
         "drei_stufen_nach_kauf": lambda: strategie_drei_stufen_nach_kauf(position,daten),
-        "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(position,daten,markt),
+        "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(
+            position,daten,markt,
+            o.get("gewinn_nachdenken_schwelle_bull_pct",15.0),
+            o.get("gewinn_teilverkauf_unten_bull_pct",20.0),
+            o.get("gewinn_teilverkauf_oben_bull_pct",35.0),
+            o.get("gewinn_nachdenken_schwelle_bear_pct",10.0),
+            o.get("gewinn_teilverkauf_unten_bear_pct",10.0),
+            o.get("gewinn_teilverkauf_oben_bear_pct",15.0),
+        ),
         "ma21_bruch": lambda: strategie_21ma_bruch(position,daten,o.get("ma21_variante","gestaffelt")),
         "drawdown_vom_peak": lambda: strategie_drawdown_vom_peak(
             position,daten,

@@ -17,6 +17,7 @@ from sell_strategies import (
     strategie_verlusttage_haeufung,
     strategie_ma_abstand,
     strategie_drawdown_vom_peak,
+    strategie_gewinn_in_stufen,
 )
 
 
@@ -35,6 +36,26 @@ def test_notbremse_triggered():
     d = make_df([100, 95])
     sig = strategie_notbremse_verlust(p, d, "Unsicher")
     assert sig[0]["tranche_pct"] == 100
+
+
+def test_gewinn_in_stufen_default_bulkowski_bullisch():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 125])
+    sigs = strategie_gewinn_in_stufen(p, d, "Bullisch")
+    assert any(s["name"] == "Gewinn-Nachdenkschwelle erreicht" for s in sigs)
+    assert any(s["name"] == "Pflicht-Teilverkauf Gewinnzone" and s["tranche_pct"] == 33 for s in sigs)
+
+
+def test_gewinn_in_stufen_custom_thresholds_from_setup():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 112])
+    sigs = strategie_gewinn_in_stufen(
+        p, d, "Bullisch",
+        nachdenken_schwelle_bull_pct=8,
+        teilverkauf_schwelle_unten_bull_pct=10,
+        teilverkauf_schwelle_oben_bull_pct=12,
+    )
+    assert any(s["name"] == "Pflicht-Teilverkauf Gewinnzone" and s["tranche_pct"] == 50 for s in sigs)
 
 
 def test_21ma_gestaffelt_day1():
