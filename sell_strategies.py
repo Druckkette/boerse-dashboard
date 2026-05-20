@@ -64,11 +64,32 @@ def _linear_marke(points, idx):
 
 # Strategien 1-23
 
-def strategie_drei_stufen_nach_kauf(position: Position, daten: pd.DataFrame):
+def strategie_drei_stufen_nach_kauf(
+    position: Position,
+    daten: pd.DataFrame,
+    max_gewinn_aktiv_pct: float = 8.0,
+    stufe1_tranche_pct: float = 33.0,
+    stufe2_tranche_pct: float = 33.0,
+    notbremse_verlust_pct: float = 7.0,
+):
+    """Strategie 1 (Kap. 5.3/6.4): Drei-Stufen-Regel direkt nach Kauf.
+
+    Aktiv nur in der frühen Phase nach Kauf, solange die Position noch keinen
+    nennenswerten Gewinn aufgebaut hat (PnL <= max_gewinn_aktiv_pct).
+    """
     s, pnl, out = letzter_schlusskurs(daten), pnl_pct(position, daten), []
-    if position.tief_tag_1 and s < position.tief_tag_1: out.append(_signal("Schluss unter Tief Ausbruchstag",33,"schluss",True,position.tief_tag_0,"Kap. 5.3 / 6.4","Ausbruch hält nicht"))
-    if position.tief_tag_0 and s < position.tief_tag_0: out.append(_signal("Schluss unter Tief Vortag",33,"schluss",True,position.einstiegspreis*0.93,"Kap. 5.3 / 6.4","Ausbruch gescheitert"))
-    if pnl <= -7: out.append(_signal("7%-Notbremse",100,"intraday",True,None,"Kap. 5.3 / 6.1 / 6.4","Maximalverlust"))
+    max_gewinn = float(max_gewinn_aktiv_pct)
+    stufe1 = float(stufe1_tranche_pct)
+    stufe2 = float(stufe2_tranche_pct)
+    notbremse = abs(float(notbremse_verlust_pct))
+    if pnl > max_gewinn:
+        return out
+    if position.tief_tag_1 and s < position.tief_tag_1:
+        out.append(_signal("Schluss unter Tief Ausbruchstag",stufe1,"schluss",True,position.tief_tag_0,"Kap. 5.3 / 6.4 Drei-Stufen-Regel, Stufe 1","Ausbruch hält nicht — erstes Drittel reduzieren"))
+    if position.tief_tag_0 and s < position.tief_tag_0:
+        out.append(_signal("Schluss unter Tief Vortag",stufe2,"schluss",True,position.einstiegspreis*(1-notbremse/100),"Kap. 5.3 / 6.4 Drei-Stufen-Regel, Stufe 2","Ausbruch endgültig gescheitert — zweites Drittel reduzieren"))
+    if pnl <= -notbremse:
+        out.append(_signal("7%-Notbremse",100,"intraday",True,None,"Kap. 5.3 / 6.1 / 6.4","Maximaler Verlust erreicht — Rest sofort verkaufen"))
     return out
 
 def strategie_notbremse_verlust(
@@ -557,7 +578,13 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
             o.get("notbremse_verlust_schwelle_unsicher_pct",5.0),
             o.get("notbremse_verlust_schwelle_bullisch_pct",7.0),
         ),
-        "drei_stufen_nach_kauf": lambda: strategie_drei_stufen_nach_kauf(position,daten),
+        "drei_stufen_nach_kauf": lambda: strategie_drei_stufen_nach_kauf(
+            position,daten,
+            o.get("drei_stufen_max_gewinn_aktiv_pct", 8.0),
+            o.get("drei_stufen_tranche_stufe1_pct", 33.0),
+            o.get("drei_stufen_tranche_stufe2_pct", 33.0),
+            o.get("drei_stufen_notbremse_verlust_pct", 7.0),
+        ),
         "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(
             position,daten,markt,
             o.get("gewinn_nachdenken_schwelle_bull_pct",15.0),
