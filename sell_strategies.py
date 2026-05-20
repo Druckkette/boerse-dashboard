@@ -189,13 +189,18 @@ def strategie_rueckkehr_pivot(position,daten):
     return out
 
 def strategie_ma_bruch_defensiv(position,daten,wochen_daten):
-    out=[]; s=letzter_schlusskurs(daten); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1]); ma200=_none_if_nan(sma(daten["close"],200).iloc[-1]); atrp=atr(daten,14); vr=vol_verhaeltnis(daten)
+    out=[]; s=letzter_schlusskurs(daten); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1]); ma200_series=sma(daten["close"],200); ma200=_none_if_nan(ma200_series.iloc[-1]); atrp=atr(daten,14); vr=vol_verhaeltnis(daten)
     if ma50 and s<ma50:
         dist=(ma50-s)/ma50*100
-        if dist>=max(2,atrp) and vr>=1.3: out.append(_signal("Klarer 50-MA-Bruch mit Volumen",50,"schluss",True,ma200,"Kap. 6.3","Defensiver Verkauf"))
-        elif tage_unter_ma(daten,sma(daten["close"],50))>=3: out.append(_signal("3 Tage unter 50-MA ohne Rückeroberung",33,"schluss",True,ma200,"Kap. 6.3","Drei-Tage-Frist"))
-    if len(wochen_daten)>=10 and tage_unter_ma(wochen_daten.rename(columns={"close":"close"}), sma(wochen_daten["close"],10))>=8: out.append(_signal("8+ Wochen unter 10-Wochen-Linie",100,"schluss",True,None,"Kap. 6.3","Klares Schwächesignal"))
-    if ma200 and s<ma200: out.append(_signal("200-MA-Bruch" + (" mit hohem Volumen" if vr>=1.5 else " ohne Volumen"),100 if vr>=1.5 else 75,"schluss",True,None,"Kap. 6.3","Langfristiger Trendbruch"))
+        if dist>=max(2,atrp) and vr>=1.3: out.append(_signal("Klarer 50-MA-Bruch mit Volumen",50,"schluss",True,ma200,"Kap. 6.3 50-MA","Deutlich unter 50-MA bei erhöhtem Volumen — schrittweise reduzieren"))
+        elif tage_unter_ma(daten,sma(daten["close"],50))>=3: out.append(_signal("3 Tage unter 50-MA ohne Rückeroberung",33,"schluss",True,ma200,"Kap. 6.3 50-MA","Drei-Tage-Frist verstrichen"))
+    if len(wochen_daten)>=10 and tage_unter_ma(wochen_daten, sma(wochen_daten["close"],10))>=8: out.append(_signal("8+ Wochen unter 10-Wochen-Linie",100,"schluss",True,None,"Kap. 6.3 10-Wochen-Linie","Acht oder mehr Wochen ohne Rückeroberung — klares Schwächesignal"))
+    if ma200 and s<ma200: out.append(_signal("200-MA-Bruch" + (" mit hohem Volumen" if vr>=1.5 else " ohne Volumen"),100 if vr>=1.5 else 75,"schluss",True,None,"Kap. 6.3 200-MA","Langfristiger Aufwärtszyklus beendet — Kapitalerhalt" if vr>=1.5 else "200-MA gebrochen — auf sehr kleinen Rest reduzieren"))
+    ma200_valid = ma200_series.dropna()
+    if len(ma200_valid) >= 20:
+        ma200_richtung = float(ma200_valid.iloc[-1] - ma200_valid.iloc[-20])
+        if ma200_richtung < 0 and ma200 and s < ma200:
+            out.append(_signal("200-MA dreht abwärts",0,"info",True,None,"Kap. 6.3 200-MA","Trendwechsel bestätigt"))
     return out
 
 def strategie_drei_verlustwochen(position,wochen_daten):

@@ -7,6 +7,7 @@ from sell_strategies import (
     strategie_einfach_halbe_position,
     strategie_misslungener_ausbruch_5stufen,
     strategie_notbremse_verlust,
+    strategie_ma_bruch_defensiv,
     strategie_rs_linie,
     strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
@@ -179,3 +180,50 @@ def test_rs_linie_uses_monthly_above_80_pct():
     w = make_df([100] * 30)
     sigs = strategie_rs_linie(p, d, spy, w, w)
     assert any("(monat)" in s["name"] for s in sigs)
+
+
+def test_ma_bruch_defensiv_adds_downward_ma200_confirmation_signal():
+    p = Position("T", 100, "2026-01-01", 10)
+    daily = pd.DataFrame({
+        "open": [300 - i for i in range(240)],
+        "high": [301 - i for i in range(240)],
+        "low": [299 - i for i in range(240)],
+        "close": [300 - i for i in range(240)],
+        "volume": [1000] * 239 + [1700],
+    })
+    weekly = pd.DataFrame({
+        "open": [120 - i for i in range(20)],
+        "high": [121 - i for i in range(20)],
+        "low": [119 - i for i in range(20)],
+        "close": [120 - i for i in range(20)],
+        "volume": [1000] * 20,
+    })
+
+    sigs = strategie_ma_bruch_defensiv(p, daily, weekly)
+
+    assert any(s["name"] == "200-MA dreht abwärts" and s["tranche_pct"] == 0 for s in sigs)
+
+
+def test_ma_bruch_defensiv_uses_detailed_chapter_references():
+    p = Position("T", 100, "2026-01-01", 10)
+    daily = pd.DataFrame({
+        "open": [300 - i for i in range(240)],
+        "high": [301 - i for i in range(240)],
+        "low": [299 - i for i in range(240)],
+        "close": [300 - i for i in range(240)],
+        "volume": [1000] * 239 + [1700],
+    })
+    weekly = pd.DataFrame({
+        "open": [120 - i for i in range(20)],
+        "high": [121 - i for i in range(20)],
+        "low": [119 - i for i in range(20)],
+        "close": [120 - i for i in range(20)],
+        "volume": [1000] * 20,
+    })
+
+    sigs = strategie_ma_bruch_defensiv(p, daily, weekly)
+    refs = {s["buch_verweis"] for s in sigs}
+
+    assert "Kap. 6.3 50-MA" in refs
+    assert "Kap. 6.3 10-Wochen-Linie" in refs
+    assert "Kap. 6.3 200-MA" in refs
