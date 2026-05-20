@@ -241,9 +241,10 @@ def strategie_ma_basierte_sequenz(position,daten):
     if ma50 and s<ma50 and (ma50-s)/ma50*100>=2: out.append(_signal("Klarer 50-MA-Bruch",100,"schluss",True,None,"Kap. 6.4","Punkt 5"))
     return out
 
-def strategie_einfach_halbe_position(position,daten):
+def strategie_einfach_halbe_position(position,daten,erste_haelfte_gewinn_pct=20.0):
     pnl=pnl_pct(position,daten); r=sum(position.realisierte_tranchen or []); out=[]; h=r>=50
-    if pnl>=20 and not h: out.append(_signal("Erste Hälfte bei 20%+",50,"schluss",True,position.einstiegspreis,"Kap. 6.4","Hälfte sichern"))
+    gw=max(float(erste_haelfte_gewinn_pct),0.0)
+    if pnl>=gw and not h: out.append(_signal(f"Erste Hälfte bei {gw:g}%+",50,"schluss",True,position.einstiegspreis,"Kap. 6.4","Hälfte sichern"))
     if h and pnl>=20: out.append(_signal("Erneut 20% — weitere Tranche",50,"schluss",True,position.einstiegspreis,"Kap. 6.4","Zweite Gewinnmitnahme"))
     if h and -1<=pnl<=1: out.append(_signal("Break-Even-Stopp greift",100,"intraday",True,None,"Kap. 6.4","Rest auf BE"))
     return out
@@ -326,7 +327,7 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         "groesster_einbruch": lambda: strategie_groesster_einbruch(position,daten,wochen_daten),
         "rs_linie": lambda: strategie_rs_linie(position,daten,daten_spy,wochen_daten,wochen_daten_spy),
         "ma_basierte_sequenz": lambda: strategie_ma_basierte_sequenz(position,daten),
-        "einfach_halbe_position": lambda: strategie_einfach_halbe_position(position,daten),
+        "einfach_halbe_position": lambda: strategie_einfach_halbe_position(position,daten,o.get("erste_haelfte_gewinn_pct",20.0)),
         "misslungener_ausbruch_5stufen": lambda: strategie_misslungener_ausbruch_5stufen(position,daten),
         "einfache_verluststufen": lambda: strategie_einfache_verluststufen(position,daten,o.get("verlust_stufe_1",3.0),o.get("verlust_stufe_2",5.0),o.get("verlust_stufe_3",7.0)),
         "atr_basiert": lambda: strategie_atr_basiert(position,daten,o.get("ziel_atr_multiplikator",3),o.get("ueberdehnung_atr_start",3),o.get("ueberdehnung_atr_stark",4)),

@@ -11286,6 +11286,7 @@ def _render_sell_strategy_hub() -> None:
     verlust_stufe_1 = 3.0
     verlust_stufe_2 = 5.0
     verlust_stufe_3 = 7.0
+    erste_haelfte_gewinn_pct = 20.0
 
     for key in aktive:
         with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
@@ -11306,6 +11307,8 @@ def _render_sell_strategy_hub() -> None:
                     verlust_stufe_2 = st.number_input("Verluststufe 2 (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_loss_stage2_{t}", help="Bei diesem Verlust folgt die zweite Tranche (33%).")
                 with c3:
                     verlust_stufe_3 = st.number_input("Verluststufe 3 (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_loss_stage3_{t}", help="Bei diesem Verlust wird die Restposition sofort geschlossen.")
+            elif key == "einfach_halbe_position":
+                erste_haelfte_gewinn_pct = st.number_input("Gewinnmitnahme 1. Hälfte (%)", min_value=5.0, max_value=100.0, value=20.0, step=0.5, key=f"strat_hub_first_half_profit_{t}", help="Ab diesem Gewinn wird die erste Hälfte (50%) verkauft.")
             else:
                 st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
 
@@ -11318,7 +11321,7 @@ def _render_sell_strategy_hub() -> None:
         markt,
         man.get("industry_group_status","Neutral"),
         aktive,
-        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(ziel_atr), "ueberdehnung_atr_start": float(atr_ueberdehnung_start), "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start)), "verlust_stufe_1": float(verlust_stufe_1), "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)), "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1)))},
+        {"ma21_variante":"gestaffelt", "ziel_atr_multiplikator": float(ziel_atr), "ueberdehnung_atr_start": float(atr_ueberdehnung_start), "ueberdehnung_atr_stark": float(max(atr_ueberdehnung_stark, atr_ueberdehnung_start)), "verlust_stufe_1": float(verlust_stufe_1), "verlust_stufe_2": float(max(verlust_stufe_2, verlust_stufe_1)), "verlust_stufe_3": float(max(verlust_stufe_3, max(verlust_stufe_2, verlust_stufe_1))), "erste_haelfte_gewinn_pct": float(erste_haelfte_gewinn_pct)},
     )
     st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
     st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")

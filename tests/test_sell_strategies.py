@@ -4,6 +4,7 @@ from sell_strategies import (
     Position,
     strategie_21ma_bruch,
     strategie_atr_basiert,
+    strategie_einfach_halbe_position,
     strategie_misslungener_ausbruch_5stufen,
     strategie_notbremse_verlust,
     strategie_einfache_verluststufen,
@@ -118,6 +119,15 @@ def test_einfache_verluststufen_custom_schwellen_werden_genutzt():
     assert sigs
     assert sigs[0]["name"] == "Verlust ≥ 4%"
     assert sigs[0]["naechste_marke"] == 94.0
+
+
+def test_einfach_halbe_position_custom_erste_gewinnmitnahme():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 118])
+    sigs_default = strategie_einfach_halbe_position(p, d)
+    sigs_custom = strategie_einfach_halbe_position(p, d, erste_haelfte_gewinn_pct=17.5)
+    assert not sigs_default
+    assert any(s["name"] == "Erste Hälfte bei 17.5%+" for s in sigs_custom)
 
 
 def test_strategie21_skip_tag0_when_below_notbremse():
