@@ -37,7 +37,15 @@ from sell_decision_metrics import (
     build_sell_decision_metrics_smoke_inputs,
 )
 import sell_decision_rules
-from sell_decision_rules import LM_HUB_DEFAULTS, LM_HUB_STRATEGIES_ALL, LM_HUB_STRATEGIES_DEFAULT
+from sell_decision_rules import (
+    LM_HUB_DEFAULTS,
+    LM_HUB_STRATEGIES_ALL,
+    LM_HUB_STRATEGIES_DEFAULT,
+    LM_HUB_STRATEGIEN,
+    LM_HUB_WARNUNGEN,
+    LM_HUB_STRATEGIEN_DEFAULT,
+    LM_HUB_WARNUNGEN_DEFAULT,
+)
 from sell_strategies import STRATEGIE_INFO
 from sell_strategies import Position, verkaufs_empfehlung_gesamt
 from ui.charts import CHART_COLORS, apply_consistent_layout
@@ -10475,24 +10483,49 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
     with st.expander("⚙️ Strategie-Setup (Hub-Engine)", expanded=False):
         st.caption("Vollständiges Setup analog zum Strategien-Hub. Alle Parameter wirken auf die Hub-Berechnung im Live-Monitor. Patterns #11 Distribution-Tage und #15 Volumen-Faktor bleiben LM-nativ.")
 
-        default_active = list(_val("active_strategies", list(LM_HUB_STRATEGIES_DEFAULT)) or LM_HUB_STRATEGIES_DEFAULT)
-        default_active = [k for k in default_active if k in LM_HUB_STRATEGIES_ALL]
-        if not default_active:
-            default_active = list(LM_HUB_STRATEGIES_DEFAULT)
-        selected = st.multiselect(
+        # --- Verkaufsstrategien (feste Verkaufsregeln) ---
+        st.markdown("#### 🎯 Verkaufsstrategien")
+        st.caption('Feste Verkaufsregeln mit klarer Tranche-Logik. Aktive Signale erscheinen im Bereich „Tranche-Signale".')
+        strat_default = list(_val("active_strategies", list(LM_HUB_STRATEGIEN_DEFAULT)) or LM_HUB_STRATEGIEN_DEFAULT)
+        strat_default = [k for k in strat_default if k in LM_HUB_STRATEGIEN]
+        if not strat_default:
+            strat_default = list(LM_HUB_STRATEGIEN_DEFAULT)
+        selected_strats = st.multiselect(
             "Aktive Strategien",
-            LM_HUB_STRATEGIES_ALL,
-            default=default_active,
-            key=f"lm_setup_active_{ticker}",
-            help="Wähle, welche Hub-Strategien im Live-Monitor ausgewertet werden sollen. Standardmäßig sind die 15 ursprünglichen LM-Patterns aktiv; zusätzliche Hub-Strategien (atr_basiert, ma_basierte_sequenz, einfach_halbe_position, …) sind opt-in.",
+            LM_HUB_STRATEGIEN,
+            default=strat_default,
+            key=f"lm_setup_active_strats_{ticker}",
+            help="Standardmäßig sind 12 Strategien aktiv. Opt-in: atr_basiert, ma_basierte_sequenz, einfach_halbe_position, einfache_verluststufen, misslungener_ausbruch_5stufen.",
         )
-        active["active_strategies"] = selected
+        active["active_strategies"] = selected_strats
 
         with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
-            for key in selected:
+            for key in selected_strats:
                 st.markdown(f"**{key}** – {STRATEGIE_INFO.get(key, 'Keine Beschreibung hinterlegt.')}")
 
-        st.markdown("#### Parameter je Strategie")
+        # --- Warnsignale (Verhaltens-/Distributionssignale) ---
+        st.markdown("#### ⚠️ Warnsignale (Hub)")
+        st.caption('Verhaltens- und Distributionsmuster als Frühwarnung. Aktive Signale erscheinen im separaten Bereich „Warnsignale" und tragen weiterhin zur Gesamt-Tranche bei.')
+        warn_default = list(_val("active_warnings", list(LM_HUB_WARNUNGEN_DEFAULT)) or LM_HUB_WARNUNGEN_DEFAULT)
+        warn_default = [k for k in warn_default if k in LM_HUB_WARNUNGEN]
+        if not warn_default:
+            warn_default = list(LM_HUB_WARNUNGEN_DEFAULT)
+        selected_warns = st.multiselect(
+            "Aktive Warnsignale",
+            LM_HUB_WARNUNGEN,
+            default=warn_default,
+            key=f"lm_setup_active_warns_{ticker}",
+            help="Standardmäßig sind 3 Warnsignale aktiv. Opt-in: groesster_anstieg_volumen (Klimax-Single-Day), erschoepfungsluecke (Gap-up Klimax).",
+        )
+        active["active_warnings"] = selected_warns
+
+        with st.expander("ℹ️ Warnsignal-Erklärungen", expanded=False):
+            for key in selected_warns:
+                st.markdown(f"**{key}** – {STRATEGIE_INFO.get(key, 'Keine Beschreibung hinterlegt.')}")
+
+        st.markdown("#### Parameter je Strategie/Warnsignal")
+
+        selected = selected_strats + selected_warns
 
         for key in selected:
             with st.expander(f"Strategie: {key}", expanded=False):
@@ -10811,9 +10844,8 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
             """,
             unsafe_allow_html=True,
         )
-    contributors: list[tuple[str, int, str]] = []
-    seen_keys: set[str] = set()
-    for sig in (result.get("killer_signals", []) or []) + (result.get("tranche_signals", []) or []):
+    contributors: list[tuple[str, int, str, str]] = []
+    for sig in (result.get("killer_signals", []) or []) + (result.get("tranche_signals", []) or []) + (result.get("warning_signals", []) or []):
         if not isinstance(sig, dict):
             continue
         contribution = int(sig.get("contribution_percent", 0) or 0)
@@ -10821,15 +10853,21 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
             continue
         strat = str(sig.get("strategy_key") or "lm_native").strip() or "lm_native"
         sig_label = str(sig.get("label") or "Signal")
-        contributors.append((strat, contribution, sig_label))
-        seen_keys.add(strat)
+        kind = "Warnsignal" if strat in LM_HUB_WARNUNGEN else "Strategie"
+        contributors.append((strat, contribution, sig_label, kind))
     contributors.sort(key=lambda x: -x[1])
     breakdown_html = ""
     if contributors:
-        rows = "".join(
-            f'<li style="margin:2px 0;"><span style="font-weight:700;color:#3730a3;">{html.escape(strat)}</span> · {pct_c}% — {html.escape(sig_label)}</li>'
-            for strat, pct_c, sig_label in contributors[:8]
-        )
+        def _row(strat: str, pct_c: int, sig_label: str, kind: str) -> str:
+            color = "#9333ea" if kind == "Warnsignal" else "#3730a3"
+            tag_bg = "#faf5ff" if kind == "Warnsignal" else "#e0e7ff"
+            return (
+                f'<li style="margin:2px 0;">'
+                f'<span style="display:inline-block;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:800;background:{tag_bg};color:{color};margin-right:4px;">{kind}</span>'
+                f'<span style="font-weight:700;color:{color};">{html.escape(strat)}</span> · {pct_c}% — {html.escape(sig_label)}'
+                f'</li>'
+            )
+        rows = "".join(_row(s, p, l, k) for s, p, l, k in contributors[:8])
         more = f'<li style="margin:2px 0;color:#64748b;">… und {len(contributors) - 8} weitere</li>' if len(contributors) > 8 else ""
         breakdown_html = (
             f'<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">'
@@ -11020,12 +11058,15 @@ def _render_sell_monitor_signals(result: dict) -> None:
             )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         render_list("Killer-Signale", result.get("killer_signals", []), "#dc2626", "#fef2f2")
     with c2:
-        render_list("Tranche-Signale", result.get("tranche_signals", []), "#d97706", "#fffbeb")
+        render_list("Tranche-Signale (Strategien)", result.get("tranche_signals", []), "#d97706", "#fffbeb")
+    c3, c4 = st.columns(2)
     with c3:
+        render_list("Warnsignale (Hub)", result.get("warning_signals", []), "#9333ea", "#faf5ff")
+    with c4:
         render_list("Watch-Signale", result.get("watch_signals", []), "#2563eb", "#eff6ff")
 
 def _render_sell_monitor_diagnostics(ticker: str, metrics_payload: dict, manual_data: dict, tranche_log: list[dict], chart_df: pd.DataFrame, market_currency: str) -> None:
