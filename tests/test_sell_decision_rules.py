@@ -279,6 +279,45 @@ class HealthScoreTest(unittest.TestCase):
         self.assertEqual(results[-1]["status"], "Verkaufen")
 
 
+class StrategyKeyTaggingTest(unittest.TestCase):
+    def test_hub_signals_carry_strategy_key(self):
+        """Hub signals must arrive with a strategy_key identifying their source strategy."""
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=-8.0, buy_price=100.0, current_price=92.0, declining=True),
+        )
+        hub_signals = [s for s in result["killer_signals"] + result["tranche_signals"] if str(s.get("strategy_key", "")).startswith(("notbremse_", "drei_", "gewinn_", "ma", "drawdown_", "split_", "downside_", "stau_", "rueckkehr_", "verlusttage_", "rs_", "groesster_", "einfach", "atr_", "erschoepfungsluecke", "misslungener_"))]
+        self.assertTrue(hub_signals, "At least one Hub-tagged signal expected on -8% pnl")
+        for sig in hub_signals:
+            self.assertIn(sig["strategy_key"], (
+                "notbremse_verlust", "drei_stufen_nach_kauf", "gewinn_in_stufen", "ma21_bruch",
+                "drawdown_vom_peak", "ma_abstand", "verlusttage_haeufung", "groesster_anstieg_volumen",
+                "split_anstieg", "erschoepfungsluecke", "downside_reversal", "stau_tage",
+                "rueckkehr_pivot", "ma_bruch_defensiv", "drei_verlustwochen", "groesster_einbruch",
+                "rs_linie", "ma_basierte_sequenz", "einfach_halbe_position",
+                "misslungener_ausbruch_5stufen", "einfache_verluststufen", "atr_basiert",
+            ))
+
+    def test_lm_native_signals_carry_lm_strategy_key(self):
+        """Personality-check, weak-industry, watch signals get lm_* strategy_keys."""
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=15.0, buy_price=100.0, current_price=115.0),
+            manual_data={"personality_changed": True, "industry_group_status": "Schwach"},
+        )
+        personality_sigs = [s for s in result["tranche_signals"] if s["id"] == "tranche_personality_changed"]
+        industry_sigs = [s for s in result["tranche_signals"] if s["id"] == "tranche_weak_industry_gain"]
+        self.assertEqual(personality_sigs[0]["strategy_key"], "lm_personality_check")
+        self.assertEqual(industry_sigs[0]["strategy_key"], "lm_industry_group")
+
+    def test_active_strategies_subset_disables_others(self):
+        """When active_strategies is restricted, only those Hub strategies fire."""
+        payload = _payload(pnl_pct=-8.0, buy_price=100.0, current_price=92.0, declining=True,
+                           setup={"active_strategies": ["notbremse_verlust"]})
+        result = evaluate_sell_decision(payload)
+        hub_keys = {s["strategy_key"] for s in result["killer_signals"] + result["tranche_signals"] if not str(s["strategy_key"]).startswith("lm_")}
+        # Only notbremse_verlust should appear, NOT drei_stufen_nach_kauf or others.
+        self.assertEqual(hub_keys, {"notbremse_verlust"})
+
+
 class SetupOverrideTest(unittest.TestCase):
     def test_lm_setup_overrides_default_notbremse_thresholds(self):
         """Setup-Panel changes flow through metrics_payload['lm_setup'] to the Hub engine."""
