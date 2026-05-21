@@ -7,12 +7,105 @@ from typing import Any
 
 import math
 
+import pandas as pd
+
+from sell_strategies import Position, verkaufs_empfehlung_gesamt
+
 
 ALLOWED_RECOMMENDATION_LEVELS = [0, 25, 33, 50, 66, 75, 100]
 BEARISH_MARKET_LABEL = "Bärisch"
 DEFENSIVE_MODE = "Defensiv verkaufen: Verluste begrenzen"
 STRENGTH_OFFENSIVE_MODE = "Stärke offensiv verkaufen: Gewinn in weiter laufender Aktie mitnehmen"
 STRENGTH_DEFENSIVE_MODE = "Stärke defensiv verkaufen: Gewinn nach Rückzug sichern"
+
+# Hub strategies that replace the 13 historical LM rule blocks (patterns 1-10, 12-14
+# from the comparison table). Patterns #11 (Distribution-Tage) and #15 (Volumen-Faktor)
+# remain in LM-native code further below.
+LM_HUB_STRATEGIES = [
+    "notbremse_verlust",
+    "drei_stufen_nach_kauf",
+    "gewinn_in_stufen",
+    "ma21_bruch",
+    "drawdown_vom_peak",
+    "ma_abstand",
+    "verlusttage_haeufung",
+    "split_anstieg",
+    "downside_reversal",
+    "stau_tage",
+    "rueckkehr_pivot",
+    "ma_bruch_defensiv",
+    "drei_verlustwochen",
+    "groesster_einbruch",
+    "rs_linie",
+]
+
+# Hub default parameters that mirror the Strategien-Hub setup defaults (app.py:11506+).
+# Overridable via metrics_payload["lm_setup"] or manual_data["sell_setup"].
+LM_HUB_DEFAULTS = {
+    "ma21_variante": "gestaffelt",
+    "notbremse_verlust_schwelle_baerisch_pct": 4.0,
+    "notbremse_verlust_schwelle_unsicher_pct": 5.0,
+    "notbremse_verlust_schwelle_bullisch_pct": 7.0,
+    "drei_stufen_max_gewinn_aktiv_pct": 8.0,
+    "drei_stufen_tranche_stufe1_pct": 33.0,
+    "drei_stufen_tranche_stufe2_pct": 33.0,
+    "drei_stufen_notbremse_verlust_pct": 7.0,
+    "gewinn_nachdenken_schwelle_bull_pct": 15.0,
+    "gewinn_teilverkauf_unten_bull_pct": 20.0,
+    "gewinn_teilverkauf_oben_bull_pct": 35.0,
+    "gewinn_nachdenken_schwelle_bear_pct": 10.0,
+    "gewinn_teilverkauf_unten_bear_pct": 10.0,
+    "gewinn_teilverkauf_oben_bear_pct": 15.0,
+    "drawdown_stufe1_min_pct": 8.0,
+    "drawdown_stufe2_min_pct": 12.0,
+    "drawdown_stufe3_min_pct": 15.0,
+    "drawdown_tranche_stufe1_pct": 25.0,
+    "drawdown_tranche_stufe2_pct": 33.0,
+    "drawdown_tranche_stufe3_ohne_trendbruch_pct": 50.0,
+    "drawdown_tranche_stufe3_mit_trendbruch_pct": 100.0,
+    "ma_abstand_schwelle_ma10_pct": 10.0,
+    "ma_abstand_schwelle_ma21_pct": 15.0,
+    "ma_abstand_schwelle_ma50_pct": 25.0,
+    "ma_abstand_schwelle_ma200_pct": 70.0,
+    "ma_abstand_klimax_ma200_vollausstieg_pct": 100.0,
+    "ma_abstand_tranche_ma10_pct": 25.0,
+    "ma_abstand_tranche_ma21_pct": 33.0,
+    "ma_abstand_tranche_ma50_pct": 33.0,
+    "ma_abstand_tranche_ma200_basis_pct": 50.0,
+    "verlusttage_min_tiefere_schlusskurse_in_folge": 3,
+    "verlusttage_volumen_lookback_tage": 50,
+    "verlusttage_volumen_ratio_min": 1.1,
+    "verlusttage_tief_marker_lookback_tage": 5,
+    "verlusttage_updown_fenster_tage": 15,
+    "verlusttage_updown_diff_min": 3,
+    "verlusttage_tranche_pct": 25.0,
+    "split_signal_schwelle_pct": 25.0,
+    "split_starke_schwelle_pct": 50.0,
+    "split_datum": None,
+    "downside_kerzenweite_lookback_tage": 10,
+    "downside_volumen_lookback_tage": 50,
+    "downside_neues_hoch_lookback_tage": 30,
+    "downside_weite_kerze_faktor": 1.5,
+    "downside_volumen_ratio_min": 1.2,
+    "downside_schluss_unteres_drittel_faktor": 3.0,
+    "downside_tranche_neues_hoch_pct": 33.0,
+    "downside_tranche_weite_umkehr_pct": 20.0,
+    "downside_tranche_warnstufe_pct": 15.0,
+    "stau_fenster_tage": 10,
+    "stau_volumen_lookback_tage": 50,
+    "stau_max_tagesveraenderung_pct": 1.0,
+    "stau_min_vol_ratio": 1.3,
+    "stau_min_tage": 2,
+    "stau_nahe_hoch_drawdown_max_pct": 5.0,
+    "stau_tranche_nahe_hoch_pct": 33.0,
+    "stau_tranche_standard_pct": 20.0,
+    "groesster_einbruch_min_pnl_pct": 10.0,
+    "groesster_einbruch_min_tagesverlust_pct": 3.0,
+    "groesster_einbruch_tagesvol_ratio_schwelle": 1.5,
+    "groesster_einbruch_wochenvol_ratio_schwelle": 1.3,
+    "rs_pnl_tag_zu_woche": 20.0,
+    "rs_pnl_woche_zu_monat": 80.0,
+}
 LOSS_LIMIT_STYLE = "Verlustbegrenzung"
 STRENGTH_OFFENSIVE_STYLE = "Gewinn in Stärke mitnehmen"
 STRENGTH_DEFENSIVE_STYLE = "Gewinn nach Rückzug sichern"
@@ -54,19 +147,151 @@ BOOK_REFERENCES = {
 }
 
 WARNING_CONTRIBUTIONS = {
-    "stall_days_near_breakout": ("warning_stall_days", 25, "Stau-Tage nahe Ausbruchspunkt"),
-    "stau_tage_nahe_ausbruchspunkt": ("warning_stall_days", 25, "Stau-Tage nahe Ausbruchspunkt"),
+    # Patterns that the Hub engine does NOT cover natively → stay as LM auto-warnings.
     "low_closes": ("warning_low_closes", 15, "Mehrere Schlusskurse nahe Tagestief"),
     "mehrere_schlusskurse_nahe_tagestief": ("warning_low_closes", 15, "Mehrere Schlusskurse nahe Tagestief"),
     "negative_market_divergence": ("warning_negative_divergence", 20, "Negative Divergenz zum Markt"),
     "negative_divergenz_zum_markt": ("warning_negative_divergence", 20, "Negative Divergenz zum Markt"),
     "weak_rebounds": ("warning_weak_rebounds", 15, "Schwache Erholungsversuche"),
     "schwache_erholungsversuche": ("warning_weak_rebounds", 15, "Schwache Erholungsversuche"),
-    "downside_reversal_near_high": ("warning_downside_reversal", 25, "Downside Reversal nahe Hoch"),
-    "downside_reversal_nahe_hoch": ("warning_downside_reversal", 25, "Downside Reversal nahe Hoch"),
-    "lower_lows_no_rebound": ("warning_lower_lows", 25, "Drei bis vier tiefere Tiefs ohne Rebound"),
-    "drei_bis_vier_tiefere_tiefs_ohne_rebound": ("warning_lower_lows", 25, "Drei bis vier tiefere Tiefs ohne Rebound"),
+    # Patterns that DUPLICATE Hub strategies are intentionally NOT mapped here anymore:
+    #   - stall_days_near_breakout   → covered by Hub strategie_stau_tage
+    #   - failed_breakout_high_volume → covered by Hub strategie_rueckkehr_pivot
+    #   - lower_lows_no_rebound      → covered by Hub strategie_verlusttage_haeufung
+    #   - downside_reversal_near_high → covered by Hub strategie_downside_reversal
+    #   - worst_day_high_volume      → covered by Hub strategie_groesster_einbruch
+    #   - three_loss_weeks_rising_volume → covered by Hub strategie_drei_verlustwochen
 }
+
+
+def _resolve_setup(metrics_payload: dict, manual_data: dict | None) -> dict:
+    setup = dict(LM_HUB_DEFAULTS)
+    payload_setup = (metrics_payload or {}).get("lm_setup") if isinstance(metrics_payload, dict) else None
+    if isinstance(payload_setup, dict):
+        setup.update(payload_setup)
+    manual_setup = (manual_data or {}).get("sell_setup") if isinstance(manual_data, dict) else None
+    if isinstance(manual_setup, dict):
+        setup.update(manual_setup)
+    return setup
+
+
+def _slugify(value: str) -> str:
+    text = _norm_key(value)
+    return text or "hub_signal"
+
+
+def _classify_hub_signal_mode(name: str, contribution: int, pnl: float, regime: str) -> tuple[str, str]:
+    """Derive sell_mode/sell_style from signal name + pnl context."""
+    lower = (name or "").lower()
+    loss_keywords = ("notbremse", "verlust", "7%", "5%", "verluststufe", "stopp")
+    profit_keywords = ("gewinn", "gewinnzone", "ma-abstand", "über 10-ma", "über 21-ma", "über 50-ma", "über 200-ma", "klimax", "anstieg", "ziel", "atr gewinn")
+    if pnl <= 0 or any(token in lower for token in loss_keywords):
+        return DEFENSIVE_MODE, LOSS_LIMIT_STYLE
+    if any(token in lower for token in profit_keywords):
+        return STRENGTH_OFFENSIVE_MODE, STRENGTH_OFFENSIVE_STYLE
+    return STRENGTH_DEFENSIVE_MODE, STRENGTH_DEFENSIVE_STYLE
+
+
+def _hub_signal_to_rule_signal(hub_signal: dict, pnl: float, regime: str, as_of_date: str) -> RuleSignal:
+    name = str(hub_signal.get("name") or "Hub-Signal")
+    contribution = int(hub_signal.get("tranche_pct") or 0)
+    book_ref = str(hub_signal.get("buch_verweis") or "")
+    reason = str(hub_signal.get("begruendung") or "")
+    next_mark = hub_signal.get("naechste_marke")
+    trigger_type = str(hub_signal.get("trigger_typ") or "")
+    note_parts: list[str] = []
+    if reason:
+        note_parts.append(reason)
+    if next_mark is not None:
+        try:
+            mark_value = float(next_mark)
+            note_parts.append(f"Nächste Marke: {mark_value:.2f}")
+        except (TypeError, ValueError):
+            pass
+    if trigger_type and trigger_type not in {"schluss", "info"}:
+        note_parts.append(f"Trigger: {trigger_type}")
+    sell_mode, sell_style = _classify_hub_signal_mode(name, contribution, pnl, regime)
+    signal_id = "hub_" + _slugify(name)
+    rule_signal = RuleSignal(
+        id=signal_id,
+        label=name,
+        contribution_percent=int(contribution),
+        book_reference=book_ref,
+        signal_date=str(as_of_date or ""),
+        event_note=" · ".join(part for part in note_parts if part),
+        sell_mode=sell_mode if contribution > 0 else "",
+        sell_style=sell_style if contribution > 0 else "",
+    )
+    return rule_signal
+
+
+def _build_position_from_payload(metrics_payload: dict, manual_data: dict, tranche_log: list[dict] | None) -> Position | None:
+    metrics, ticker, buy_price, shares = _extract_inputs(metrics_payload or {})
+    if not ticker or buy_price <= 0:
+        return None
+    pivot = _safe_float(_manual_value(manual_data, metrics_payload or {}, "pivot"))
+    low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_1"))
+    low_day_0 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_0"))
+    buy_date = (metrics_payload or {}).get("buy_date") or ""
+    try:
+        buy_ts = pd.Timestamp(buy_date).tz_localize(None) if buy_date else pd.Timestamp.now().normalize()
+    except Exception:
+        buy_ts = pd.Timestamp.now().normalize()
+    ohlc = (metrics_payload or {}).get("ohlc_frames", {}) if isinstance(metrics_payload, dict) else {}
+    peak = _safe_float((ohlc or {}).get("peak_since_buy")) if isinstance(ohlc, dict) else None
+    realisierte = [
+        _safe_float((entry or {}).get("tranche_percent"), 0.0) or 0.0
+        for entry in (tranche_log or [])
+        if isinstance(entry, dict) and str((entry or {}).get("ticker", ticker)).upper().strip() == ticker
+    ]
+    return Position(
+        ticker=ticker,
+        einstiegspreis=float(buy_price),
+        einstiegsdatum=buy_ts,
+        stueckzahl=float(shares or 0.0),
+        pivot=pivot,
+        tief_tag_1=low_day_1,
+        tief_tag_0=low_day_0,
+        peak=peak,
+        realisierte_tranchen=realisierte,
+    )
+
+
+def _run_hub_engine(metrics_payload: dict, manual_data: dict, tranche_log: list[dict] | None) -> list[dict]:
+    """Execute the Strategien-Hub engine on payload-bundled OHLC frames."""
+    ohlc = (metrics_payload or {}).get("ohlc_frames", {}) if isinstance(metrics_payload, dict) else {}
+    if not isinstance(ohlc, dict):
+        return []
+    daily = ohlc.get("daily_since_buy")
+    weekly = ohlc.get("weekly_since_buy")
+    bench_daily = ohlc.get("benchmark_daily")
+    bench_weekly = ohlc.get("benchmark_weekly")
+    if not isinstance(daily, pd.DataFrame) or daily.empty:
+        return []
+    if not isinstance(weekly, pd.DataFrame):
+        weekly = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    position = _build_position_from_payload(metrics_payload, manual_data, tranche_log)
+    if position is None:
+        return []
+    market_environment = str((manual_data or {}).get("market_environment") or "Unsicher") or "Unsicher"
+    industry_group_status = str((manual_data or {}).get("industry_group_status") or "Neutral") or "Neutral"
+    options = _resolve_setup(metrics_payload, manual_data)
+    try:
+        result = verkaufs_empfehlung_gesamt(
+            position,
+            daily,
+            weekly if isinstance(weekly, pd.DataFrame) else pd.DataFrame(),
+            bench_daily if isinstance(bench_daily, pd.DataFrame) else None,
+            bench_weekly if isinstance(bench_weekly, pd.DataFrame) else None,
+            market_environment,
+            industry_group_status,
+            LM_HUB_STRATEGIES,
+            options,
+        )
+    except Exception:
+        return []
+    signals = result.get("alle_signale", []) if isinstance(result, dict) else []
+    return [sig for sig in signals if isinstance(sig, dict) and sig.get("aktuell_aktiv") and int(sig.get("tranche_pct") or 0) >= 0]
 
 
 @dataclass(frozen=True)
@@ -357,7 +582,12 @@ def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = 
 
 
 def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None) -> dict[str, Any]:
-    """Evaluate the pure sell-decision rules without UI dependencies."""
+    """Evaluate sell-decision rules using the Strategien-Hub engine for patterns 1-10/12-14.
+
+    Patterns #11 (Distribution-Tage) and #15 (Volumen-Faktor) remain in LM-native code
+    below, together with all LM-only features (regime, stop price, health-score,
+    personality check, industry-group penalty, watch signals).
+    """
     manual_data = manual_data or {}
     metrics, ticker, buy_price, _shares = _extract_inputs(metrics_payload or {})
     if not ticker and isinstance(manual_data, dict):
@@ -365,8 +595,6 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     market_environment = str(manual_data.get("market_environment") or "Unsicher").strip() or "Unsicher"
     industry_group_status = str(manual_data.get("industry_group_status") or "Neutral").strip() or "Neutral"
     pnl = _metric(metrics, "pnl_pct", 0.0) or 0.0
-    current = _metric(metrics, "current_price")
-    volume_ratio = _metric(metrics, "volume_ratio_50")
     as_of_date = _event_date(metrics, "as_of_date", fallback=(metrics_payload or {}).get("as_of", ""))
     regime = _regime(pnl, market_environment)
     is_bearish = market_environment == BEARISH_MARKET_LABEL
@@ -376,204 +604,25 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     strength_offensive_mode = STRENGTH_OFFENSIVE_MODE
     strength_defensive_mode = STRENGTH_DEFENSIVE_MODE
 
-    low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_1"))
-    low_day_0 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_0"))
-    sma21 = _metric(metrics, "sma21")
-    sma50 = _metric(metrics, "sma50")
-    sma200 = _metric(metrics, "sma200")
-    rs_line = _metric(metrics, "rs_line")
-    rs_ma50 = _metric(metrics, "rs_ma50")
-    price_vs_sma50_pct = _metric(metrics, "price_vs_sma50_pct")
-    price_vs_sma200_pct = _metric(metrics, "price_vs_sma200_pct")
-    if price_vs_sma50_pct is None and current and sma50:
-        price_vs_sma50_pct = (current / sma50 - 1) * 100
-    if price_vs_sma200_pct is None and current and sma200:
-        price_vs_sma200_pct = (current / sma200 - 1) * 100
-
     killer_signals: list[RuleSignal] = []
     tranche_signals: list[RuleSignal] = []
     watch_signals: list[RuleSignal] = []
 
-    if pnl <= -7:
-        killer_signals.append(_signal(
-            "killer_loss_7", "7%-Notbremse", 100,
-            signal_date=_event_date(metrics, "first_loss_7_date", fallback=as_of_date),
-            event_note=f"P&L {pnl:.1f}%",
-            sell_mode=defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE,
-        ))
-    if is_bearish and pnl <= -5:
-        killer_signals.append(_signal(
-            "killer_bear_loss_5", "Bärenmarkt-Notbremse", 100,
-            signal_date=_event_date(metrics, "first_loss_5_date", fallback=as_of_date),
-            event_note=f"Bärenmarkt · P&L {pnl:.1f}%",
-            sell_mode=defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE,
-        ))
-    if current is not None and sma200 and current < sma200 and volume_ratio is not None and volume_ratio > 1.5:
-        killer_signals.append(_signal(
-            "killer_sma200_volume", "200-MA-Bruch mit Volumen", 100,
-            signal_date=_event_date(metrics, "first_sma200_volume_break_date", fallback=as_of_date),
-            event_note=_event_note(f"Kurs {current:.2f} unter 200-MA {sma200:.2f}", f"Volumenfaktor {volume_ratio:.2f}"),
-            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
-        ))
-    if current is not None and low_day_1 and current < low_day_1 and volume_ratio is not None and volume_ratio > 1.2 and negative_pnl:
-        killer_signals.append(_signal(
-            "killer_breakout_failed_volume", "Ausbruch ohne Kraft mit Volumen-Rückfall", 100,
-            signal_date=_event_date(metrics, "first_low_day_1_loss_date", fallback=as_of_date),
-            event_note=_event_note(f"Kurs {current:.2f} unter Tief Tag 1 {low_day_1:.2f}", f"Volumenfaktor {volume_ratio:.2f}"),
-            sell_mode=defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE,
-        ))
-    if _safe_bool(metrics.get("three_loss_weeks_rising_volume")) or (_metric(metrics, "consecutive_loss_weeks_rising_volume", 0) or 0) >= 3:
-        killer_signals.append(_signal(
-            "killer_three_loss_weeks_rising_volume", "Drei Verlustwochen mit steigendem Wochenvolumen", 100,
-            signal_date=_event_date(metrics, "three_loss_weeks_rising_volume_start_date", fallback=as_of_date),
-            event_note=f"{int(_metric(metrics, 'consecutive_loss_weeks_rising_volume', 0) or 0)} Verlustwochen mit steigendem Volumen",
-            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
-        ))
-    if (_metric(metrics, "weekly_closes_under_10w", 0) or 0) >= 8:
-        killer_signals.append(_signal(
-            "killer_eight_weeks_under_10w", "Acht oder mehr Wochenschlüsse unter 10-Wochen-Linie", 100,
-            signal_date=_event_date(metrics, "under_weekly_sma10_start_date", fallback=as_of_date),
-            event_note=f"{int(_metric(metrics, 'weekly_closes_under_10w', 0) or 0)} Wochenschlüsse unter 10-Wochen-Linie",
-            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
-        ))
-
-    if current is not None and low_day_1 and current < low_day_1 and negative_pnl:
-        tranche_signals.append(_signal(
-            "tranche_low_day_1_loss", "Schluss unter Tief Tag 1 im Verlustfall", 33,
-            signal_date=_event_date(metrics, "first_low_day_1_loss_date", fallback=as_of_date),
-            event_note=_event_note(f"Kurs {current:.2f} unter Tief Tag 1 {low_day_1:.2f}", _event_date(metrics, "low_day_1_date")),
-            sell_mode=defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE,
-        ))
-    if current is not None and low_day_0 and current < low_day_0 and negative_pnl:
-        tranche_signals.append(_signal(
-            "tranche_low_day_0_loss", "Schluss unter Tief Tag 0 im Verlustfall", 33,
-            signal_date=_event_date(metrics, "first_low_day_0_loss_date", fallback=as_of_date),
-            event_note=_event_note(f"Kurs {current:.2f} unter Tief Tag 0 {low_day_0:.2f}", _event_date(metrics, "low_day_0_date")),
-            sell_mode=defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE,
-        ))
-    days_under_sma21 = int(_metric(metrics, "days_under_sma21", 0) or 0)
-    if positive_pnl and days_under_sma21 >= 1:
-        tranche_signals.append(_signal(
-            "tranche_first_sma21_break_gain", "Erstmaliger Bruch der 21-MA im Gewinnfall", 25,
-            signal_date=_event_date(metrics, "under_sma21_start_date", fallback=as_of_date),
-            event_note=_event_note(f"{days_under_sma21} Tag(e) unter der 21-MA", f"21-MA {sma21:.2f}" if sma21 else ""),
-            sell_mode=strength_defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE,
-        ))
-    if positive_pnl and days_under_sma21 >= 3:
-        tranche_signals.append(_signal(
-            "tranche_three_days_under_sma21_gain", "Drei Tage in Folge unter 21-MA im Gewinnfall", 25,
-            signal_date=_event_date(metrics, "under_sma21_start_date", fallback=as_of_date),
-            event_note=_event_note(f"{days_under_sma21} Tage in Folge unter der 21-MA", f"21-MA {sma21:.2f}" if sma21 else ""),
-            sell_mode=strength_defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE,
-        ))
-    if current is not None and sma50 and current < sma50 * 0.98 and volume_ratio is not None and volume_ratio > 1.2:
-        tranche_signals.append(_signal(
-            "tranche_sma50_break_volume", "Bruch der 50-MA mit mindestens 2% Abstand und erhöhtem Volumen", 50,
-            signal_date=_event_date(metrics, "first_sma50_volume_break_date", "under_sma50_start_date", fallback=as_of_date),
-            event_note=_event_note(f"Kurs {current:.2f} unter 50-MA {sma50:.2f}", f"Volumenfaktor {volume_ratio:.2f}" if volume_ratio is not None else ""),
-            sell_mode=defensive_mode if negative_pnl else strength_defensive_mode,
-            sell_style=LOSS_LIMIT_STYLE if negative_pnl else STRENGTH_DEFENSIVE_STYLE,
-        ))
+    # Patterns 1-10, 12-14: delegated to the Strategien-Hub engine.
+    for hub_signal in _run_hub_engine(metrics_payload or {}, manual_data, tranche_log):
+        contribution = int(hub_signal.get("tranche_pct") or 0)
+        rule_signal = _hub_signal_to_rule_signal(hub_signal, pnl, regime, as_of_date)
+        if contribution >= 100:
+            killer_signals.append(rule_signal)
+        elif contribution > 0:
+            tranche_signals.append(rule_signal)
+        else:
+            # Hub info signals (tranche_pct == 0) become watch signals.
+            watch_signals.append(rule_signal)
 
     already_sold = _sum_already_sold(ticker, tranche_log)
-    profit_zone_threshold = 10 if is_bearish else 20
-    if pnl >= profit_zone_threshold and pnl <= 25:
-        tranche_signals.append(_signal(
-            "tranche_profit_zone_20_25", "Erreichen der Gewinnmitnahme-Zone", 33,
-            signal_date=_event_date(metrics, "first_10_pct_gain_date" if is_bearish else "first_20_pct_gain_date", fallback=as_of_date),
-            event_note=f"P&L {pnl:.1f}% in der Gewinnmitnahme-Zone",
-            sell_mode=strength_offensive_mode,
-            sell_style=STRENGTH_OFFENSIVE_STYLE,
-        ))
 
-    drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
-    if positive_pnl and drawdown >= 15:
-        tranche_signals.append(_signal(
-            "tranche_drawdown_15_full", "Drawdown vom Peak >= 15% bei positivem P&L", 100,
-            signal_date=_event_date(metrics, "first_drawdown_15_date", fallback=as_of_date),
-            event_note=_event_note(f"Drawdown vom Peak {drawdown:.1f}%", _event_date(metrics, "high_since_buy_date")),
-            sell_mode=strength_defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE,
-        ))
-    else:
-        if positive_pnl and drawdown >= 8:
-            tranche_signals.append(_signal(
-                "tranche_drawdown_8", "Drawdown vom Peak >= 8% bei positivem P&L", 25,
-                signal_date=_event_date(metrics, "first_drawdown_8_date", fallback=as_of_date),
-                event_note=_event_note(f"Drawdown vom Peak {drawdown:.1f}%", _event_date(metrics, "high_since_buy_date")),
-                sell_mode=strength_defensive_mode,
-                sell_style=STRENGTH_DEFENSIVE_STYLE,
-            ))
-        if positive_pnl and drawdown >= 12:
-            tranche_signals.append(_signal(
-                "tranche_drawdown_12", "Drawdown vom Peak >= 12% bei positivem P&L", 25,
-                signal_date=_event_date(metrics, "first_drawdown_12_date", fallback=as_of_date),
-                event_note=_event_note(f"Drawdown vom Peak {drawdown:.1f}%", _event_date(metrics, "high_since_buy_date")),
-                sell_mode=strength_defensive_mode,
-                sell_style=STRENGTH_DEFENSIVE_STYLE,
-            ))
-
-    if positive_pnl and price_vs_sma50_pct is not None and price_vs_sma50_pct > 25:
-        tranche_signals.append(_signal(
-            "tranche_extended_sma50", "Kurs mehr als 25% über der 50-MA", 33,
-            signal_date=_event_date(metrics, "first_sma50_extension_date", fallback=as_of_date),
-            event_note=f"Abstand zur 50-MA {price_vs_sma50_pct:.1f}%",
-            sell_mode=strength_offensive_mode,
-            sell_style=STRENGTH_OFFENSIVE_STYLE,
-        ))
-    if positive_pnl and price_vs_sma200_pct is not None and price_vs_sma200_pct > 70:
-        tranche_signals.append(_signal(
-            "tranche_extended_sma200", "Kurs mehr als 70% über der 200-MA", 33,
-            signal_date=_event_date(metrics, "first_sma200_extension_date", fallback=as_of_date),
-            event_note=f"Abstand zur 200-MA {price_vs_sma200_pct:.1f}%",
-            sell_mode=strength_offensive_mode,
-            sell_style=STRENGTH_OFFENSIVE_STYLE,
-        ))
-
-    days_under_rs21 = int(_metric(metrics, "days_under_rs_ma21", 0) or 0)
-    if days_under_rs21 >= 1:
-        tranche_signals.append(_signal(
-            "tranche_rs_first_21_break", "RS-Linie bricht erstmalig ihren 21-MA", 20,
-            signal_date=_event_date(metrics, "under_rs_ma21_start_date", fallback=as_of_date),
-            event_note=f"RS-Linie {days_under_rs21} Tag(e) unter 21-MA",
-            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
-        ))
-    if days_under_rs21 >= 3:
-        tranche_signals.append(_signal(
-            "tranche_rs_three_days_under_21", "RS-Linie schließt drei Tage in Folge unter 21-MA", 30,
-            signal_date=_event_date(metrics, "under_rs_ma21_start_date", fallback=as_of_date),
-            event_note=f"RS-Linie {days_under_rs21} Tage in Folge unter 21-MA",
-            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
-        ))
-    if rs_line is not None and rs_ma50 is not None and rs_line < rs_ma50:
-        tranche_signals.append(_signal(
-            "tranche_rs_50_break", "RS-Linie bricht ihren 50-MA", 50,
-            signal_date=_event_date(metrics, "under_rs_ma50_start_date", fallback=as_of_date),
-            event_note=_event_note(f"RS-Linie {rs_line:.4f}" if rs_line is not None else "", f"RS-50-MA {rs_ma50:.4f}" if rs_ma50 is not None else ""),
-            sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
-        ))
-
-    if positive_pnl and pnl > 15 and _safe_bool(metrics.get("worst_day_loss_high_volume")):
-        tranche_signals.append(_signal(
-            "tranche_worst_day_high_volume", "Größter Tagesverlust seit Einstieg bei erhöhtem Volumen", 33,
-            signal_date=_event_date(metrics, "worst_day_loss_date", fallback=as_of_date),
-            event_note=f"Tagesverlust {(_metric(metrics, 'worst_day_loss_pct_since_buy', 0.0) or 0.0):.1f}% bei erhöhtem Volumen",
-            sell_mode=strength_defensive_mode,
-            sell_style=STRENGTH_DEFENSIVE_STYLE,
-        ))
+    # LM-only tranche signals (no Hub equivalent).
     if _safe_bool(manual_data.get("personality_changed")):
         tranche_signals.append(_signal(
             "tranche_personality_changed", "Persönlichkeits-Check angekreuzt", 25,
@@ -605,6 +654,9 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
                 sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
             ))
 
+    # LM-native watch signals (incl. pattern #11 Distribution-Tage).
+    days_under_sma21 = int(_metric(metrics, "days_under_sma21", 0) or 0)
+    drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
     if positive_pnl and 1 <= days_under_sma21 <= 2:
         watch_signals.append(_signal("watch_under_sma21_1_2", "Ein bis zwei Tage unter 21-MA bei positivem P&L"))
     if positive_pnl and 5 <= drawdown < 8:
