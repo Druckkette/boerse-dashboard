@@ -568,6 +568,40 @@ def build_sell_decision_metrics_payload(
         "low_day_1": low_day_1_default,
         "low_day_0": low_day_0_default,
     }
+
+    # OHLC frames in lowercase column layout for the Hub-style sell engine.
+    # Daily uses since-buy slice (matches Strategien-Hub semantics); benchmark stays full
+    # so weekly resampling for the RS strategy has enough history.
+    def _lowercase_ohlc(frame: pd.DataFrame) -> pd.DataFrame:
+        if frame is None or frame.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        cols = {}
+        for src, dst in (("Open", "open"), ("High", "high"), ("Low", "low"), ("Close", "close"), ("Volume", "volume")):
+            cols[dst] = pd.to_numeric(frame.get(src, pd.Series(dtype=float)), errors="coerce")
+        out = pd.DataFrame(cols).dropna(subset=["close"])
+        out.index = pd.to_datetime(out.index).tz_localize(None) if not out.empty else out.index
+        return out
+
+    daily_full = _lowercase_ohlc(df)
+    daily_since_buy = daily_full[daily_full.index >= buy_ts] if not daily_full.empty else daily_full
+    weekly_since_buy = (
+        daily_since_buy.resample("W-FRI").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+        if not daily_since_buy.empty else pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    )
+    bench_daily = _lowercase_ohlc(bench)
+    bench_weekly = (
+        bench_daily.resample("W-FRI").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+        if not bench_daily.empty else pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    )
+
+    ohlc_frames = {
+        "daily_since_buy": daily_since_buy,
+        "weekly_since_buy": weekly_since_buy,
+        "benchmark_daily": bench_daily,
+        "benchmark_weekly": bench_weekly,
+        "peak_since_buy": float(high_since_buy) if high_since_buy and high_since_buy > 0 else None,
+    }
+
     return {
         "ok": True,
         "error": "",
@@ -582,6 +616,7 @@ def build_sell_decision_metrics_payload(
         "metrics": metrics,
         "manual_defaults": manual_defaults,
         "auto_checkboxes": auto_checkboxes,
+        "ohlc_frames": ohlc_frames,
     }
 
 

@@ -37,6 +37,7 @@ from sell_decision_metrics import (
     build_sell_decision_metrics_smoke_inputs,
 )
 import sell_decision_rules
+from sell_decision_rules import LM_HUB_DEFAULTS
 from sell_strategies import Position, verkaufs_empfehlung_gesamt
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
@@ -10437,18 +10438,118 @@ SELL_MONITOR_STRENGTH_SIGNALS = [
 ]
 
 SELL_MONITOR_WARNING_SIGNALS = [
-    ("failed_breakout_high_volume", "Ausbruch ohne Kraft und schnelles Zurückfallen mit hohem Volumen"),
-    ("lower_lows_no_rebound", "drei bis vier tiefere Tagestiefs in Folge ohne Rebound"),
-    ("stall_days_near_breakout", "Stau-Tage nahe dem Ausbruchspunkt"),
+    # Warning patterns that the Hub engine does NOT cover natively — kept as LM auto-warn.
     ("low_closes", "mehrere Schlusskurse nahe Tagestief"),
     ("distribution_cluster", "Häufung von Distributions-Tagen"),
     ("negative_market_divergence", "negative Divergenz zum Gesamtmarkt"),
     ("weak_rebounds", "schwache Erholungsversuche"),
     ("weak_industry_group", "Industriegruppe schwächelt"),
-    ("worst_day_high_volume", "größter Tagesverlust seit Beginn der Bewegung mit hohem Volumen"),
-    ("downside_reversal_near_high", "Downside Reversal nahe Hoch"),
-    ("three_loss_weeks_rising_volume", "drei Wochen in Folge Verluste bei steigendem Wochenvolumen"),
+    # Removed (now covered by Hub strategies, see sell_decision_rules.WARNING_CONTRIBUTIONS):
+    #   failed_breakout_high_volume → strategie_rueckkehr_pivot
+    #   lower_lows_no_rebound       → strategie_verlusttage_haeufung
+    #   stall_days_near_breakout    → strategie_stau_tage
+    #   worst_day_high_volume       → strategie_groesster_einbruch
+    #   downside_reversal_near_high → strategie_downside_reversal
+    #   three_loss_weeks_rising_volume → strategie_drei_verlustwochen
 ]
+
+
+def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
+    """Render LM strategy setup and return the active parameter dict.
+
+    Values are kept in st.session_state so changes apply on the next rerun.
+    The Speichern-button persists current values into manual_data["sell_setup"].
+    """
+    saved = dict((manual_data or {}).get("sell_setup", {}) or {})
+
+    def _val(key: str, default):
+        if key in saved and saved.get(key) is not None:
+            return saved[key]
+        return default
+
+    with st.expander("⚙️ Strategie-Setup (Hub-Engine)", expanded=False):
+        st.caption("Diese Parameter steuern die Hub-Berechnung im Live-Monitor (Patterns 1-10, 12-14). Patterns #11 Distribution-Tage und #15 Volumen-Faktor bleiben LM-nativ.")
+
+        active = dict(LM_HUB_DEFAULTS)
+
+        with st.expander("Notbremse (Strategie 2) und Drei-Stufen-Regel (Strategie 1)", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            active["notbremse_verlust_schwelle_baerisch_pct"] = c1.number_input("Notbremse Bärisch (%)", min_value=0.5, max_value=30.0, value=float(_val("notbremse_verlust_schwelle_baerisch_pct", 4.0)), step=0.5, key=f"lm_setup_notbremse_bear_{ticker}")
+            active["notbremse_verlust_schwelle_unsicher_pct"] = c2.number_input("Notbremse Unsicher (%)", min_value=0.5, max_value=30.0, value=float(_val("notbremse_verlust_schwelle_unsicher_pct", 5.0)), step=0.5, key=f"lm_setup_notbremse_uncertain_{ticker}")
+            active["notbremse_verlust_schwelle_bullisch_pct"] = c3.number_input("Notbremse Bullisch (%)", min_value=0.5, max_value=30.0, value=float(_val("notbremse_verlust_schwelle_bullisch_pct", 7.0)), step=0.5, key=f"lm_setup_notbremse_bull_{ticker}")
+            c4, c5, c6 = st.columns(3)
+            active["drei_stufen_max_gewinn_aktiv_pct"] = c4.number_input("Drei-Stufen max. Gewinn aktiv (%)", min_value=0.0, max_value=50.0, value=float(_val("drei_stufen_max_gewinn_aktiv_pct", 8.0)), step=0.5, key=f"lm_setup_three_stage_max_gain_{ticker}")
+            active["drei_stufen_notbremse_verlust_pct"] = c5.number_input("Drei-Stufen Notbremse (%)", min_value=1.0, max_value=30.0, value=float(_val("drei_stufen_notbremse_verlust_pct", 7.0)), step=0.5, key=f"lm_setup_three_stage_stop_{ticker}")
+            active["drei_stufen_tranche_stufe1_pct"] = c6.number_input("Drei-Stufen Tranche 1 (%)", min_value=1.0, max_value=100.0, value=float(_val("drei_stufen_tranche_stufe1_pct", 33.0)), step=1.0, key=f"lm_setup_three_stage_t1_{ticker}")
+            active["drei_stufen_tranche_stufe2_pct"] = st.number_input("Drei-Stufen Tranche 2 (%)", min_value=1.0, max_value=100.0, value=float(_val("drei_stufen_tranche_stufe2_pct", 33.0)), step=1.0, key=f"lm_setup_three_stage_t2_{ticker}")
+
+        with st.expander("Gewinn-in-Stufen (Strategie 3)", expanded=False):
+            c1, c2 = st.columns(2)
+            active["gewinn_nachdenken_schwelle_bull_pct"] = c1.number_input("Nachdenkschwelle Bull/Unsicher (%)", min_value=0.0, max_value=200.0, value=float(_val("gewinn_nachdenken_schwelle_bull_pct", 15.0)), step=0.5, key=f"lm_setup_gain_nd_bull_{ticker}")
+            active["gewinn_teilverkauf_unten_bull_pct"] = c1.number_input("Gewinnzone unten Bull/Unsicher (%)", min_value=0.0, max_value=200.0, value=float(_val("gewinn_teilverkauf_unten_bull_pct", 20.0)), step=0.5, key=f"lm_setup_gain_lo_bull_{ticker}")
+            active["gewinn_teilverkauf_oben_bull_pct"] = c1.number_input("Gewinnzone oben Bull/Unsicher (%)", min_value=0.0, max_value=300.0, value=float(_val("gewinn_teilverkauf_oben_bull_pct", 35.0)), step=0.5, key=f"lm_setup_gain_hi_bull_{ticker}")
+            active["gewinn_nachdenken_schwelle_bear_pct"] = c2.number_input("Nachdenkschwelle Bärisch (%)", min_value=0.0, max_value=200.0, value=float(_val("gewinn_nachdenken_schwelle_bear_pct", 10.0)), step=0.5, key=f"lm_setup_gain_nd_bear_{ticker}")
+            active["gewinn_teilverkauf_unten_bear_pct"] = c2.number_input("Gewinnzone unten Bärisch (%)", min_value=0.0, max_value=200.0, value=float(_val("gewinn_teilverkauf_unten_bear_pct", 10.0)), step=0.5, key=f"lm_setup_gain_lo_bear_{ticker}")
+            active["gewinn_teilverkauf_oben_bear_pct"] = c2.number_input("Gewinnzone oben Bärisch (%)", min_value=0.0, max_value=300.0, value=float(_val("gewinn_teilverkauf_oben_bear_pct", 15.0)), step=0.5, key=f"lm_setup_gain_hi_bear_{ticker}")
+
+        with st.expander("21-MA-Bruch (Strategie 4)", expanded=False):
+            variants = ["gestaffelt", "aggressiv", "geduldig"]
+            default_variant = str(_val("ma21_variante", "gestaffelt"))
+            if default_variant not in variants:
+                default_variant = "gestaffelt"
+            active["ma21_variante"] = st.selectbox("Variante 21-MA-Bruch", variants, index=variants.index(default_variant), key=f"lm_setup_ma21_var_{ticker}")
+
+        with st.expander("Drawdown vom Peak (Strategie 5)", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            active["drawdown_stufe1_min_pct"] = c1.number_input("Stufe 1 ab (%)", min_value=1.0, max_value=50.0, value=float(_val("drawdown_stufe1_min_pct", 8.0)), step=0.5, key=f"lm_setup_dd_s1_{ticker}")
+            active["drawdown_stufe2_min_pct"] = c2.number_input("Stufe 2 ab (%)", min_value=1.0, max_value=80.0, value=float(_val("drawdown_stufe2_min_pct", 12.0)), step=0.5, key=f"lm_setup_dd_s2_{ticker}")
+            active["drawdown_stufe3_min_pct"] = c3.number_input("Stufe 3 ab (%)", min_value=1.0, max_value=100.0, value=float(_val("drawdown_stufe3_min_pct", 15.0)), step=0.5, key=f"lm_setup_dd_s3_{ticker}")
+            c4, c5, c6 = st.columns(3)
+            active["drawdown_tranche_stufe1_pct"] = c4.number_input("Tranche Stufe 1 (%)", min_value=1.0, max_value=100.0, value=float(_val("drawdown_tranche_stufe1_pct", 25.0)), step=1.0, key=f"lm_setup_dd_t1_{ticker}")
+            active["drawdown_tranche_stufe2_pct"] = c5.number_input("Tranche Stufe 2 (%)", min_value=1.0, max_value=100.0, value=float(_val("drawdown_tranche_stufe2_pct", 33.0)), step=1.0, key=f"lm_setup_dd_t2_{ticker}")
+            active["drawdown_tranche_stufe3_ohne_trendbruch_pct"] = c6.number_input("Tranche Stufe 3 ohne Trendbruch (%)", min_value=1.0, max_value=100.0, value=float(_val("drawdown_tranche_stufe3_ohne_trendbruch_pct", 50.0)), step=1.0, key=f"lm_setup_dd_t3a_{ticker}")
+            active["drawdown_tranche_stufe3_mit_trendbruch_pct"] = st.number_input("Tranche Stufe 3 mit Trendbruch (%)", min_value=1.0, max_value=100.0, value=float(_val("drawdown_tranche_stufe3_mit_trendbruch_pct", 100.0)), step=1.0, key=f"lm_setup_dd_t3b_{ticker}")
+
+        with st.expander("MA-Abstand (Strategie 6)", expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            active["ma_abstand_schwelle_ma10_pct"] = c1.number_input("Schwelle 10-MA (%)", min_value=1.0, max_value=50.0, value=float(_val("ma_abstand_schwelle_ma10_pct", 10.0)), step=0.5, key=f"lm_setup_dist10_{ticker}")
+            active["ma_abstand_schwelle_ma21_pct"] = c2.number_input("Schwelle 21-MA (%)", min_value=1.0, max_value=80.0, value=float(_val("ma_abstand_schwelle_ma21_pct", 15.0)), step=0.5, key=f"lm_setup_dist21_{ticker}")
+            active["ma_abstand_schwelle_ma50_pct"] = c3.number_input("Schwelle 50-MA (%)", min_value=1.0, max_value=120.0, value=float(_val("ma_abstand_schwelle_ma50_pct", 25.0)), step=0.5, key=f"lm_setup_dist50_{ticker}")
+            active["ma_abstand_schwelle_ma200_pct"] = c4.number_input("Klimax 200-MA (%)", min_value=10.0, max_value=200.0, value=float(_val("ma_abstand_schwelle_ma200_pct", 70.0)), step=1.0, key=f"lm_setup_dist200_{ticker}")
+            active["ma_abstand_klimax_ma200_vollausstieg_pct"] = st.number_input("Vollausstieg ab 200-MA (%)", min_value=20.0, max_value=300.0, value=float(_val("ma_abstand_klimax_ma200_vollausstieg_pct", 100.0)), step=1.0, key=f"lm_setup_dist200_full_{ticker}")
+
+        with st.expander("Stau-Tage (Strategie 13)", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            active["stau_fenster_tage"] = int(c1.number_input("Fenster (Sessions)", min_value=5, max_value=30, value=int(_val("stau_fenster_tage", 10)), step=1, key=f"lm_setup_stall_window_{ticker}"))
+            active["stau_min_tage"] = int(c2.number_input("Min. Stau-Tage", min_value=1, max_value=10, value=int(_val("stau_min_tage", 2)), step=1, key=f"lm_setup_stall_min_days_{ticker}"))
+            active["stau_min_vol_ratio"] = c3.number_input("Min. Volumenfaktor", min_value=0.8, max_value=5.0, value=float(_val("stau_min_vol_ratio", 1.3)), step=0.1, key=f"lm_setup_stall_vol_{ticker}")
+
+        with st.expander("Größter Einbruch (Strategie 17)", expanded=False):
+            c1, c2, c3, c4 = st.columns(4)
+            active["groesster_einbruch_min_pnl_pct"] = c1.number_input("Min. P&L vor Aktivierung (%)", min_value=0.0, max_value=300.0, value=float(_val("groesster_einbruch_min_pnl_pct", 10.0)), step=0.5, key=f"lm_setup_drop_minpnl_{ticker}")
+            active["groesster_einbruch_min_tagesverlust_pct"] = c2.number_input("Min. Tagesverlust (%)", min_value=0.5, max_value=30.0, value=float(_val("groesster_einbruch_min_tagesverlust_pct", 3.0)), step=0.1, key=f"lm_setup_drop_minday_{ticker}")
+            active["groesster_einbruch_tagesvol_ratio_schwelle"] = c3.number_input("Volumenfaktor Tag", min_value=0.5, max_value=10.0, value=float(_val("groesster_einbruch_tagesvol_ratio_schwelle", 1.5)), step=0.1, key=f"lm_setup_drop_dayvol_{ticker}")
+            active["groesster_einbruch_wochenvol_ratio_schwelle"] = c4.number_input("Volumenfaktor Woche", min_value=0.5, max_value=10.0, value=float(_val("groesster_einbruch_wochenvol_ratio_schwelle", 1.3)), step=0.1, key=f"lm_setup_drop_weekvol_{ticker}")
+
+        with st.expander("RS-Linie (Strategie 18)", expanded=False):
+            c1, c2 = st.columns(2)
+            active["rs_pnl_tag_zu_woche"] = c1.number_input("P&L Tag → Woche (%)", min_value=0.0, max_value=200.0, value=float(_val("rs_pnl_tag_zu_woche", 20.0)), step=0.5, key=f"lm_setup_rs_dw_{ticker}")
+            active["rs_pnl_woche_zu_monat"] = c2.number_input("P&L Woche → Monat (%)", min_value=0.0, max_value=300.0, value=float(_val("rs_pnl_woche_zu_monat", 80.0)), step=0.5, key=f"lm_setup_rs_wm_{ticker}")
+
+        with st.expander("Split-Anstieg (Strategie 10) – Datum manuell", expanded=False):
+            manual_split = st.date_input("Manuelles Split-Datum (optional)", value=None, key=f"lm_setup_split_date_{ticker}")
+            if manual_split:
+                active["split_datum"] = pd.Timestamp(manual_split)
+
+        if st.button("💾 Setup für diesen Ticker speichern", key=f"lm_setup_save_{ticker}", type="secondary"):
+            new_manual = dict(get_position_manual_sell_data(ticker) or {})
+            persistable = {k: v for k, v in active.items() if not isinstance(v, pd.Timestamp)}
+            new_manual["sell_setup"] = persistable
+            save_position_manual_sell_data(ticker, new_manual)
+            st.success("Setup gespeichert.")
+            st.rerun()
+
+    return active
 
 
 def _sell_monitor_auto_checkbox_data(metrics_payload: dict) -> tuple[dict, dict, dict]:
@@ -10888,6 +10989,12 @@ def _render_sell_decision_live_monitor() -> None:
             display_manual[key] = defaults.get(key)
     metrics = metrics_payload.get("metrics", {}) or {}
     tranche_log = load_tranche_log()
+
+    # Strategy setup (Hub-Engine parameters). Render first so the values are available
+    # for the recommendation hero on the same render pass.
+    active_setup = _render_sell_monitor_setup_panel(selected_ticker, manual_data)
+    metrics_payload["lm_setup"] = active_setup
+
     result_preview = evaluate_sell_decision(metrics_payload, display_manual, tranche_log)
     _render_sell_monitor_recommendation(result_preview, metrics, shares, market_currency)
     _render_sell_monitor_tranche_log(selected_ticker, result_preview, metrics, shares, market_currency, tranche_log)
