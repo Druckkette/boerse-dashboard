@@ -46,29 +46,43 @@ LM_HUB_STRATEGIES_ALL = [
     "atr_basiert",
 ]
 
-# Default active subset — matches the original 13 LM patterns (1-10, 12-14 of the
-# comparison table). Other strategies are available via the multiselect but opt-in
-# to avoid signal collisions (e.g., einfach_halbe_position + gewinn_in_stufen both
-# firing at pnl≥20).
-LM_HUB_STRATEGIES_DEFAULT = [
+# Klassifikation der 22 Hub-Strategien:
+#   - LM_HUB_WARNUNGEN: Verhaltens-/Distributionssignale (Frühwarnung)
+#   - LM_HUB_STRATEGIEN: feste Verkaufsregeln mit klarer Tranche-Logik
+LM_HUB_WARNUNGEN = [
+    "verlusttage_haeufung",
+    "stau_tage",
+    "downside_reversal",
+    "groesster_anstieg_volumen",
+    "erschoepfungsluecke",
+]
+
+LM_HUB_STRATEGIEN = [k for k in LM_HUB_STRATEGIES_ALL if k not in LM_HUB_WARNUNGEN]
+
+# Default active subset — orientiert sich an den ursprünglichen 13 LM-Patterns.
+# Strategien und Warnsignale getrennt, beide sind standardmäßig vorausgewählt.
+LM_HUB_STRATEGIEN_DEFAULT = [
     "notbremse_verlust",
     "drei_stufen_nach_kauf",
     "gewinn_in_stufen",
     "ma21_bruch",
     "drawdown_vom_peak",
     "ma_abstand",
-    "verlusttage_haeufung",
     "split_anstieg",
-    "downside_reversal",
-    "stau_tage",
     "rueckkehr_pivot",
     "ma_bruch_defensiv",
     "drei_verlustwochen",
     "groesster_einbruch",
     "rs_linie",
 ]
+LM_HUB_WARNUNGEN_DEFAULT = [
+    "verlusttage_haeufung",
+    "stau_tage",
+    "downside_reversal",
+]
 
-# Backwards compatibility / default subset.
+# Backwards compatibility.
+LM_HUB_STRATEGIES_DEFAULT = LM_HUB_STRATEGIEN_DEFAULT + LM_HUB_WARNUNGEN_DEFAULT
 LM_HUB_STRATEGIES = LM_HUB_STRATEGIES_DEFAULT
 
 # Hub default parameters that mirror the Strategien-Hub setup defaults (app.py:11506+).
@@ -161,8 +175,10 @@ LM_HUB_DEFAULTS = {
     "ma_seq_unter_ma21_mindestgewinn_pct": 5.0,
     "ma_seq_unter_ma21_tranche_pct": 25.0,
     "ma_seq_klarer_ma50_bruch_pct": 2.0,
-    # Set of active strategies (subset of LM_HUB_STRATEGIES_ALL). Default: original 13 patterns.
-    "active_strategies": list(LM_HUB_STRATEGIES_DEFAULT),
+    # Aktive Strategien (Verkaufsregeln) und Warnsignale (Verhaltensmuster).
+    # Vereinigung wird intern an die Hub-Engine übergeben.
+    "active_strategies": list(LM_HUB_STRATEGIEN_DEFAULT),
+    "active_warnings": list(LM_HUB_WARNUNGEN_DEFAULT),
 }
 LOSS_LIMIT_STYLE = "Verlustbegrenzung"
 STRENGTH_OFFENSIVE_STYLE = "Gewinn in Stärke mitnehmen"
@@ -336,11 +352,17 @@ def _run_hub_engine(metrics_payload: dict, manual_data: dict, tranche_log: list[
     market_environment = str((manual_data or {}).get("market_environment") or "Unsicher") or "Unsicher"
     industry_group_status = str((manual_data or {}).get("industry_group_status") or "Neutral") or "Neutral"
     options = _resolve_setup(metrics_payload, manual_data)
-    raw_active = options.get("active_strategies")
-    if isinstance(raw_active, (list, tuple, set)) and raw_active:
-        active_strategies = [k for k in raw_active if k in LM_HUB_STRATEGIES_ALL]
+    raw_strats = options.get("active_strategies")
+    raw_warns = options.get("active_warnings")
+    if isinstance(raw_strats, (list, tuple, set)):
+        strat_set = [k for k in raw_strats if k in LM_HUB_STRATEGIEN]
     else:
-        active_strategies = list(LM_HUB_STRATEGIES_ALL)
+        strat_set = list(LM_HUB_STRATEGIEN_DEFAULT)
+    if isinstance(raw_warns, (list, tuple, set)):
+        warn_set = [k for k in raw_warns if k in LM_HUB_WARNUNGEN]
+    else:
+        warn_set = list(LM_HUB_WARNUNGEN_DEFAULT)
+    active_strategies = strat_set + warn_set
     try:
         result = verkaufs_empfehlung_gesamt(
             position,
@@ -674,18 +696,24 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
 
     killer_signals: list[RuleSignal] = []
     tranche_signals: list[RuleSignal] = []
+    warning_signals: list[RuleSignal] = []
     watch_signals: list[RuleSignal] = []
 
-    # Patterns 1-10, 12-14: delegated to the Strategien-Hub engine.
+    # Hub-Engine: Signale werden anhand der strategy_key-Klassifikation einsortiert.
+    # Strategien (LM_HUB_STRATEGIEN) → killer/tranche, Warnsignale (LM_HUB_WARNUNGEN) → warning.
     for hub_signal in _run_hub_engine(metrics_payload or {}, manual_data, tranche_log):
         contribution = int(hub_signal.get("tranche_pct") or 0)
         rule_signal = _hub_signal_to_rule_signal(hub_signal, pnl, regime, as_of_date)
+        is_warning_strategy = str(rule_signal.strategy_key) in LM_HUB_WARNUNGEN
         if contribution >= 100:
             killer_signals.append(rule_signal)
         elif contribution > 0:
-            tranche_signals.append(rule_signal)
+            if is_warning_strategy:
+                warning_signals.append(rule_signal)
+            else:
+                tranche_signals.append(rule_signal)
         else:
-            # Hub info signals (tranche_pct == 0) become watch signals.
+            # Hub info-Signale (tranche_pct == 0) bleiben Watch-Signale.
             watch_signals.append(rule_signal)
 
     already_sold = _sum_already_sold(ticker, tranche_log)
@@ -740,9 +768,11 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     if killer_signals:
         target_total = 100
     else:
-        contribution_sum = sum(sig.contribution_percent for sig in tranche_signals)
+        # Warnsignale tragen weiterhin zur Gesamt-Tranche bei (nur visuell getrennt).
+        all_contributing = tranche_signals + warning_signals
+        contribution_sum = sum(sig.contribution_percent for sig in all_contributing)
         target_total = _floor_allowed(contribution_sum)
-        if len(tranche_signals) >= 4:
+        if len(all_contributing) >= 4:
             target_total = max(target_total, 75)
         if is_bearish and target_total < 100:
             target_total = _next_allowed(target_total)
@@ -767,13 +797,17 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
     if regime in {"Defensiv", "Schutz"}:
         add_again_condition = "Nur bei Rückkehr über Pivot/21-MA und stabilem Marktumfeld erneut aufstocken."
 
-    all_signals = [*killer_signals, *tranche_signals, *watch_signals]
+    all_signals = [*killer_signals, *tranche_signals, *warning_signals, *watch_signals]
     if killer_signals:
         explanation = f"{killer_signals[0].label}: kompletter Verkauf erforderlich."
     elif recommendation_percent > 0:
-        explanation = f"{len(tranche_signals)} aktive Tranche-Signale ergeben Zielverkauf {target_total}%; bereits verkauft {already_sold:.0f}%; jetzt zusätzlich {recommendation_percent}% verkaufen."
+        contributors_count = len(tranche_signals) + len(warning_signals)
+        warn_info = f" inkl. {len(warning_signals)} Warnsignal(e)" if warning_signals else ""
+        explanation = f"{contributors_count} aktive Signale{warn_info} ergeben Zielverkauf {target_total}%; bereits verkauft {already_sold:.0f}%; jetzt zusätzlich {recommendation_percent}% verkaufen."
     elif already_sold >= target_total and target_total > 0:
         explanation = "Die aktuell notwendige Verkaufsquote wurde bereits durch frühere Tranchen erreicht."
+    elif warning_signals:
+        explanation = f"Keine Verkaufstranche, aber {len(warning_signals)} Warnsignal(e) beobachten."
     elif watch_signals:
         explanation = f"Keine Verkaufstranche, aber {len(watch_signals)} Watch-Signal(e) beobachten."
     else:
@@ -800,6 +834,7 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         "regime": regime,
         "killer_signals": [sig.to_dict() for sig in killer_signals],
         "tranche_signals": [sig.to_dict() for sig in tranche_signals],
+        "warning_signals": [sig.to_dict() for sig in warning_signals],
         "watch_signals": [sig.to_dict() for sig in watch_signals],
         "stop_price": stop_price,
         "next_tranche_trigger_price": next_tranche_trigger,

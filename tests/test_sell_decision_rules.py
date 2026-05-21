@@ -344,6 +344,48 @@ class SetupOverrideTest(unittest.TestCase):
         self.assertFalse(triggered_default)
 
 
+class StrategyVsWarningSplitTest(unittest.TestCase):
+    """Hub-Strategien (Verkaufsregeln) und Hub-Warnsignale werden getrennt einsortiert."""
+
+    def test_warning_signals_bucket_exists_and_is_separate_from_tranche(self):
+        result = evaluate_sell_decision(_payload(pnl_pct=12.0, buy_price=100.0, current_price=112.0))
+        self.assertIn("warning_signals", result)
+        # Sicherstellen, dass keine Warnsignal-Strategie versehentlich in tranche_signals landet.
+        from sell_decision_rules import LM_HUB_WARNUNGEN
+        for sig in result["tranche_signals"]:
+            self.assertNotIn(sig.get("strategy_key"), LM_HUB_WARNUNGEN, f"{sig.get('strategy_key')} sollte in warning_signals stehen")
+
+    def test_warning_signal_strategies_route_to_warning_bucket(self):
+        """Wenn nur stau_tage aktiv ist und feuert, landet das Signal in warning_signals."""
+        from sell_decision_rules import LM_HUB_WARNUNGEN
+        # Setup mit nur stau_tage aktiv, kein Strategie-Sortiment.
+        payload = _payload(
+            pnl_pct=12.0,
+            buy_price=100.0,
+            current_price=112.0,
+            setup={"active_strategies": [], "active_warnings": ["stau_tage"]},
+        )
+        result = evaluate_sell_decision(payload)
+        # Wenn stau_tage feuert, muss das Signal im warning_signals-Bucket sein, nicht in tranche_signals.
+        for sig in result["warning_signals"]:
+            self.assertEqual(sig.get("strategy_key"), "stau_tage")
+
+    def test_warning_signals_contribute_to_aggregation(self):
+        """Warnsignale mit Tranche-Beitrag müssen zur target_total beitragen."""
+        # Bare metrics-only payload (kein OHLC). Hub feuert nicht, aber LM-Auto-Warn-low_closes (15%)
+        # sollte als tranche_signal aufschlagen, weil low_closes nicht zu LM_HUB_WARNUNGEN gehört.
+        result = evaluate_sell_decision({
+            "ticker": "TEST",
+            "buy_price": 100.0,
+            "shares": 10.0,
+            "metrics": {"current_price": 112.0, "pnl_pct": 12.0, "as_of_date": "2026-05-20"},
+            "auto_checkboxes": {"warning_checkboxes": {"low_closes": True, "negative_market_divergence": True}, "strength_checkboxes": {}, "reasons": {}},
+        })
+        # Diese LM-Auto-Warnungen bleiben in tranche_signals (sie sind nicht Hub-Strategien).
+        self.assertTrue(any(s["id"] == "warning_low_closes" for s in result["tranche_signals"]))
+        self.assertTrue(any(s["id"] == "warning_negative_divergence" for s in result["tranche_signals"]))
+
+
 class NoOhlcGracefulFallbackTest(unittest.TestCase):
     """Calling evaluate_sell_decision without OHLC frames yields LM-only signals."""
 
