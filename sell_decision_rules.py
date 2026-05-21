@@ -18,10 +18,39 @@ DEFENSIVE_MODE = "Defensiv verkaufen: Verluste begrenzen"
 STRENGTH_OFFENSIVE_MODE = "Stärke offensiv verkaufen: Gewinn in weiter laufender Aktie mitnehmen"
 STRENGTH_DEFENSIVE_MODE = "Stärke defensiv verkaufen: Gewinn nach Rückzug sichern"
 
-# Hub strategies that replace the 13 historical LM rule blocks (patterns 1-10, 12-14
-# from the comparison table). Patterns #11 (Distribution-Tage) and #15 (Volumen-Faktor)
-# remain in LM-native code further below.
-LM_HUB_STRATEGIES = [
+# All Hub strategies available to the Live-Monitor (full parity with Strategien-Hub UI).
+# Patterns #11 (Distribution-Tage) and #15 (Volumen-Faktor) remain LM-native further below.
+# Users select the active subset via the Setup-Panel's multiselect.
+LM_HUB_STRATEGIES_ALL = [
+    "notbremse_verlust",
+    "drei_stufen_nach_kauf",
+    "gewinn_in_stufen",
+    "ma21_bruch",
+    "drawdown_vom_peak",
+    "ma_abstand",
+    "verlusttage_haeufung",
+    "groesster_anstieg_volumen",
+    "split_anstieg",
+    "erschoepfungsluecke",
+    "downside_reversal",
+    "stau_tage",
+    "rueckkehr_pivot",
+    "ma_bruch_defensiv",
+    "drei_verlustwochen",
+    "groesster_einbruch",
+    "rs_linie",
+    "ma_basierte_sequenz",
+    "einfach_halbe_position",
+    "misslungener_ausbruch_5stufen",
+    "einfache_verluststufen",
+    "atr_basiert",
+]
+
+# Default active subset — matches the original 13 LM patterns (1-10, 12-14 of the
+# comparison table). Other strategies are available via the multiselect but opt-in
+# to avoid signal collisions (e.g., einfach_halbe_position + gewinn_in_stufen both
+# firing at pnl≥20).
+LM_HUB_STRATEGIES_DEFAULT = [
     "notbremse_verlust",
     "drei_stufen_nach_kauf",
     "gewinn_in_stufen",
@@ -38,6 +67,9 @@ LM_HUB_STRATEGIES = [
     "groesster_einbruch",
     "rs_linie",
 ]
+
+# Backwards compatibility / default subset.
+LM_HUB_STRATEGIES = LM_HUB_STRATEGIES_DEFAULT
 
 # Hub default parameters that mirror the Strategien-Hub setup defaults (app.py:11506+).
 # Overridable via metrics_payload["lm_setup"] or manual_data["sell_setup"].
@@ -105,6 +137,32 @@ LM_HUB_DEFAULTS = {
     "groesster_einbruch_wochenvol_ratio_schwelle": 1.3,
     "rs_pnl_tag_zu_woche": 20.0,
     "rs_pnl_woche_zu_monat": 80.0,
+    # ATR-basiert (Strategie 23)
+    "ziel_atr_multiplikator": 3.0,
+    "ueberdehnung_atr_start": 3.0,
+    "ueberdehnung_atr_stark": 4.0,
+    # Einfache Verluststufen (Strategie 22)
+    "verlust_stufe_1": 3.0,
+    "verlust_stufe_2": 5.0,
+    "verlust_stufe_3": 7.0,
+    # Einfach halbe Position (Strategie 20)
+    "erste_haelfte_gewinn_pct": 20.0,
+    # MA-basierte Sequenz (Strategie 19)
+    "ma_seq_gewinnzone_min_pct": 20.0,
+    "ma_seq_gewinnzone_max_pct": 25.0,
+    "ma_seq_gewinnzone_tranche_pct": 33.0,
+    "ma_seq_ueber_ma10_pct": 10.0,
+    "ma_seq_ueber_ma10_tranche_pct": 20.0,
+    "ma_seq_unter_ma10_mindestgewinn_pct": 5.0,
+    "ma_seq_unter_ma10_tranche_pct": 20.0,
+    "ma_seq_pendel_tranche_pct": 25.0,
+    "ma_seq_pendel_lookback_tage": 5,
+    "ma_seq_pendel_wechsel_min": 3,
+    "ma_seq_unter_ma21_mindestgewinn_pct": 5.0,
+    "ma_seq_unter_ma21_tranche_pct": 25.0,
+    "ma_seq_klarer_ma50_bruch_pct": 2.0,
+    # Set of active strategies (subset of LM_HUB_STRATEGIES_ALL). Default: original 13 patterns.
+    "active_strategies": list(LM_HUB_STRATEGIES_DEFAULT),
 }
 LOSS_LIMIT_STYLE = "Verlustbegrenzung"
 STRENGTH_OFFENSIVE_STYLE = "Gewinn in Stärke mitnehmen"
@@ -199,6 +257,7 @@ def _hub_signal_to_rule_signal(hub_signal: dict, pnl: float, regime: str, as_of_
     reason = str(hub_signal.get("begruendung") or "")
     next_mark = hub_signal.get("naechste_marke")
     trigger_type = str(hub_signal.get("trigger_typ") or "")
+    strategy_key = str(hub_signal.get("strategy_key") or "")
     note_parts: list[str] = []
     if reason:
         note_parts.append(reason)
@@ -221,6 +280,7 @@ def _hub_signal_to_rule_signal(hub_signal: dict, pnl: float, regime: str, as_of_
         event_note=" · ".join(part for part in note_parts if part),
         sell_mode=sell_mode if contribution > 0 else "",
         sell_style=sell_style if contribution > 0 else "",
+        strategy_key=strategy_key,
     )
     return rule_signal
 
@@ -276,6 +336,11 @@ def _run_hub_engine(metrics_payload: dict, manual_data: dict, tranche_log: list[
     market_environment = str((manual_data or {}).get("market_environment") or "Unsicher") or "Unsicher"
     industry_group_status = str((manual_data or {}).get("industry_group_status") or "Neutral") or "Neutral"
     options = _resolve_setup(metrics_payload, manual_data)
+    raw_active = options.get("active_strategies")
+    if isinstance(raw_active, (list, tuple, set)) and raw_active:
+        active_strategies = [k for k in raw_active if k in LM_HUB_STRATEGIES_ALL]
+    else:
+        active_strategies = list(LM_HUB_STRATEGIES_ALL)
     try:
         result = verkaufs_empfehlung_gesamt(
             position,
@@ -285,7 +350,7 @@ def _run_hub_engine(metrics_payload: dict, manual_data: dict, tranche_log: list[
             bench_weekly if isinstance(bench_weekly, pd.DataFrame) else None,
             market_environment,
             industry_group_status,
-            LM_HUB_STRATEGIES,
+            active_strategies,
             options,
         )
     except Exception:
@@ -304,6 +369,7 @@ class RuleSignal:
     event_note: str = ""
     sell_mode: str = ""
     sell_style: str = ""
+    strategy_key: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -353,6 +419,7 @@ def _signal(
     event_note: str = "",
     sell_mode: str = "",
     sell_style: str = "",
+    strategy_key: str = "",
 ) -> RuleSignal:
     return RuleSignal(
         signal_id,
@@ -363,6 +430,7 @@ def _signal(
         str(event_note or ""),
         str(sell_mode or ""),
         str(sell_style or ""),
+        str(strategy_key or ""),
     )
 
 
@@ -630,6 +698,7 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             event_note="Manuelle Einschätzung im Live-Monitor",
             sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
             sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
+            strategy_key="lm_personality_check",
         ))
     if industry_group_status == "Schwach" and pnl > 10:
         tranche_signals.append(_signal(
@@ -638,6 +707,7 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             event_note=f"Industriegruppe: {industry_group_status} · P&L {pnl:.1f}%",
             sell_mode=strength_defensive_mode,
             sell_style=STRENGTH_DEFENSIVE_STYLE,
+            strategy_key="lm_industry_group",
         ))
 
     for raw_key, active in _active_checkbox_map(metrics_payload or {}, manual_data, "warning_checkboxes").items():
@@ -652,19 +722,20 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
                 event_note="Automatisch erkannt oder manuell aktiviertes Warnzeichen im Live-Monitor",
                 sell_mode=strength_defensive_mode if positive_pnl else defensive_mode,
                 sell_style=STRENGTH_DEFENSIVE_STYLE if positive_pnl else LOSS_LIMIT_STYLE,
+                strategy_key="lm_auto_warning",
             ))
 
     # LM-native watch signals (incl. pattern #11 Distribution-Tage).
     days_under_sma21 = int(_metric(metrics, "days_under_sma21", 0) or 0)
     drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
     if positive_pnl and 1 <= days_under_sma21 <= 2:
-        watch_signals.append(_signal("watch_under_sma21_1_2", "Ein bis zwei Tage unter 21-MA bei positivem P&L"))
+        watch_signals.append(_signal("watch_under_sma21_1_2", "Ein bis zwei Tage unter 21-MA bei positivem P&L", strategy_key="lm_watch"))
     if positive_pnl and 5 <= drawdown < 8:
-        watch_signals.append(_signal("watch_drawdown_5_8", "Drawdown 5-8% vom Peak bei positivem P&L"))
+        watch_signals.append(_signal("watch_drawdown_5_8", "Drawdown 5-8% vom Peak bei positivem P&L", strategy_key="lm_watch"))
     if (_metric(metrics, "up_down_volume_ratio_50") is not None) and (_metric(metrics, "up_down_volume_ratio_50") < 1.0):
-        watch_signals.append(_signal("watch_up_down_volume", "Up/Down-Volume-Ratio < 1.0"))
+        watch_signals.append(_signal("watch_up_down_volume", "Up/Down-Volume-Ratio < 1.0", strategy_key="lm_watch"))
     if (_metric(metrics, "distribution_days_25", 0) or 0) >= 4:
-        watch_signals.append(_signal("watch_distribution_days", "Vier oder mehr Distribution-Tage in 25 Sessions"))
+        watch_signals.append(_signal("watch_distribution_days", "Vier oder mehr Distribution-Tage in 25 Sessions", strategy_key="lm_watch"))
 
     if killer_signals:
         target_total = 100

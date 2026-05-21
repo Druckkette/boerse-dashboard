@@ -3,6 +3,33 @@ from dataclasses import dataclass
 from typing import Any
 import pandas as pd
 
+
+STRATEGIE_INFO: dict[str, str] = {
+    "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
+    "drei_stufen_nach_kauf": "Strategie 1 (Kap. 5.3 / 6.4): Drei-Stufen-Regel direkt nach Kauf für fehlgeschlagene Ausbrüche in der Frühphase. Nur aktiv, solange der Gewinn noch nicht nennenswert ist (Standard: bis +8% P&L). Stufe 1: Schluss unter Tief Ausbruchstag (Standard 33%). Stufe 2: Schluss unter Tief Vortag (Standard 33%). Stufe 3: Notbremse bei max. Verlust (Standard -7%) als Intraday-Vollausstieg.",
+    "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
+    "ma21_bruch": "Strategie 4 (Kap. 6.2): Bruch der 21-Tage-Linie in drei Risikoprofilen. Aggressiv: schneller Teilverkauf bei klarem Bruch + Volumenbestätigung (33%, +50% bei -7% Tagesverlust Tag 2). Gestaffelt: stufenweises Vorgehen über 3 Tage unter 21-MA (jeweils 25%). Geduldig: erst nach 3 bestätigten Tagen unter 21-MA aktiv (33%). Nur im Gewinnfall aktiv.",
+    "drawdown_vom_peak": "Strategie 5 (Kap. 6.2): Drawdown vom Peak mit 3 Eskalationsstufen. Stufe 1 (Standard 8%): erstes Sicherungssignal 25%. Stufe 2 (12%): deutliche Reduktion 33%. Stufe 3 (15%): harte Reduktion (50%); bei zusätzlichem Trendbruch unter 21-MA Vollausstieg (100%).",
+    "ma_abstand": "Strategie 6 (Kap. 6.2): Teilverkäufe bei Überdehnung über gleitende Durchschnitte. Nur im Gewinnfall aktiv. Vier Stufen: 10-MA (Standard 10% → 25% Tranche), 21-MA (15% → 33%), 50-MA (25% → 33%), 200-MA (70% → 50%). 200-MA Klimaxzone ab 100% löst Vollausstieg aus.",
+    "verlusttage_haeufung": "Strategie 7 (Kap. 6.2): Erkennt Distribution über eine Häufung schwacher Tage. Signal 1: drei tiefere Schlusskurse in Folge mit erhöhter 3-Tage-Volumenquote gegen den Referenz-Lookback. Signal 2: im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen deutlich (Mindestdifferenz). Beide Trigger erzeugen standardmäßig eine 25%-Tranche mit Stop-/Marker-Logik auf lokale Tiefs.",
+    "groesster_anstieg_volumen": "Strategie 9 (Kap. 6.2): Klimax-/Spätphasen-Signal bei größtem Tagesanstieg mit extremem Volumen. Aktiviert ab P&L > 15%. Bei höchstem Volumen 33%, sonst 20% Vorwarnung.",
+    "split_anstieg": "Strategie 10 (Kap. 6.2): Warnt vor möglichem Gipfel, wenn die Aktie innerhalb der ersten 1-2 Wochen nach Aktiensplit stark steigt. Trigger nur, wenn ein Split-Datum bekannt ist. Ab +25% seit Split wird ein aktives Signal erzeugt (33% Tranche), ab +50% erhöht auf 50%. Referenz-/Stoppmarke ist der Schlusskurs am Split-Tag.",
+    "erschoepfungsluecke": "Strategie 11 (Kap. 6.2): Gap-up nach langem Aufwärtstrend mit hohem Volumen und großer Distanz zur Basis. Identifiziert ein potenzielles Spätphasen-/Klimax-Muster. Standard-Tranche 33%.",
+    "downside_reversal": "Strategie 12 (Kap. 6.2): Downside Reversal für Gewinnerpositionen. Variante 1 (stark): neues 30-Tage-Hoch, Schluss im unteren Tagesdrittel und Volumenquote ≥ 1.2 erzeugt 33%-Signal. Variante 2 (mittel): weite Umkehrkerze (Tagesspanne ≥ 1.5× 10-Tage-Schnitt), Schluss im unteren Drittel und Volumenquote ≥ 1.2 erzeugt 20%-Signal. Variante 3 (Warnstufe): weite Kerze mit Schluss unter Spannenmitte erzeugt 15%-Signal.",
+    "stau_tage": "Strategie 13 (Kap. 6.2): Sucht in einem Fenster (Standard 10 Sessions) nach Stau-Tagen mit kaum Fortschritt (|Tagesveränderung| < 1%) bei überdurchschnittlichem Volumen (≥1.3× gegen 50-Tage-Schnitt). Ab mindestens 2 Stau-Tagen entsteht ein aktives Verkaufssignal. Die Tranche ist kontextabhängig: nahe Hoch (Drawdown < 5%) defensiver mit 33%, sonst 20%.",
+    "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkts.",
+    "ma_bruch_defensiv": "Strategie 15 (Kap. 6.3): Defensiver Exit-Prozess bei Trendbruch. Klarer 50-MA-Bruch (mind. max(2%, ATR%) unter MA und Volumenanstieg ≥1.3) triggert 50%, sonst nach 3 Schlusskursen unter 50-MA 33%. Nach 8 Wochen unter der 10-Wochen-Linie folgt ein Vollsignal (100%). Unter 200-MA werden 75% reduziert bzw. 100% bei hohem Volumen; dreht die 200-MA zusätzlich nach unten, wird ein bestätigendes Info-Signal ausgegeben.",
+    "drei_verlustwochen": "Strategie 16 (Kap. 6.3): Triggert bei drei Verlustwochen in Folge mit jeweils tieferem Wochenschluss als in der Vorwoche und gleichzeitig steigendem Wochenvolumen. Vollsignal (100%) nur, wenn alle drei Wochen klare Abwärtswochen sind (Close < Open). Vorwarnstufe (33%) falls nur die Sequenz aus fallenden Wochenschlüssen + steigendem Volumen erfüllt ist.",
+    "groesster_einbruch": "Strategie 17 (Kap. 6.3): Reagiert auf den größten Einbruch seit Einstieg nach bereits gelaufener Position. Tagesregel: wenn der heutige Verlust der größte seit Einstieg ist und über einer Mindestschwelle liegt, wird defensiv reduziert (33%) oder bei deutlich erhöhtem Volumen stärker (50%). Wochenregel: wenn die aktuelle Verlustwoche die größte seit Einstieg ist und gleichzeitig das Wochenvolumen überdurchschnittlich hoch ist, folgt eine starke Reduktion (66%).",
+    "rs_linie": "Strategie 18 (Kap. 6.4): 3-Stufen-Strategie auf Basis relativer Stärke gegen Benchmark (z. B. SPY) mit adaptivem Zeithorizont. Unter Schwelle 1 Tagesebene (21/50-MA), zwischen Schwelle 1 und 2 Wochenebene (10/25-MA), ab Schwelle 2 Monatsebene (12/24-MA). Stufe 1 (20%): RS bricht schnellen MA. Stufe 2 (30%): RS bleibt 3 Perioden darunter. Stufe 3 (50%): RS bricht langsamen MA.",
+    "ma_basierte_sequenz": "Strategie 19 (Kap. 6.4): Geschlossene MA-Verkaufssequenz von Gewinnzone bis klarem 50-MA-Bruch. Punkt 1: Teilverkauf in Gewinnzone 20-25% (33%). Punkt 2: Überdehnung über 10-MA (20%). Punkt 3: Bruch 10-MA (20% normal / 25% pendelnd). Punkt 4: Bruch 21-MA (25%). Punkt 5: klarer 50-MA-Bruch = Vollausstieg (100%).",
+    "einfach_halbe_position": "Strategie 20 (Kap. 6.4): Einfache 50/50-Logik. Erste Hälfte sichern bei festgelegtem Gewinn (Standard 20%), zweite Hälfte über Break-Even/erneute Stärke managen. Erneut 20% Gewinn nach erster Hälfte → weitere Tranche.",
+    "misslungener_ausbruch_5stufen": "Strategie 21 (Kap. 6.4): Fehl-Ausbruch detailliert in 5 Stufen inkl. Intraday-/Gap-Logik. Behandelt Gap-down-Sonderfälle, Intraday-/Schlussbrüche unter Tief Tag 1 und Tag 0, sowie 7%-Notbremse als Intraday-Exit. Zusätzlich: zweite Rückkehr zum Pivot nach Erholung.",
+    "einfache_verluststufen": "Strategie 22 (Kap. 6.4): Minimalregel mit gestaffelten Verluststufen. Standard: -3% (33%), -5% (33%), -7% (Komplettverkauf intraday).",
+    "atr_basiert": "Strategie 23 (Kap. 6.4): Adaptive Verkaufsregel auf Basis der typischen Schwankungsbreite (ATR) der Aktie. Eignet sich besonders für volatile Aktien. Regeln: Teilverkauf (33%) ab ATR-Ziel-Gewinn, Vollausstieg bei Schluss ≤ Einstieg minus 1.5 ATR, sowie Überdehnungs-Teilverkauf über 21-EMA ab x ATR (Basis) bzw. y ATR (stark, 50%).",
+}
+
+
 @dataclass
 class Position:
     ticker: str
@@ -691,7 +718,11 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
     }
     all_signals=[]
     for k in aktive_strategien:
-        if k in r: all_signals.extend(r[k]())
+        if k in r:
+            for sig in r[k]():
+                if isinstance(sig, dict):
+                    sig.setdefault("strategy_key", k)
+                all_signals.append(sig)
     killer=[s for s in all_signals if s["aktuell_aktiv"] and s["tranche_pct"]==100]
     if killer:
         ges, grund = 100, killer[0]["name"]
