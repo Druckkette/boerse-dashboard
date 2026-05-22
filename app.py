@@ -11924,7 +11924,23 @@ def _render_sell_strategy_hub() -> None:
     daily_all = pd.DataFrame({"open":df["Open"],"high":df["High"],"low":df["Low"],"close":df["Close"],"volume":df["Volume"]}).dropna()
     daily_all.index = pd.to_datetime(daily_all.index).tz_localize(None)
     daily = daily_all[daily_all.index >= buy_date]
+    # Wochen-OHLC aus der vollständigen Historie, damit Strategien mit Mehrwochen-Bedarf
+    # (drei_verlustwochen, ma_bruch_defensiv 10-Wochen-Linie, größter Einbruch Wochenregel)
+    # genug Kerzen bekommen — auch bei sehr frisch gekauften Positionen.
+    weekly_all = daily_all.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    # Buy-Date-gefilterte Wochen-/Tagesreihe nur noch für Peak-Berechnung (Drawdown vom Peak seit Einstieg).
     weekly = daily.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    # SPY/Benchmark für RS-Linie laden — sonst meldet die Strategie immer „Keine Benchmark-Daten".
+    daten_spy = None
+    wochen_daten_spy = None
+    try:
+        df_spy, *_ = load_stock_full("SPY")
+        if df_spy is not None and len(df_spy) > 0:
+            daten_spy = pd.DataFrame({"open":df_spy["Open"],"high":df_spy["High"],"low":df_spy["Low"],"close":df_spy["Close"],"volume":df_spy["Volume"]}).dropna()
+            daten_spy.index = pd.to_datetime(daten_spy.index).tz_localize(None)
+            wochen_daten_spy = daten_spy.resample("W-FRI").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
+    except Exception:
+        pass
     man = get_position_manual_sell_data(t)
     manual_pivot = _safe_float(man.get("pivot"), np.nan)
     pivot_tag_ts = pd.to_datetime(pos.get("pivot_tag"), errors="coerce")
@@ -12171,10 +12187,10 @@ def _render_sell_strategy_hub() -> None:
     }
     res = verkaufs_empfehlung_gesamt(
         p,
-        daily,
-        weekly,
-        None,
-        None,
+        daily_all,
+        weekly_all,
+        daten_spy,
+        wochen_daten_spy,
         markt,
         man.get("industry_group_status","Neutral"),
         aktive,
@@ -12261,7 +12277,7 @@ def _render_sell_strategy_hub() -> None:
             if not sigs:
                 try:
                     grund = diagnose_strategie_kein_signal(
-                        key, p, daily, weekly, None, None, markt, strategie_optionen,
+                        key, p, daily_all, weekly_all, daten_spy, wochen_daten_spy, markt, strategie_optionen,
                     )
                 except Exception as exc:
                     grund = f"Diagnose fehlgeschlagen: {exc}"
