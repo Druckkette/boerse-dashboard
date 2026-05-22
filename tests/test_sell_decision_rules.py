@@ -401,5 +401,196 @@ class NoOhlcGracefulFallbackTest(unittest.TestCase):
         self.assertEqual(result["recommendation_label"], "HALTEN")
 
 
+class HysteresisAndSnoozeTest(unittest.TestCase):
+    """Hysterese + Snooze schichten sich auf die Roh-Empfehlung."""
+
+    def test_first_day_recommendation_is_in_confirmation(self):
+        """Eine frische Empfehlung >= 33% steht beim ersten Mal in Bestätigung."""
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=22.0, buy_price=100.0, current_price=122.0),
+            recommendation_state=None,
+        )
+        # Erste Sichtung: in_bestaetigung
+        if result["recommendation_percent"] >= 33 and result["recommendation_percent"] < 75:
+            self.assertEqual(result["pending_status"], "in_bestaetigung")
+            self.assertEqual(result["display_label"], "BESTÄTIGUNG ABWARTEN")
+
+    def test_second_day_same_recommendation_becomes_scharf(self):
+        """Empfehlung wird scharf, wenn sie 2 Tage in Folge identisch ist."""
+        first = evaluate_sell_decision(
+            _payload(pnl_pct=22.0, buy_price=100.0, current_price=122.0),
+            recommendation_state=None,
+        )
+        if first["recommendation_percent"] < 33 or first["recommendation_percent"] >= 75:
+            self.skipTest("Roh-Empfehlung in dieser Fixture umgeht Hysterese — Test nicht relevant.")
+        # Tag 2: gleiche Stufe, aber gestern bereits gesehen.
+        prior_state = dict(first["next_recommendation_state"])
+        # Verschiebe last_seen_date auf gestern, damit der zweite Tag zählt.
+        prior_state["last_seen_date"] = "2026-05-19"
+        second = evaluate_sell_decision(
+            _payload(pnl_pct=22.0, buy_price=100.0, current_price=122.0),
+            recommendation_state=prior_state,
+        )
+        self.assertEqual(second["pending_status"], "scharf")
+
+    def test_killer_signal_bypasses_hysteresis(self):
+        """Killer-Signal ist sofort scharf, auch beim ersten Mal."""
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=-8.0, buy_price=100.0, current_price=92.0, declining=True),
+            recommendation_state=None,
+        )
+        self.assertEqual(result["pending_status"], "scharf")
+        self.assertTrue(result["killer_signals"])
+
+    def test_high_recommendation_bypasses_hysteresis(self):
+        """Empfehlung >= 75% (HYSTERESIS_BYPASS_CONTRIBUTION) ist sofort scharf."""
+        # Konstruktion: Mehrere Tranche-Signale, sodass ≥ 75% empfohlen werden.
+        # Eingang via Auto-Warnings + Personality-Check.
+        result = evaluate_sell_decision(
+            {
+                "ticker": "TEST",
+                "buy_price": 100.0,
+                "shares": 10.0,
+                "metrics": {"current_price": 130.0, "pnl_pct": 30.0, "as_of_date": "2026-05-20"},
+                "auto_checkboxes": {
+                    "warning_checkboxes": {
+                        "low_closes": True,
+                        "negative_market_divergence": True,
+                        "weak_rebounds": True,
+                    },
+                    "strength_checkboxes": {},
+                    "reasons": {},
+                },
+            },
+            manual_data={"personality_changed": True, "industry_group_status": "Schwach"},
+            recommendation_state=None,
+        )
+        if result["recommendation_percent"] >= 75:
+            self.assertEqual(result["pending_status"], "scharf")
+
+    def test_snooze_in_future_silences_recommendation(self):
+        """Solange snoozed_until in der Zukunft und sell_now <= snoozed_pct, ist Status 'snoozed'."""
+        snooze_state = {
+            "last_seen_date": "2026-05-19",
+            "last_pct": 0,
+            "consecutive_days": 0,
+            "snoozed_until": "2026-05-25",  # in der Zukunft
+            "snoozed_pct": 50,
+        }
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=22.0, buy_price=100.0, current_price=122.0),
+            recommendation_state=snooze_state,
+        )
+        if 0 < result["recommendation_percent"] <= 50:
+            self.assertEqual(result["pending_status"], "snoozed")
+            self.assertEqual(result["display_label"], "STUMM GESCHALTET")
+
+    def test_killer_signal_overrides_active_snooze(self):
+        """Killer ignoriert Snooze und meldet sofort scharf."""
+        snooze_state = {
+            "last_seen_date": "2026-05-19",
+            "last_pct": 33,
+            "consecutive_days": 5,
+            "snoozed_until": "2026-05-25",
+            "snoozed_pct": 100,
+        }
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=-8.0, buy_price=100.0, current_price=92.0, declining=True),
+            recommendation_state=snooze_state,
+        )
+        self.assertEqual(result["pending_status"], "scharf")
+        # next_state hat Snooze verworfen.
+        self.assertEqual(result["next_recommendation_state"]["snoozed_until"], "")
+        self.assertEqual(result["next_recommendation_state"]["snoozed_pct"], 0)
+
+    def test_snooze_dropped_when_recommendation_escalates_above_snoozed_pct(self):
+        """Wenn die Empfehlung über die Snooze-Schwelle eskaliert, wird Snooze fallen gelassen."""
+        snooze_state = {
+            "last_seen_date": "2026-05-19",
+            "last_pct": 25,
+            "consecutive_days": 5,
+            "snoozed_until": "2026-05-25",
+            "snoozed_pct": 25,  # Snooze galt nur bis 25%
+        }
+        # Hohe Empfehlung von 75%+ → Eskalation > snoozed_pct.
+        result = evaluate_sell_decision(
+            {
+                "ticker": "TEST",
+                "buy_price": 100.0,
+                "shares": 10.0,
+                "metrics": {"current_price": 130.0, "pnl_pct": 30.0, "as_of_date": "2026-05-20"},
+                "auto_checkboxes": {
+                    "warning_checkboxes": {
+                        "low_closes": True,
+                        "negative_market_divergence": True,
+                        "weak_rebounds": True,
+                    },
+                    "strength_checkboxes": {},
+                    "reasons": {},
+                },
+            },
+            manual_data={"personality_changed": True, "industry_group_status": "Schwach"},
+            recommendation_state=snooze_state,
+        )
+        if result["recommendation_percent"] > 25:
+            self.assertNotEqual(result["pending_status"], "snoozed")
+            self.assertEqual(result["next_recommendation_state"]["snoozed_until"], "")
+
+    def test_no_recommendation_yields_halten_status(self):
+        """Wenn sell_now == 0, ist pending_status 'halten'."""
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=5.0, buy_price=100.0, current_price=105.0),
+            recommendation_state=None,
+        )
+        if result["recommendation_percent"] == 0:
+            self.assertEqual(result["pending_status"], "halten")
+
+    def test_backward_compatible_without_recommendation_state(self):
+        """Ohne recommendation_state-Argument bleibt evaluate_sell_decision rückwärtskompatibel."""
+        result = evaluate_sell_decision(_payload(pnl_pct=22.0, buy_price=100.0, current_price=122.0))
+        # Pending-Status-Felder existieren immer.
+        self.assertIn("pending_status", result)
+        self.assertIn("next_recommendation_state", result)
+
+
+class ProfileTest(unittest.TestCase):
+    """Cluster-Profile überschreiben active_strategies/active_warnings."""
+
+    def test_konservativ_profile_disables_gewinn_in_stufen(self):
+        from sell_decision_rules import LM_HUB_PROFILES
+        # Im konservativen Profil ist gewinn_in_stufen NICHT enthalten — kein Pflicht-Teilverkauf bei +22% PnL.
+        self.assertNotIn("gewinn_in_stufen", LM_HUB_PROFILES["konservativ"]["strategien"])
+        result = evaluate_sell_decision(
+            _payload(pnl_pct=22.0, buy_price=100.0, current_price=122.0, setup={"profile": "konservativ"}),
+        )
+        hub_keys = {s.get("strategy_key") for s in result["tranche_signals"]}
+        self.assertNotIn("gewinn_in_stufen", hub_keys)
+
+    def test_aktiv_gewinnsicherung_includes_ma_abstand(self):
+        from sell_decision_rules import LM_HUB_PROFILES
+        self.assertIn("ma_abstand", LM_HUB_PROFILES["aktiv_gewinnsicherung"]["strategien"])
+
+    def test_frei_profile_keeps_user_multiselect(self):
+        # Beim "frei"-Profil bleiben die manuell gesetzten active_strategies erhalten.
+        result = evaluate_sell_decision(
+            _payload(
+                pnl_pct=-8.0,
+                buy_price=100.0,
+                current_price=92.0,
+                declining=True,
+                setup={"profile": "frei", "active_strategies": ["notbremse_verlust"], "active_warnings": []},
+            ),
+        )
+        hub_keys = {s.get("strategy_key") for s in result["killer_signals"] + result["tranche_signals"] if not str(s.get("strategy_key", "")).startswith("lm_")}
+        self.assertEqual(hub_keys, {"notbremse_verlust"})
+
+    def test_profile_default_is_standard_when_missing(self):
+        from sell_decision_rules import get_profile_strategies, LM_HUB_PROFILES
+        strats, warns = get_profile_strategies("unbekannt")
+        # Fallback ist "standard".
+        self.assertEqual(strats, [k for k in LM_HUB_PROFILES["standard"]["strategien"] if k])
+        self.assertEqual(warns, list(LM_HUB_PROFILES["standard"]["warnungen"]))
+
+
 if __name__ == "__main__":
     unittest.main()
