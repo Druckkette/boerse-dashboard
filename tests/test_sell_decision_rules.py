@@ -113,7 +113,7 @@ def _payload(
 
 class HubBackedKillerSignalsTest(unittest.TestCase):
     def test_seven_percent_loss_triggers_killer_full_exit(self):
-        """Hub strategie_drei_stufen_nach_kauf emits 7%-Notbremse at pnl <= -7."""
+        """Hub strategie_notbremse_verlust / strategie_rueckkehr_pivot emit 100% exit at pnl <= -7."""
         result = evaluate_sell_decision(
             _payload(pnl_pct=-8.0, buy_price=100.0, current_price=92.0, declining=True),
         )
@@ -285,11 +285,11 @@ class StrategyKeyTaggingTest(unittest.TestCase):
         result = evaluate_sell_decision(
             _payload(pnl_pct=-8.0, buy_price=100.0, current_price=92.0, declining=True),
         )
-        hub_signals = [s for s in result["killer_signals"] + result["tranche_signals"] if str(s.get("strategy_key", "")).startswith(("notbremse_", "drei_", "gewinn_", "ma", "drawdown_", "split_", "downside_", "stau_", "rueckkehr_", "verlusttage_", "rs_", "groesster_", "einfach", "atr_", "erschoepfungsluecke", "misslungener_"))]
+        hub_signals = [s for s in result["killer_signals"] + result["tranche_signals"] if str(s.get("strategy_key", "")).startswith(("notbremse_", "gewinn_", "ma", "drawdown_", "split_", "downside_", "stau_", "rueckkehr_", "verlusttage_", "rs_", "groesster_", "einfach", "atr_", "erschoepfungsluecke", "misslungener_", "drei_verlustwochen"))]
         self.assertTrue(hub_signals, "At least one Hub-tagged signal expected on -8% pnl")
         for sig in hub_signals:
             self.assertIn(sig["strategy_key"], (
-                "notbremse_verlust", "drei_stufen_nach_kauf", "gewinn_in_stufen", "ma21_bruch",
+                "notbremse_verlust", "gewinn_in_stufen", "ma21_bruch",
                 "drawdown_vom_peak", "ma_abstand", "verlusttage_haeufung", "groesster_anstieg_volumen",
                 "split_anstieg", "erschoepfungsluecke", "downside_reversal", "stau_tage",
                 "rueckkehr_pivot", "ma_bruch_defensiv", "drei_verlustwochen", "groesster_einbruch",
@@ -314,7 +314,7 @@ class StrategyKeyTaggingTest(unittest.TestCase):
                            setup={"active_strategies": ["notbremse_verlust"]})
         result = evaluate_sell_decision(payload)
         hub_keys = {s["strategy_key"] for s in result["killer_signals"] + result["tranche_signals"] if not str(s["strategy_key"]).startswith("lm_")}
-        # Only notbremse_verlust should appear, NOT drei_stufen_nach_kauf or others.
+        # Only notbremse_verlust should appear, NOT rueckkehr_pivot or others.
         self.assertEqual(hub_keys, {"notbremse_verlust"})
 
 
