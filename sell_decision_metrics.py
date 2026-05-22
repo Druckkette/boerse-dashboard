@@ -210,8 +210,13 @@ def build_sell_decision_metrics_payload(
     currency: str = "USD",
     pnl_abs_eur=None,
     fx_rate_to_eur=None,
+    pivot_date=None,
 ) -> dict[str, Any]:
-    """Build all reusable sell-decision metrics from OHLC inputs."""
+    """Build all reusable sell-decision metrics from OHLC inputs.
+
+    pivot_date (optional): Reference day for pivot/Tag-1/Tag-0. Pivot-Tag IS Tag 1,
+    Tag 0 is the previous trading day. Falls back to buy_date if not provided.
+    """
     clean_ticker = str(ticker or "").upper().strip()
     clean_benchmark = str(benchmark_ticker or "SPY").upper().strip()
     if not clean_ticker:
@@ -220,6 +225,13 @@ def build_sell_decision_metrics_payload(
         buy_ts = pd.Timestamp(buy_date).tz_localize(None).normalize()
     except Exception:
         return _error("Ungültiges Einstiegsdatum.", clean_ticker, clean_benchmark)
+    pivot_ts = None
+    if pivot_date not in (None, ""):
+        try:
+            pivot_ts = pd.Timestamp(pivot_date).tz_localize(None).normalize()
+        except Exception:
+            pivot_ts = None
+    reference_ts = pivot_ts if pivot_ts is not None else buy_ts
     entry_price = _safe_float(buy_price)
     share_count = _safe_float(shares, 0.0)
     if entry_price is None or entry_price <= 0:
@@ -323,12 +335,12 @@ def build_sell_decision_metrics_payload(
             vol_at_worst = _safe_float(volume.reindex(since_entry.index).loc[worst_idx])
             worst_day_high_volume = bool(avg_vol_at_worst and vol_at_worst is not None and vol_at_worst >= avg_vol_at_worst * 1.2)
 
-    pre_buy = df[df.index < buy_ts].tail(30)
+    pre_buy = df[df.index < reference_ts].tail(30)
     pivot_default = _safe_float(pd.to_numeric(pre_buy["High"], errors="coerce").max()) if not pre_buy.empty else None
-    low_day_1_default = _series_float_at_or_after(low, buy_ts)
-    low_day_0_default = _previous_series_float(low, buy_ts)
-    low_day_1_date = _first_true_date(low.index.to_series().ge(buy_ts)) if low_day_1_default is not None else ""
-    low_day_0_date = _last_index_date(low[low.index < buy_ts]) if low_day_0_default is not None else ""
+    low_day_1_default = _series_float_at_or_after(low, reference_ts)
+    low_day_0_default = _previous_series_float(low, reference_ts)
+    low_day_1_date = _first_true_date(low.index.to_series().ge(reference_ts)) if low_day_1_default is not None else ""
+    low_day_0_date = _last_index_date(low[low.index < reference_ts]) if low_day_0_default is not None else ""
     as_of_date = _last_index_date(df)
     high_since_buy_date = _index_date_of_max(pd.to_numeric(after_buy.get("High", pd.Series(dtype=float)), errors="coerce")) if not after_buy.empty else ""
     under_sma21_start_date = _trailing_true_start_date(close < sma21)
@@ -608,6 +620,7 @@ def build_sell_decision_metrics_payload(
         "ticker": clean_ticker,
         "benchmark_ticker": clean_benchmark,
         "buy_date": _iso_date(buy_ts),
+        "pivot_date": _iso_date(pivot_ts) if pivot_ts is not None else "",
         "buy_price": entry_price,
         "shares": float(share_count or 0.0),
         "currency": str(currency or "USD").upper(),
