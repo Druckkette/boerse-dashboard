@@ -11907,7 +11907,11 @@ def _render_sell_strategy_hub() -> None:
     if not positions:
         st.info("Keine offenen Positionen im Depot.")
         return
-    t = st.selectbox("Position", [p.get("ticker","") for p in positions], key="strat_hub_ticker")
+
+    # ═══════════════════════════════════════════════════════════
+    # 1. TICKEREINGABE (zuerst)
+    # ═══════════════════════════════════════════════════════════
+    t = st.selectbox("📌 Position auswählen", [p.get("ticker","") for p in positions], key="strat_hub_ticker")
     pos = next((x for x in positions if x.get("ticker")==t), None)
     if not pos:
         return
@@ -11958,468 +11962,132 @@ def _render_sell_strategy_hub() -> None:
         "einfache_verluststufen": "Minimalregel: gestaffelt bei -3% / -5% / -7% reduzieren.",
         "atr_basiert": "Adaptive Verkaufsregel: statt fester Prozentwerte verwendet sie die typische Schwankungsbreite (ATR) der Aktie. Eignet sich besonders für volatile Aktien, die mit festen Prozent-Schwellen zu früh ausgestoppt würden. Regeln: Teilverkauf (33%) ab ATR-Ziel-Gewinn, Vollausstieg bei Schluss ≤ Einstieg minus 1.5 ATR, sowie Überdehnungs-Teilverkauf über 21-EMA ab x ATR (Basis) bzw. y ATR (stark, 50%).",
     }
-    aktive = st.multiselect("Aktive Strategien", alle, default=alle, key=f"strat_hub_multi_{t}")
-    with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
-        for key in aktive:
-            st.markdown(f"**{key}** – {strategie_info.get(key, 'Keine Beschreibung hinterlegt.')}")
-    st.info("🔎 Hinweis: Prüfe die Aufwärtstrendlinie regelmäßig manuell im Chart (z. B. per eingezeichneter Trendlinie), da Strategie 8 nicht mehr automatisch ausgewertet wird.")
-    st.markdown("#### ⚙️ Strategie-Setup")
-    markt = st.selectbox("Markt", ["Bullisch","Unsicher","Bärisch"], index=["Bullisch","Unsicher","Bärisch"].index(man.get("market_environment","Unsicher")), key=f"strat_hub_mkt_{t}")
+    # ═══════════════════════════════════════════════════════════
+    # Parameter aus session_state lesen (oder Defaults verwenden).
+    # Die zugehörigen Widgets stehen im Setup-Bereich am Ende.
+    # ═══════════════════════════════════════════════════════════
+    def _ss(key, default):
+        return st.session_state.get(key, default)
 
-    ziel_atr = 3.0
-    atr_ueberdehnung_start = 3.0
-    atr_ueberdehnung_stark = 4.0
-    verlust_stufe_1 = 3.0
-    verlust_stufe_2 = 5.0
-    verlust_stufe_3 = 7.0
-    notbremse_verlust_schwelle_baerisch_pct = 4.0
-    notbremse_verlust_schwelle_unsicher_pct = 5.0
-    notbremse_verlust_schwelle_bullisch_pct = 7.0
-    erste_haelfte_gewinn_pct = 20.0
-    gewinn_nachdenken_schwelle_bull_pct = 15.0
-    gewinn_teilverkauf_unten_bull_pct = 20.0
-    gewinn_teilverkauf_oben_bull_pct = 35.0
-    gewinn_nachdenken_schwelle_bear_pct = 10.0
-    gewinn_teilverkauf_unten_bear_pct = 10.0
-    gewinn_teilverkauf_oben_bear_pct = 15.0
-    ma_seq_gewinnzone_min_pct = 20.0
-    ma_seq_gewinnzone_max_pct = 25.0
-    ma_seq_gewinnzone_tranche_pct = 33.0
-    ma_seq_ueber_ma10_pct = 10.0
-    ma_seq_ueber_ma10_tranche_pct = 20.0
-    ma_seq_unter_ma10_mindestgewinn_pct = 5.0
-    ma_seq_unter_ma10_tranche_pct = 20.0
-    ma_seq_pendel_tranche_pct = 25.0
-    ma_seq_pendel_lookback_tage = 5
-    ma_seq_pendel_wechsel_min = 3
-    ma_seq_unter_ma21_mindestgewinn_pct = 5.0
-    ma_seq_unter_ma21_tranche_pct = 25.0
-    ma_seq_klarer_ma50_bruch_pct = 2.0
-    rs_pnl_tag_zu_woche = 20.0
-    rs_pnl_woche_zu_monat = 80.0
-    groesster_einbruch_min_pnl_pct = 10.0
-    groesster_einbruch_min_tagesverlust_pct = 3.0
-    groesster_einbruch_tagesvol_ratio_schwelle = 1.5
-    groesster_einbruch_wochenvol_ratio_schwelle = 1.3
-    stau_fenster_tage = 10
-    stau_volumen_lookback_tage = 50
-    stau_max_tagesveraenderung_pct = 1.0
-    stau_min_vol_ratio = 1.3
-    stau_min_tage = 2
-    stau_nahe_hoch_drawdown_max_pct = 5.0
-    stau_tranche_nahe_hoch_pct = 33.0
-    stau_tranche_standard_pct = 20.0
-    verlusttage_min_tiefere_schlusskurse_in_folge = 3
-    verlusttage_volumen_lookback_tage = 50
-    verlusttage_volumen_ratio_min = 1.1
-    verlusttage_tief_marker_lookback_tage = 5
-    verlusttage_updown_fenster_tage = 15
-    verlusttage_updown_diff_min = 3
-    verlusttage_tranche_pct = 25.0
-    downside_kerzenweite_lookback_tage = 10
-    downside_volumen_lookback_tage = 50
-    downside_neues_hoch_lookback_tage = 30
-    downside_weite_kerze_faktor = 1.5
-    downside_volumen_ratio_min = 1.2
-    downside_schluss_unteres_drittel_faktor = 3.0
-    downside_tranche_neues_hoch_pct = 33.0
-    downside_tranche_weite_umkehr_pct = 20.0
-    downside_tranche_warnstufe_pct = 15.0
-    split_lookback_tage = 30
-    split_auto_tagefenster = 14
-    split_signal_schwelle_pct = 25.0
-    split_starke_schwelle_pct = 50.0
-    split_datum = None
-    ma21_variante = "gestaffelt"
-    ma_abstand_schwelle_ma10_pct = 10.0
-    ma_abstand_schwelle_ma21_pct = 15.0
-    ma_abstand_schwelle_ma50_pct = 25.0
-    ma_abstand_schwelle_ma200_pct = 70.0
-    ma_abstand_klimax_ma200_vollausstieg_pct = 100.0
-    ma_abstand_tranche_ma10_pct = 25.0
-    ma_abstand_tranche_ma21_pct = 33.0
-    ma_abstand_tranche_ma50_pct = 33.0
-    ma_abstand_tranche_ma200_basis_pct = 50.0
-    rueckkehr_tranche_stufe1_pct = 33.0
-    rueckkehr_tranche_stufe1_volumen_pct = 50.0
-    rueckkehr_volumen_schwelle = 1.5
-    rueckkehr_tranche_stufe2_pct = 33.0
-    rueckkehr_pivot_tage_schwelle = 10
-    rueckkehr_tranche_pivot_pct = 50.0
-    rueckkehr_notbremse_verlust_pct = 7.0
+    aktive = _ss(f"strat_hub_multi_{t}", list(alle))
+    aktive = [k for k in aktive if k in alle] or list(alle)
 
+    markt_default = man.get("market_environment", "Unsicher")
+    if markt_default not in ("Bullisch","Unsicher","Bärisch"):
+        markt_default = "Unsicher"
+    markt = _ss(f"strat_hub_mkt_{t}", markt_default)
 
-    for key in aktive:
-        with st.expander(f"Strategie: {key}", expanded=(key == "atr_basiert")):
-            st.caption(strategie_info.get(key, "Keine Beschreibung hinterlegt."))
-            if key == "atr_basiert":
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    ziel_atr = st.number_input("ATR-Ziel (Multiplikator)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_mult_{t}", help="Teilverkauf ab x ATR Gewinn.")
-                with c2:
-                    atr_ueberdehnung_start = st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Ab x ATR über 21-EMA wird 33% verkauft.")
-                with c3:
-                    atr_ueberdehnung_stark = st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Ab y ATR über 21-EMA wird 50% verkauft.")
-            elif key == "notbremse_verlust":
-                st.markdown(
-                    """
-**Strategie 2 – Notbremse nach Verlusthöhe (Kap. 6.1):**
-- **Immer aktiv** und unabhängig von allen anderen Strategien.
-- Bei Erreichen/Unterschreiten der Verlustschwelle folgt **Vollausstieg (100%) intraday**.
-- Die Schwelle ist je Marktumfeld frei definierbar (Bärisch/Unsicher/Bullisch).
-- Falls noch nicht ausgelöst, zeigt das Infosignal den **kritischen Kurs** der Notbremse.
-                    """
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    notbremse_verlust_schwelle_baerisch_pct = st.number_input("Notbremse Bärisch (%)", min_value=0.5, max_value=30.0, value=4.0, step=0.5, key=f"strat_hub_notbremse_bear_{t}")
-                with c2:
-                    notbremse_verlust_schwelle_unsicher_pct = st.number_input("Notbremse Unsicher (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_notbremse_uncertain_{t}")
-                with c3:
-                    notbremse_verlust_schwelle_bullisch_pct = st.number_input("Notbremse Bullisch (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_notbremse_bull_{t}")
-            elif key == "gewinn_in_stufen":
-                st.markdown(
-                    """
-**Strategie 3 – Verkauf bei festgelegtem prozentualem Gewinn (Kap. 6.2):**
-- **Nachdenkschwelle**: ab dieser P&L-Marke wird ein Info-Signal erzeugt (noch kein Verkauf).
-- **Pflicht-Teilverkauf**: ab Untergrenze der Gewinnzone wird ein aktives Signal erzeugt:
-  - unterhalb der oberen Gewinnzonen-Grenze: **33%** Tranche
-  - ab oberer Grenze: **50%** Tranche
-- **Bärenmarkt-Modus**: eigene, engere Schwellen möglich.
-                    """
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    gewinn_nachdenken_schwelle_bull_pct = st.number_input("Nachdenkschwelle Bullisch/Unsicher (%)", min_value=0.0, max_value=200.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_think_bull_{t}")
-                    gewinn_teilverkauf_unten_bull_pct = st.number_input("Gewinnzone unten Bullisch/Unsicher (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5, key=f"strat_hub_gainstep_lo_bull_{t}")
-                    gewinn_teilverkauf_oben_bull_pct = st.number_input("Gewinnzone oben Bullisch/Unsicher (%)", min_value=0.0, max_value=300.0, value=35.0, step=0.5, key=f"strat_hub_gainstep_hi_bull_{t}")
-                with c2:
-                    gewinn_nachdenken_schwelle_bear_pct = st.number_input("Nachdenkschwelle Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_think_bear_{t}")
-                    gewinn_teilverkauf_unten_bear_pct = st.number_input("Gewinnzone unten Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_lo_bear_{t}")
-                    gewinn_teilverkauf_oben_bear_pct = st.number_input("Gewinnzone oben Bärisch (%)", min_value=0.0, max_value=300.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_hi_bear_{t}")
-            elif key == "rueckkehr_pivot":
-                st.markdown(
-                    """
-**Strategie 14 – Rückkehr zum Ausbruchspunkt (Kap. 6.3):**
-- **Sicherheitslinie 1:** Schluss unter Tief Tag 1 → Teilverkauf (bei erhöhtem Volumen größere Tranche).
-- **Sicherheitslinie 2:** Schluss unter Tief Tag 0 → weiterer Teilverkauf.
-- **Zeitkomponente:** Bleibt die Aktie X Handelstage in Folge unter dem Pivot → Signal wegen ausbleibender Rückeroberung.
-- **Notbremse:** Bei Erreichen der Verlustschwelle Restposition sofort intraday schließen.
-                    """
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    rueckkehr_tranche_stufe1_pct = st.number_input(
-                        "Tranche Sicherheitslinie 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
-                        key=f"strat_hub_rueckkehr_tranche_1_{t}",
-                        help="Standard-Tranche bei Schluss unter Tief Tag 1.",
-                    )
-                    rueckkehr_tranche_stufe1_volumen_pct = st.number_input(
-                        "Tranche Sicherheitslinie 1 bei Volumen (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0,
-                        key=f"strat_hub_rueckkehr_tranche_1_vol_{t}",
-                        help="Erhöhte Tranche, wenn die Volumenquote die Schwelle erreicht.",
-                    )
-                    rueckkehr_volumen_schwelle = st.number_input(
-                        "Volumenquoten-Schwelle", min_value=0.5, max_value=10.0, value=1.5, step=0.1,
-                        key=f"strat_hub_rueckkehr_vol_schwelle_{t}",
-                        help="Ab dieser Volumenquote (heutiges Volumen / 50-Tage-Durchschnitt) wird Tranche 1 erhöht.",
-                    )
-                    rueckkehr_notbremse_verlust_pct = st.number_input(
-                        "Notbremse Verlust (%)", min_value=1.0, max_value=30.0, value=7.0, step=0.5,
-                        key=f"strat_hub_rueckkehr_notbremse_{t}",
-                        help="Bei diesem Verlust (P&L) wird die Restposition sofort intraday geschlossen.",
-                    )
-                with c2:
-                    rueckkehr_tranche_stufe2_pct = st.number_input(
-                        "Tranche Sicherheitslinie 2 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
-                        key=f"strat_hub_rueckkehr_tranche_2_{t}",
-                        help="Tranche bei Schluss unter Tief Tag 0.",
-                    )
-                    rueckkehr_pivot_tage_schwelle = int(st.number_input(
-                        "Tage unter Pivot", min_value=1, max_value=60, value=10, step=1,
-                        key=f"strat_hub_rueckkehr_pivot_tage_{t}",
-                        help="Anzahl Handelstage in Folge unter dem Pivot, ab der die Zeitkomponente auslöst.",
-                    ))
-                    rueckkehr_tranche_pivot_pct = st.number_input(
-                        "Tranche Zeitkomponente Pivot (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0,
-                        key=f"strat_hub_rueckkehr_pivot_tranche_{t}",
-                        help="Tranche, wenn die Aktie X Handelstage in Folge unter dem Pivot bleibt.",
-                    )
-            elif key == "einfache_verluststufen":
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    verlust_stufe_1 = st.number_input("Verluststufe 1 (%)", min_value=0.5, max_value=30.0, value=3.0, step=0.5, key=f"strat_hub_loss_stage1_{t}", help="Bei diesem Verlust wird die erste Tranche (33%) verkauft.")
-                with c2:
-                    verlust_stufe_2 = st.number_input("Verluststufe 2 (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_loss_stage2_{t}", help="Bei diesem Verlust folgt die zweite Tranche (33%).")
-                with c3:
-                    verlust_stufe_3 = st.number_input("Verluststufe 3 (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_loss_stage3_{t}", help="Bei diesem Verlust wird die Restposition sofort geschlossen.")
-            elif key == "einfach_halbe_position":
-                erste_haelfte_gewinn_pct = st.number_input("Gewinnmitnahme 1. Hälfte (%)", min_value=5.0, max_value=100.0, value=20.0, step=0.5, key=f"strat_hub_first_half_profit_{t}", help="Ab diesem Gewinn wird die erste Hälfte (50%) verkauft.")
-            elif key == "ma_basierte_sequenz":
-                st.markdown(
-                    """
-**Sequenzlogik (Kap. 6.4):**
-- **Punkt 1:** Teilverkauf in der Gewinnzone (Standard: 20–25%).
-- **Punkt 2:** Zusatz-Tranche bei Überdehnung über 10-MA (Standard: +10%).
-- **Punkt 3:** Verkauf bei Schluss unter 10-MA; bei **Pendelverhalten** um die 10-MA höhere Tranche.
-- **Punkt 4:** Weitere Reduktion bei Schluss unter 21-MA.
-- **Punkt 5 (final):** Vollausstieg bei klarem Bruch der 50-MA.
-                    """
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    ma_seq_gewinnzone_min_pct = st.number_input("Gewinnzone min (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5, key=f"strat_hub_ma_seq_gain_min_{t}", help="Untere Grenze für Punkt 1.")
-                    ma_seq_gewinnzone_tranche_pct = st.number_input("Tranche Punkt 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_seq_gain_tranche_{t}", help="Verkaufsgröße in der Gewinnzone.")
-                    ma_seq_unter_ma10_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 3 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under10_minpnl_{t}", help="Punkt 3 erst ab diesem Mindestgewinn.")
-                    ma_seq_pendel_lookback_tage = int(st.number_input("Pendel-Lookback (Tage)", min_value=2, max_value=20, value=5, step=1, key=f"strat_hub_ma_seq_pendel_lb_{t}", help="Anzahl Tage für den Pendel-Check um die 10-MA."))
-                with c2:
-                    ma_seq_gewinnzone_max_pct = st.number_input("Gewinnzone max (%)", min_value=0.0, max_value=200.0, value=25.0, step=0.5, key=f"strat_hub_ma_seq_gain_max_{t}", help="Obere Grenze für Punkt 1.")
-                    ma_seq_ueber_ma10_pct = st.number_input("Überdehnung über 10-MA (%)", min_value=0.5, max_value=100.0, value=10.0, step=0.5, key=f"strat_hub_ma_seq_over10_pct_{t}", help="Schwelle für Punkt 2.")
-                    ma_seq_unter_ma10_tranche_pct = st.number_input("Tranche Punkt 3 normal (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_under10_tranche_{t}", help="Standard-Tranche bei Schluss unter 10-MA.")
-                    ma_seq_pendel_wechsel_min = int(st.number_input("Min. Pendel-Wechsel", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_ma_seq_pendel_switch_{t}", help="Ab so vielen Seitenwechseln gilt das Verhalten als pendelnd."))
-                with c3:
-                    ma_seq_ueber_ma10_tranche_pct = st.number_input("Tranche Punkt 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_over10_tranche_{t}", help="Verkaufsgröße bei Überdehnung über 10-MA.")
-                    ma_seq_pendel_tranche_pct = st.number_input("Tranche Punkt 3 pendelnd (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_pendel_tranche_{t}", help="Erhöhte Tranche, wenn Punkt 3 pendelnd erkannt wird.")
-                    ma_seq_unter_ma21_tranche_pct = st.number_input("Tranche Punkt 4 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_under21_tranche_{t}", help="Verkaufsgröße bei Schluss unter 21-MA.")
-                    ma_seq_klarer_ma50_bruch_pct = st.number_input("Klarer 50-MA-Bruch (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5, key=f"strat_hub_ma_seq_under50_clear_{t}", help="Mindestabstand unter 50-MA für Punkt 5.")
-                ma_seq_unter_ma21_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 4 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under21_minpnl_{t}", help="Punkt 4 erst ab diesem Mindestgewinn.")
-            elif key == "rs_linie":
-                st.markdown(
-                    """
-**RS-Linien-3-Stufen-Strategie (Kap. 6.4):**
-- **Stufe 1 (20%)**: RS-Linie bricht den schnellen MA erstmalig.
-- **Stufe 2 (30%)**: RS bleibt 3 Perioden in Folge unter dem schnellen MA.
-- **Stufe 3 (50%)**: RS bricht den langsamen MA (Restverkauf).
+    ma21_variante = _ss(f"strat_hub_ma21_variante_{t}", "gestaffelt")
+    ziel_atr = float(_ss(f"strat_hub_atr_mult_{t}", 3.0))
+    atr_ueberdehnung_start = float(_ss(f"strat_hub_atr_ext_start_{t}", 3.0))
+    atr_ueberdehnung_stark = float(_ss(f"strat_hub_atr_ext_strong_{t}", 4.0))
+    verlust_stufe_1 = float(_ss(f"strat_hub_loss_stage1_{t}", 3.0))
+    verlust_stufe_2 = float(_ss(f"strat_hub_loss_stage2_{t}", 5.0))
+    verlust_stufe_3 = float(_ss(f"strat_hub_loss_stage3_{t}", 7.0))
+    notbremse_verlust_schwelle_baerisch_pct = float(_ss(f"strat_hub_notbremse_bear_{t}", 4.0))
+    notbremse_verlust_schwelle_unsicher_pct = float(_ss(f"strat_hub_notbremse_uncertain_{t}", 5.0))
+    notbremse_verlust_schwelle_bullisch_pct = float(_ss(f"strat_hub_notbremse_bull_{t}", 7.0))
+    erste_haelfte_gewinn_pct = float(_ss(f"strat_hub_first_half_profit_{t}", 20.0))
+    gewinn_nachdenken_schwelle_bull_pct = float(_ss(f"strat_hub_gainstep_think_bull_{t}", 15.0))
+    gewinn_teilverkauf_unten_bull_pct = float(_ss(f"strat_hub_gainstep_lo_bull_{t}", 20.0))
+    gewinn_teilverkauf_oben_bull_pct = float(_ss(f"strat_hub_gainstep_hi_bull_{t}", 35.0))
+    gewinn_nachdenken_schwelle_bear_pct = float(_ss(f"strat_hub_gainstep_think_bear_{t}", 10.0))
+    gewinn_teilverkauf_unten_bear_pct = float(_ss(f"strat_hub_gainstep_lo_bear_{t}", 10.0))
+    gewinn_teilverkauf_oben_bear_pct = float(_ss(f"strat_hub_gainstep_hi_bear_{t}", 15.0))
+    ma_seq_gewinnzone_min_pct = float(_ss(f"strat_hub_ma_seq_gain_min_{t}", 20.0))
+    ma_seq_gewinnzone_max_pct = float(_ss(f"strat_hub_ma_seq_gain_max_{t}", 25.0))
+    ma_seq_gewinnzone_tranche_pct = float(_ss(f"strat_hub_ma_seq_gain_tranche_{t}", 33.0))
+    ma_seq_ueber_ma10_pct = float(_ss(f"strat_hub_ma_seq_over10_pct_{t}", 10.0))
+    ma_seq_ueber_ma10_tranche_pct = float(_ss(f"strat_hub_ma_seq_over10_tranche_{t}", 20.0))
+    ma_seq_unter_ma10_mindestgewinn_pct = float(_ss(f"strat_hub_ma_seq_under10_minpnl_{t}", 5.0))
+    ma_seq_unter_ma10_tranche_pct = float(_ss(f"strat_hub_ma_seq_under10_tranche_{t}", 20.0))
+    ma_seq_pendel_tranche_pct = float(_ss(f"strat_hub_ma_seq_pendel_tranche_{t}", 25.0))
+    ma_seq_pendel_lookback_tage = int(_ss(f"strat_hub_ma_seq_pendel_lb_{t}", 5))
+    ma_seq_pendel_wechsel_min = int(_ss(f"strat_hub_ma_seq_pendel_switch_{t}", 3))
+    ma_seq_unter_ma21_mindestgewinn_pct = float(_ss(f"strat_hub_ma_seq_under21_minpnl_{t}", 5.0))
+    ma_seq_unter_ma21_tranche_pct = float(_ss(f"strat_hub_ma_seq_under21_tranche_{t}", 25.0))
+    ma_seq_klarer_ma50_bruch_pct = float(_ss(f"strat_hub_ma_seq_under50_clear_{t}", 2.0))
+    rs_pnl_tag_zu_woche = float(_ss(f"strat_hub_rs_pnl_day_week_{t}", 20.0))
+    rs_pnl_woche_zu_monat = float(_ss(f"strat_hub_rs_pnl_week_month_{t}", 80.0))
+    groesster_einbruch_min_pnl_pct = float(_ss(f"strat_hub_worst_drop_min_pnl_{t}", 10.0))
+    groesster_einbruch_min_tagesverlust_pct = float(_ss(f"strat_hub_worst_drop_day_loss_{t}", 3.0))
+    groesster_einbruch_tagesvol_ratio_schwelle = float(_ss(f"strat_hub_worst_drop_day_vol_ratio_{t}", 1.5))
+    groesster_einbruch_wochenvol_ratio_schwelle = float(_ss(f"strat_hub_worst_drop_week_vol_ratio_{t}", 1.3))
+    stau_fenster_tage = int(_ss(f"strat_hub_stall_window_{t}", 10))
+    stau_volumen_lookback_tage = int(_ss(f"strat_hub_stall_vol_lookback_{t}", 50))
+    stau_max_tagesveraenderung_pct = float(_ss(f"strat_hub_stall_max_day_change_{t}", 1.0))
+    stau_min_vol_ratio = float(_ss(f"strat_hub_stall_min_vol_ratio_{t}", 1.3))
+    stau_min_tage = int(_ss(f"strat_hub_stall_min_days_{t}", 2))
+    stau_nahe_hoch_drawdown_max_pct = float(_ss(f"strat_hub_stall_near_high_dd_{t}", 5.0))
+    stau_tranche_nahe_hoch_pct = float(_ss(f"strat_hub_stall_tranche_near_high_{t}", 33.0))
+    stau_tranche_standard_pct = float(_ss(f"strat_hub_stall_tranche_standard_{t}", 20.0))
+    verlusttage_min_tiefere_schlusskurse_in_folge = int(_ss(f"strat_hub_losscluster_min_seq_{t}", 3))
+    verlusttage_volumen_lookback_tage = int(_ss(f"strat_hub_losscluster_vol_lb_{t}", 50))
+    verlusttage_volumen_ratio_min = float(_ss(f"strat_hub_losscluster_vol_ratio_{t}", 1.1))
+    verlusttage_tief_marker_lookback_tage = int(_ss(f"strat_hub_losscluster_low_marker_lb_{t}", 5))
+    verlusttage_updown_fenster_tage = int(_ss(f"strat_hub_losscluster_ud_window_{t}", 15))
+    verlusttage_updown_diff_min = int(_ss(f"strat_hub_losscluster_ud_diff_{t}", 3))
+    verlusttage_tranche_pct = float(_ss(f"strat_hub_losscluster_tranche_{t}", 25.0))
+    downside_kerzenweite_lookback_tage = int(_ss(f"strat_hub_downside_candle_lb_{t}", 10))
+    downside_volumen_lookback_tage = int(_ss(f"strat_hub_downside_vol_lb_{t}", 50))
+    downside_neues_hoch_lookback_tage = int(_ss(f"strat_hub_downside_high_lb_{t}", 30))
+    downside_weite_kerze_faktor = float(_ss(f"strat_hub_downside_wide_factor_{t}", 1.5))
+    downside_volumen_ratio_min = float(_ss(f"strat_hub_downside_vol_ratio_{t}", 1.2))
+    downside_schluss_unteres_drittel_faktor = float(_ss(f"strat_hub_downside_lower_third_factor_{t}", 3.0))
+    downside_tranche_neues_hoch_pct = float(_ss(f"strat_hub_downside_tranche_high_{t}", 33.0))
+    downside_tranche_weite_umkehr_pct = float(_ss(f"strat_hub_downside_tranche_wide_{t}", 20.0))
+    downside_tranche_warnstufe_pct = float(_ss(f"strat_hub_downside_tranche_warn_{t}", 15.0))
+    split_lookback_tage = int(_ss(f"strat_hub_split_lookback_{t}", 30))
+    split_auto_tagefenster = int(_ss(f"strat_hub_split_age_window_{t}", 14))
+    split_signal_schwelle_pct = float(_ss(f"strat_hub_split_signal_threshold_{t}", 25.0))
+    split_starke_schwelle_pct = float(_ss(f"strat_hub_split_strong_threshold_{t}", 50.0))
+    ma_abstand_schwelle_ma10_pct = float(_ss(f"strat_hub_ma_dist_th10_{t}", 10.0))
+    ma_abstand_schwelle_ma21_pct = float(_ss(f"strat_hub_ma_dist_th21_{t}", 15.0))
+    ma_abstand_schwelle_ma50_pct = float(_ss(f"strat_hub_ma_dist_th50_{t}", 25.0))
+    ma_abstand_schwelle_ma200_pct = float(_ss(f"strat_hub_ma_dist_th200_{t}", 70.0))
+    ma_abstand_klimax_ma200_vollausstieg_pct = float(_ss(f"strat_hub_ma_dist_th200_full_{t}", 100.0))
+    ma_abstand_tranche_ma10_pct = float(_ss(f"strat_hub_ma_dist_tr10_{t}", 25.0))
+    ma_abstand_tranche_ma21_pct = float(_ss(f"strat_hub_ma_dist_tr21_{t}", 33.0))
+    ma_abstand_tranche_ma50_pct = float(_ss(f"strat_hub_ma_dist_tr50_{t}", 33.0))
+    ma_abstand_tranche_ma200_basis_pct = float(_ss(f"strat_hub_ma_dist_tr200_{t}", 50.0))
+    rueckkehr_tranche_stufe1_pct = float(_ss(f"strat_hub_rueckkehr_tranche_1_{t}", 33.0))
+    rueckkehr_tranche_stufe1_volumen_pct = float(_ss(f"strat_hub_rueckkehr_tranche_1_vol_{t}", 50.0))
+    rueckkehr_volumen_schwelle = float(_ss(f"strat_hub_rueckkehr_vol_schwelle_{t}", 1.5))
+    rueckkehr_tranche_stufe2_pct = float(_ss(f"strat_hub_rueckkehr_tranche_2_{t}", 33.0))
+    rueckkehr_pivot_tage_schwelle = int(_ss(f"strat_hub_rueckkehr_pivot_tage_{t}", 10))
+    rueckkehr_tranche_pivot_pct = float(_ss(f"strat_hub_rueckkehr_pivot_tranche_{t}", 50.0))
+    rueckkehr_notbremse_verlust_pct = float(_ss(f"strat_hub_rueckkehr_notbremse_{t}", 7.0))
 
-**Automatischer Zeithorizont:**
-- unter Schwelle 1: **Tag** (21/50-MA)
-- zwischen Schwelle 1 und 2: **Woche** (10/25-MA)
-- ab Schwelle 2: **Monat** (12/24-MA)
-                    """
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    rs_pnl_tag_zu_woche = st.number_input(
-                        "PnL-Schwelle Tag → Woche (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5,
-                        key=f"strat_hub_rs_pnl_day_week_{t}",
-                        help="Ab diesem Gewinn wechselt Strategie 18 von Tages- auf Wochensignale.",
-                    )
-                with c2:
-                    rs_pnl_woche_zu_monat = st.number_input(
-                        "PnL-Schwelle Woche → Monat (%)", min_value=0.0, max_value=300.0, value=80.0, step=0.5,
-                        key=f"strat_hub_rs_pnl_week_month_{t}",
-                        help="Ab diesem Gewinn wechselt Strategie 18 von Wochen- auf Monatssignale.",
-                    )
-            elif key == "ma21_bruch":
-                st.markdown(
-                    """
-**Strategie 4 – 21-MA-Bruch (Kap. 6.2):**
-- **Aggressiv:** klarer Bruch (mind. 2% unter 21-MA) mit erhöhtem Volumen (≥1.2) triggert 33%.
-  Zusatzregel: am zweiten Tag unter 21-MA und Tagesverlust ≤ -7% wird sofort 50% reduziert.
-- **Gestaffelt:** 3-stufiges Vorgehen (Tag 1/2/3 jeweils 25% nach Regelwerk).
-- **Geduldig:** erst nach bestätigtem Bruch (mind. 3 Tage unter 21-MA) 33%.
-
-Die Variante wird **einmalig pro Position** gespeichert und beim nächsten Öffnen des Strategien-Hubs wiederverwendet.
-                    """
-                )
-                ma21_variante = st.selectbox(
-                    "Variante 21-MA-Bruch",
-                    ["gestaffelt", "aggressiv", "geduldig"],
-                    index=["gestaffelt", "aggressiv", "geduldig"].index(st.session_state.get(f"strat_hub_ma21_variante_{t}", "gestaffelt")),
-                    key=f"strat_hub_ma21_variante_select_{t}",
-                    help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-MA behandelt.",
-                )
-                st.session_state[f"strat_hub_ma21_variante_{t}"] = ma21_variante
-            elif key == "groesster_einbruch":
-                st.markdown(
-                    """
-**Strategie 17 – Größter Tages-/Wocheneinbruch seit Beginn (Kap. 6.3):**
-- Nur aktiv, wenn die Position bereits mindestens die definierte **Mindest-P&L-Schwelle** erreicht hat.
-- **Tagesregel**: Aktueller Tagesverlust ist der größte seit Einstieg und über der Mindest-Verlustschwelle.
-  - Bei normalem Volumen: **33%** Tranche (defensive Reduktion).
-  - Bei hohem Volumen (Volumenfaktor ≥ Schwelle): **50%** Tranche (stärkeres Warnsignal).
-- **Wochenregel**: Aktuelle Verlustwoche ist die größte seit Einstieg und Wochenvolumen liegt über dem 12-Wochen-Durchschnitt (Faktor ≥ Schwelle).
-  - Signal: **66%** Tranche.
-
-Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnlich große Abgaben auftreten.
-                    """
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    groesster_einbruch_min_pnl_pct = st.number_input(
-                        "Mindest-P&L vor Aktivierung (%)", min_value=0.0, max_value=300.0, value=10.0, step=0.5,
-                        key=f"strat_hub_worst_drop_min_pnl_{t}",
-                        help="Strategie 17 wird erst geprüft, wenn die Position mindestens diesen Gewinn erreicht hat.",
-                    )
-                    groesster_einbruch_tagesvol_ratio_schwelle = st.number_input(
-                        "Volumenfaktor Tagesregel", min_value=0.5, max_value=10.0, value=1.5, step=0.1,
-                        key=f"strat_hub_worst_drop_day_vol_ratio_{t}",
-                        help="Ab diesem Faktor (heutiges Volumen / 50-Tage-Durchschnitt) gilt die Tageswarnung als volumenbestätigt (50%-Tranche).",
-                    )
-                with c2:
-                    groesster_einbruch_min_tagesverlust_pct = st.number_input(
-                        "Mindest-Tagesverlust (%)", min_value=0.5, max_value=30.0, value=3.0, step=0.1,
-                        key=f"strat_hub_worst_drop_day_loss_{t}",
-                        help="Nur wenn der größte Tagesverlust zugleich über dieser Schwelle liegt, wird ein Signal ausgelöst.",
-                    )
-                    groesster_einbruch_wochenvol_ratio_schwelle = st.number_input(
-                        "Volumenfaktor Wochenregel", min_value=0.5, max_value=10.0, value=1.3, step=0.1,
-                        key=f"strat_hub_worst_drop_week_vol_ratio_{t}",
-                        help="Ab diesem Faktor (aktuelles Wochenvolumen / 12-Wochen-Durchschnitt) gilt die Wochenwarnung als bestätigt.",
-                    )
-            elif key == "stau_tage":
-                st.markdown(
-                    """
-**Strategie 13 – Stau-Tage (Kap. 6.2):**
-- Prüft die letzten **N Sessions** auf verdeckte Distribution.
-- Ein Tag gilt als Stau-Tag, wenn:
-  - **kaum Fortschritt**: \|Close-Open\| in % < Schwelle
-  - **hohes Volumen**: Tagesvolumen / Referenzvolumen ≥ Schwelle
-- Ab **mindestens X Stau-Tagen** im Fenster wird ein Signal aktiv.
-- Die Tranche ist höher, wenn die Aktie noch **nahe am Hoch** notiert (geringer Drawdown).
-- Als Stopp-Marke wird das **Tief des schwächsten Stau-Tags** genutzt.
-                    """
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    stau_fenster_tage = int(st.number_input("Fenster (Sessions)", min_value=5, max_value=30, value=10, step=1, key=f"strat_hub_stall_window_{t}"))
-                    stau_max_tagesveraenderung_pct = st.number_input("Max. Tagesveränderung (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key=f"strat_hub_stall_max_day_change_{t}")
-                    stau_min_tage = int(st.number_input("Min. Stau-Tage", min_value=1, max_value=10, value=2, step=1, key=f"strat_hub_stall_min_days_{t}"))
-                with c2:
-                    stau_volumen_lookback_tage = int(st.number_input("Volumen-Lookback (Tage)", min_value=10, max_value=200, value=50, step=1, key=f"strat_hub_stall_vol_lookback_{t}"))
-                    stau_min_vol_ratio = st.number_input("Min. Volumenfaktor", min_value=0.8, max_value=5.0, value=1.3, step=0.1, key=f"strat_hub_stall_min_vol_ratio_{t}")
-                    stau_nahe_hoch_drawdown_max_pct = st.number_input("Nahe-Hoch Drawdown max (%)", min_value=0.5, max_value=20.0, value=5.0, step=0.5, key=f"strat_hub_stall_near_high_dd_{t}")
-                with c3:
-                    stau_tranche_nahe_hoch_pct = st.number_input("Tranche nahe Hoch (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_stall_tranche_near_high_{t}")
-                    stau_tranche_standard_pct = st.number_input("Standard-Tranche (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_stall_tranche_standard_{t}")
-            elif key == "verlusttage_haeufung":
-                st.markdown(
-                    """
-**Strategie 7 – Häufung Verlusttage / Verhältnis Auf-/Abwärtstage (Kap. 6.2):**
-- Nur aktiv bei Gewinnerpositionen (P&L > 0).
-- **Signal A (Sequenz):** Mehrere tiefere Schlusskurse in Folge (Standard 3) + erhöhte Volumenquote (Ø letzte 3 Tage / Ø Lookback-Volumen).
-- **Signal B (Persönlichkeitswechsel):** Im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen mit Mindestdifferenz.
-- Beide Signale verwenden standardmäßig **25%** Tranche und setzen die nächste Marke auf lokale Tiefs.
-                    """
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    verlusttage_min_tiefere_schlusskurse_in_folge = int(st.number_input("Min. tiefere Schlusskurse in Folge", min_value=2, max_value=5, value=3, step=1, key=f"strat_hub_losscluster_min_seq_{t}"))
-                    verlusttage_tief_marker_lookback_tage = int(st.number_input("Tief-Marker Lookback", min_value=2, max_value=20, value=5, step=1, key=f"strat_hub_losscluster_low_marker_lb_{t}"))
-                with c2:
-                    verlusttage_volumen_lookback_tage = int(st.number_input("Volumen-Lookback (Tage)", min_value=10, max_value=200, value=50, step=1, key=f"strat_hub_losscluster_vol_lb_{t}"))
-                    verlusttage_volumen_ratio_min = st.number_input("Min. Volumenquote (3T / LB)", min_value=0.8, max_value=3.0, value=1.1, step=0.05, key=f"strat_hub_losscluster_vol_ratio_{t}")
-                with c3:
-                    verlusttage_updown_fenster_tage = int(st.number_input("Up/Down-Fenster (Tage)", min_value=5, max_value=40, value=15, step=1, key=f"strat_hub_losscluster_ud_window_{t}"))
-                    verlusttage_updown_diff_min = int(st.number_input("Min. Abwärts-Überhang (Tage)", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_losscluster_ud_diff_{t}"))
-                    verlusttage_tranche_pct = st.number_input("Tranche je Signal (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_losscluster_tranche_{t}")
-            elif key == "ma_abstand":
-                st.markdown(
-                    """
-**Strategie 6 – Abstand zu gleitenden Durchschnitten (Kap. 6.2):**
-- Nur aktiv, wenn die Position im Gewinn ist (**P&L > 0**).
-- Es werden vier Überdehnungen gemessen: Abstand zum **10/21/50/200-MA** in Prozent.
-- Signalstufen (Standard):
-  - **10-MA ab 10%** → kurzfristig überhitzt, **25%** Tranche
-  - **21-MA ab 15%** → klare Überdehnung, **33%** Tranche
-  - **50-MA ab 25%** → Spätphasen-Signal, **33%** Tranche
-  - **200-MA ab 70%** → Klimaxzone, **50%** Tranche
-  - **200-MA ab 100%** → Extrem-Klimax, **100%** Tranche
-- Nächste Marke: jeweiliger MA (bei 200-MA-Klimax als engere Kontrolllinie die 50-MA).
-                    """
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    ma_abstand_schwelle_ma10_pct = st.number_input("Schwelle 10-MA (%)", min_value=1.0, max_value=50.0, value=10.0, step=0.5, key=f"strat_hub_ma_dist_th10_{t}")
-                    ma_abstand_schwelle_ma21_pct = st.number_input("Schwelle 21-MA (%)", min_value=1.0, max_value=80.0, value=15.0, step=0.5, key=f"strat_hub_ma_dist_th21_{t}")
-                    ma_abstand_schwelle_ma50_pct = st.number_input("Schwelle 50-MA (%)", min_value=1.0, max_value=120.0, value=25.0, step=0.5, key=f"strat_hub_ma_dist_th50_{t}")
-                with c2:
-                    ma_abstand_schwelle_ma200_pct = st.number_input("Klimax-Schwelle 200-MA (%)", min_value=10.0, max_value=200.0, value=70.0, step=1.0, key=f"strat_hub_ma_dist_th200_{t}")
-                    ma_abstand_klimax_ma200_vollausstieg_pct = st.number_input("Vollausstieg ab 200-MA (%)", min_value=20.0, max_value=300.0, value=100.0, step=1.0, key=f"strat_hub_ma_dist_th200_full_{t}")
-                with c3:
-                    ma_abstand_tranche_ma10_pct = st.number_input("Tranche 10-MA (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_dist_tr10_{t}")
-                    ma_abstand_tranche_ma21_pct = st.number_input("Tranche 21-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr21_{t}")
-                    ma_abstand_tranche_ma50_pct = st.number_input("Tranche 50-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr50_{t}")
-                    ma_abstand_tranche_ma200_basis_pct = st.number_input("Tranche 200-MA Basis (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0, key=f"strat_hub_ma_dist_tr200_{t}")
-            elif key == "downside_reversal":
-                st.markdown(
-                    """
-**Strategie 12 – Downside Reversal (Kap. 6.2):**
-- Nur aktiv, wenn die Position im Gewinn ist.
-- **Variante 1 (stark):** neues Hoch + Schluss im unteren Tagesdrittel + erhöhtes Volumen.
-- **Variante 2 (mittel):** weite Umkehrkerze + Schluss im unteren Drittel + erhöhtes Volumen.
-- **Variante 3 (Warnstufe):** weite Kerze + Schluss unter Spannenmitte.
-- Stopp-/Entwarnungsmarke ist das Hoch der Signalkerze.
-                    """
-                )
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    downside_kerzenweite_lookback_tage = int(st.number_input("Kerzenweiten-Lookback", min_value=5, max_value=60, value=10, step=1, key=f"strat_hub_downside_candle_lb_{t}"))
-                    downside_neues_hoch_lookback_tage = int(st.number_input("Neues-Hoch-Lookback", min_value=10, max_value=120, value=30, step=1, key=f"strat_hub_downside_high_lb_{t}"))
-                    downside_schluss_unteres_drittel_faktor = st.number_input("Schluss im unteren 1/x", min_value=2.0, max_value=6.0, value=3.0, step=0.1, key=f"strat_hub_downside_lower_third_factor_{t}")
-                with c2:
-                    downside_volumen_lookback_tage = int(st.number_input("Volumen-Lookback", min_value=20, max_value=200, value=50, step=1, key=f"strat_hub_downside_vol_lb_{t}"))
-                    downside_volumen_ratio_min = st.number_input("Min. Volumenquote", min_value=0.8, max_value=5.0, value=1.2, step=0.1, key=f"strat_hub_downside_vol_ratio_{t}")
-                    downside_weite_kerze_faktor = st.number_input("Weite-Kerze-Faktor", min_value=1.0, max_value=4.0, value=1.5, step=0.1, key=f"strat_hub_downside_wide_factor_{t}")
-                with c3:
-                    downside_tranche_neues_hoch_pct = st.number_input("Tranche Variante 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_downside_tranche_high_{t}")
-                    downside_tranche_weite_umkehr_pct = st.number_input("Tranche Variante 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_downside_tranche_wide_{t}")
-                    downside_tranche_warnstufe_pct = st.number_input("Tranche Warnstufe (%)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key=f"strat_hub_downside_tranche_warn_{t}")
-            elif key == "split_anstieg":
-                st.markdown(
-                    """
-**Strategie 10 – Preisanstieg nach Split (Kap. 6.2):**
-- Die Regel ist nur kurz nach einem Split relevant (**erste 14 Tage**).
-- Gemessen wird der prozentuale Anstieg vom **Schlusskurs am Split-Tag** zum aktuellen Schluss.
-- Signalstufen:
-  - ab **+25%**: Teilverkauf (Standard **33%**)
-  - ab **+50%**: stärkere Reduktion (Standard **50%**)
-- Datumsquelle:
-  1. bevorzugt automatische Yahoo-Split-Historie,
-  2. falls nicht verfügbar/ungeeignet: manuelle Datumseingabe.
-                    """
-                )
-                c1, c2 = st.columns(2)
-                with c1:
-                    split_lookback_tage = int(st.number_input("Yahoo Split-Lookback (Tage)", min_value=14, max_value=365, value=30, step=1, key=f"strat_hub_split_lookback_{t}", help="So weit zurück wird nach dem letzten Split-Ereignis in Yahoo gesucht."))
-                    split_auto_tagefenster = int(st.number_input("Max. Tage seit Split", min_value=7, max_value=30, value=14, step=1, key=f"strat_hub_split_age_window_{t}", help="Nur Splits innerhalb dieses Fensters werden für Strategie 10 automatisch berücksichtigt."))
-                with c2:
-                    split_signal_schwelle_pct = st.number_input("Signal-Schwelle (%)", min_value=5.0, max_value=100.0, value=25.0, step=0.5, key=f"strat_hub_split_signal_threshold_{t}", help="Ab diesem Kursanstieg seit Split wird ein Signal ausgelöst.")
-                    split_starke_schwelle_pct = st.number_input("Starke Tranche ab (%)", min_value=10.0, max_value=200.0, value=50.0, step=0.5, key=f"strat_hub_split_strong_threshold_{t}", help="Ab diesem Anstieg wird die stärkere Tranche verwendet.")
-                split_auto_datum = None
-                try:
-                    splits = yf.Ticker(t).splits
-                    if isinstance(splits, pd.Series) and not splits.empty:
-                        splits_idx = pd.to_datetime(splits.index).tz_localize(None)
-                        cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=int(split_lookback_tage))
-                        recent_idx = splits_idx[splits_idx >= cutoff]
-                        if len(recent_idx) > 0:
-                            candidate = recent_idx.max()
-                            age_days = int((pd.Timestamp.now(tz="UTC").tz_localize(None) - candidate).days)
-                            if age_days <= int(split_auto_tagefenster):
-                                split_auto_datum = candidate
-                                st.success(f"Yahoo-Split erkannt: {candidate.date().isoformat()} ({age_days} Tage alt).")
-                            else:
-                                st.info(f"Yahoo-Split gefunden ({candidate.date().isoformat()}), aber älter als {split_auto_tagefenster} Tage.")
-                        else:
-                            st.info("Yahoo lieferte keine Splits im gewählten Lookback.")
+    # ── Split-Datum: Yahoo-Auto-Lookup + Fallback auf manuelle Eingabe ──
+    split_auto_datum = None
+    split_auto_msg = None
+    if "split_anstieg" in aktive:
+        try:
+            splits = yf.Ticker(t).splits
+            if isinstance(splits, pd.Series) and not splits.empty:
+                splits_idx = pd.to_datetime(splits.index).tz_localize(None)
+                cutoff = pd.Timestamp.now(tz="UTC").tz_localize(None) - pd.Timedelta(days=int(split_lookback_tage))
+                recent_idx = splits_idx[splits_idx >= cutoff]
+                if len(recent_idx) > 0:
+                    candidate = recent_idx.max()
+                    age_days = int((pd.Timestamp.now(tz="UTC").tz_localize(None) - candidate).days)
+                    if age_days <= int(split_auto_tagefenster):
+                        split_auto_datum = candidate
+                        split_auto_msg = ("success", f"Yahoo-Split erkannt: {candidate.date().isoformat()} ({age_days} Tage alt).")
                     else:
-                        st.info("Yahoo lieferte keine Split-Historie für diesen Ticker.")
-                except Exception as exc:
-                    st.warning(f"Yahoo-Splitabfrage fehlgeschlagen: {exc}")
-                manual_default = split_auto_datum.date() if split_auto_datum is not None else None
-                manual_split = st.date_input(
-                    "Manuelles Split-Datum (Fallback)",
-                    value=manual_default,
-                    key=f"strat_hub_split_manual_date_{t}",
-                    help="Falls Yahoo keinen passenden Split liefert, hier Split-Datum manuell setzen.",
-                )
-                split_datum = split_auto_datum if split_auto_datum is not None else (pd.Timestamp(manual_split) if manual_split else None)
-                if split_datum is not None:
-                    st.caption(f"Aktives Split-Datum für Strategie 10: {pd.Timestamp(split_datum).date().isoformat()}")
+                        split_auto_msg = ("info", f"Yahoo-Split gefunden ({candidate.date().isoformat()}), aber älter als {split_auto_tagefenster} Tage.")
+                else:
+                    split_auto_msg = ("info", "Yahoo lieferte keine Splits im gewählten Lookback.")
             else:
-                st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
+                split_auto_msg = ("info", "Yahoo lieferte keine Split-Historie für diesen Ticker.")
+        except Exception as exc:
+            split_auto_msg = ("warning", f"Yahoo-Splitabfrage fehlgeschlagen: {exc}")
+    manual_split = _ss(f"strat_hub_split_manual_date_{t}", None)
+    split_datum = split_auto_datum if split_auto_datum is not None else (pd.Timestamp(manual_split) if manual_split else None)
 
+    # ═══════════════════════════════════════════════════════════
+    # Ergebnis berechnen
+    # ═══════════════════════════════════════════════════════════
     res = verkaufs_empfehlung_gesamt(
         p,
         daily,
@@ -12511,11 +12179,471 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "ma_abstand_tranche_ma200_basis_pct": float(ma_abstand_tranche_ma200_basis_pct),
         },
     )
-    st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
-    st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
-    st.caption(f"Hauptgrund: {res['haupt_grund']}")
-    if res["alle_signale"]:
-        st.dataframe(pd.DataFrame(res["alle_signale"]))
+
+    # ═══════════════════════════════════════════════════════════
+    # 2. GESAMTÜBERSICHT
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("### 📊 Gesamtübersicht")
+    mc1, mc2, mc3 = st.columns(3)
+    with mc1:
+        st.metric("Gesamt-Tranche", f"{res['gesamt_tranche']}%")
+    with mc2:
+        st.metric("Jetzt zu verkaufen", f"{res['jetzt_zu_verkaufen']}%")
+    with mc3:
+        st.metric("Bereits realisiert", f"{res['bereits_realisiert']}%")
+    if res.get("haupt_grund"):
+        st.caption(f"**Hauptgrund:** {res['haupt_grund']}")
+
+    # Pro-Strategie-Signale gruppieren für die Detail-Abschnitte
+    signals_by_key: dict[str, list[dict]] = {}
+    for s in res.get("alle_signale", []):
+        k = str(s.get("strategy_key") or "")
+        signals_by_key.setdefault(k, []).append(s)
+
+    def _render_signal_card(sig: dict) -> None:
+        name = str(sig.get("name") or "Signal")
+        tranche = sig.get("tranche_pct", 0)
+        aktiv = bool(sig.get("aktuell_aktiv"))
+        trigger = str(sig.get("trigger_typ") or "")
+        marke = sig.get("naechste_marke")
+        ref = str(sig.get("buch_verweis") or "")
+        grund = str(sig.get("begruendung") or "")
+        headline = f"**{name}** · Tranche **{int(tranche)}%**"
+        if trigger:
+            headline += f" · _{trigger}_"
+        if aktiv and int(tranche) >= 100:
+            st.error(f"🚨 {headline}")
+        elif aktiv and int(tranche) > 0:
+            st.warning(f"⚠️ {headline}")
+        elif aktiv:
+            st.info(f"ℹ️ {headline}")
+        else:
+            st.markdown(f"✅ {headline} — _kein aktives Signal_")
+        meta_bits = []
+        if marke not in (None, "", 0):
+            try:
+                meta_bits.append(f"Nächste Marke: **{float(marke):.2f}**")
+            except Exception:
+                meta_bits.append(f"Nächste Marke: **{marke}**")
+        if ref:
+            meta_bits.append(ref)
+        if meta_bits:
+            st.caption(" · ".join(meta_bits))
+        if grund:
+            st.caption(grund)
+
+    # ═══════════════════════════════════════════════════════════
+    # 3. STRATEGIEN IM DETAIL (Erklärung + aktuelles Ergebnis je Strategie)
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("### 🎯 Strategien im Detail")
+    st.caption(f"Pro Strategie wird zuerst die Erklärung gezeigt, danach das aktuelle Ergebnis für **{t}**.")
+
+    for key in aktive:
+        sigs = signals_by_key.get(key, [])
+        active_count = sum(1 for s in sigs if s.get("aktuell_aktiv"))
+        max_tranche = max((int(s.get("tranche_pct") or 0) for s in sigs if s.get("aktuell_aktiv")), default=0)
+        if max_tranche >= 100:
+            status_icon = "🚨"
+        elif active_count > 0:
+            status_icon = "⚠️"
+        elif sigs:
+            status_icon = "✅"
+        else:
+            status_icon = "•"
+        header = f"{status_icon} {key}"
+        if active_count > 0:
+            header += f" — {active_count} aktiv · max. {max_tranche}%"
+        with st.expander(header, expanded=False):
+            st.markdown(f"**📖 Erklärung:** {strategie_info.get(key, 'Keine Beschreibung hinterlegt.')}")
+            st.markdown("---")
+            st.markdown(f"**📈 Aktuelles Ergebnis für `{t}`:**")
+            if not sigs:
+                st.info("Keine Signale dieser Strategie verfügbar (z. B. weil Voraussetzungen wie Gewinn/Lookback nicht erfüllt sind).")
+            else:
+                for s in sigs:
+                    _render_signal_card(s)
+
+    # ═══════════════════════════════════════════════════════════
+    # 4. SETUP (am Ende)
+    # ═══════════════════════════════════════════════════════════
+    st.markdown("---")
+    with st.expander("⚙️ Setup – Strategien & Parameter", expanded=False):
+        st.caption("Hier wählst du das Marktumfeld, aktive Strategien und passt Parameter pro Strategie an. Änderungen wirken sofort auf die Abschnitte oben.")
+        sc1, sc2 = st.columns([1, 3])
+        with sc1:
+            markt = st.selectbox(
+                "Marktumfeld",
+                ["Bullisch", "Unsicher", "Bärisch"],
+                index=["Bullisch", "Unsicher", "Bärisch"].index(markt),
+                key=f"strat_hub_mkt_{t}",
+            )
+        with sc2:
+            aktive = st.multiselect(
+                "Aktive Strategien",
+                alle,
+                default=aktive,
+                key=f"strat_hub_multi_{t}",
+                help="Wähle hier, welche Strategien in den Detail-Abschnitten oben ausgewertet werden.",
+            )
+        st.info("🔎 Hinweis: Prüfe die Aufwärtstrendlinie regelmäßig manuell im Chart (z. B. per eingezeichneter Trendlinie), da Strategie 8 nicht mehr automatisch ausgewertet wird.")
+
+        st.markdown("#### Parameter je Strategie")
+        for key in aktive:
+            with st.expander(f"Strategie: {key}", expanded=False):
+                st.caption(strategie_info.get(key, "Keine Beschreibung hinterlegt."))
+                if key == "atr_basiert":
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.number_input("ATR-Ziel (Multiplikator)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_mult_{t}", help="Teilverkauf ab x ATR Gewinn.")
+                    with c2:
+                        st.number_input("ATR über 21-EMA (Start)", min_value=1.0, max_value=10.0, value=3.0, step=0.5, key=f"strat_hub_atr_ext_start_{t}", help="Ab x ATR über 21-EMA wird 33% verkauft.")
+                    with c3:
+                        st.number_input("ATR über 21-EMA (Stark)", min_value=1.0, max_value=10.0, value=4.0, step=0.5, key=f"strat_hub_atr_ext_strong_{t}", help="Ab y ATR über 21-EMA wird 50% verkauft.")
+                elif key == "notbremse_verlust":
+                    st.markdown(
+                        """
+**Strategie 2 – Notbremse nach Verlusthöhe (Kap. 6.1):**
+- **Immer aktiv** und unabhängig von allen anderen Strategien.
+- Bei Erreichen/Unterschreiten der Verlustschwelle folgt **Vollausstieg (100%) intraday**.
+- Die Schwelle ist je Marktumfeld frei definierbar (Bärisch/Unsicher/Bullisch).
+- Falls noch nicht ausgelöst, zeigt das Infosignal den **kritischen Kurs** der Notbremse.
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        notbremse_verlust_schwelle_baerisch_pct = st.number_input("Notbremse Bärisch (%)", min_value=0.5, max_value=30.0, value=4.0, step=0.5, key=f"strat_hub_notbremse_bear_{t}")
+                    with c2:
+                        notbremse_verlust_schwelle_unsicher_pct = st.number_input("Notbremse Unsicher (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_notbremse_uncertain_{t}")
+                    with c3:
+                        notbremse_verlust_schwelle_bullisch_pct = st.number_input("Notbremse Bullisch (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_notbremse_bull_{t}")
+                elif key == "gewinn_in_stufen":
+                    st.markdown(
+                        """
+**Strategie 3 – Verkauf bei festgelegtem prozentualem Gewinn (Kap. 6.2):**
+- **Nachdenkschwelle**: ab dieser P&L-Marke wird ein Info-Signal erzeugt (noch kein Verkauf).
+- **Pflicht-Teilverkauf**: ab Untergrenze der Gewinnzone wird ein aktives Signal erzeugt:
+      - unterhalb der oberen Gewinnzonen-Grenze: **33%** Tranche
+      - ab oberer Grenze: **50%** Tranche
+- **Bärenmarkt-Modus**: eigene, engere Schwellen möglich.
+                        """
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        gewinn_nachdenken_schwelle_bull_pct = st.number_input("Nachdenkschwelle Bullisch/Unsicher (%)", min_value=0.0, max_value=200.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_think_bull_{t}")
+                        gewinn_teilverkauf_unten_bull_pct = st.number_input("Gewinnzone unten Bullisch/Unsicher (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5, key=f"strat_hub_gainstep_lo_bull_{t}")
+                        gewinn_teilverkauf_oben_bull_pct = st.number_input("Gewinnzone oben Bullisch/Unsicher (%)", min_value=0.0, max_value=300.0, value=35.0, step=0.5, key=f"strat_hub_gainstep_hi_bull_{t}")
+                    with c2:
+                        gewinn_nachdenken_schwelle_bear_pct = st.number_input("Nachdenkschwelle Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_think_bear_{t}")
+                        gewinn_teilverkauf_unten_bear_pct = st.number_input("Gewinnzone unten Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_lo_bear_{t}")
+                        gewinn_teilverkauf_oben_bear_pct = st.number_input("Gewinnzone oben Bärisch (%)", min_value=0.0, max_value=300.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_hi_bear_{t}")
+                elif key == "rueckkehr_pivot":
+                    st.markdown(
+                        """
+**Strategie 14 – Rückkehr zum Ausbruchspunkt (Kap. 6.3):**
+- **Sicherheitslinie 1:** Schluss unter Tief Tag 1 → Teilverkauf (bei erhöhtem Volumen größere Tranche).
+- **Sicherheitslinie 2:** Schluss unter Tief Tag 0 → weiterer Teilverkauf.
+- **Zeitkomponente:** Bleibt die Aktie X Handelstage in Folge unter dem Pivot → Signal wegen ausbleibender Rückeroberung.
+- **Notbremse:** Bei Erreichen der Verlustschwelle Restposition sofort intraday schließen.
+                        """
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        rueckkehr_tranche_stufe1_pct = st.number_input(
+                            "Tranche Sicherheitslinie 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
+                            key=f"strat_hub_rueckkehr_tranche_1_{t}",
+                            help="Standard-Tranche bei Schluss unter Tief Tag 1.",
+                        )
+                        rueckkehr_tranche_stufe1_volumen_pct = st.number_input(
+                            "Tranche Sicherheitslinie 1 bei Volumen (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0,
+                            key=f"strat_hub_rueckkehr_tranche_1_vol_{t}",
+                            help="Erhöhte Tranche, wenn die Volumenquote die Schwelle erreicht.",
+                        )
+                        rueckkehr_volumen_schwelle = st.number_input(
+                            "Volumenquoten-Schwelle", min_value=0.5, max_value=10.0, value=1.5, step=0.1,
+                            key=f"strat_hub_rueckkehr_vol_schwelle_{t}",
+                            help="Ab dieser Volumenquote (heutiges Volumen / 50-Tage-Durchschnitt) wird Tranche 1 erhöht.",
+                        )
+                        rueckkehr_notbremse_verlust_pct = st.number_input(
+                            "Notbremse Verlust (%)", min_value=1.0, max_value=30.0, value=7.0, step=0.5,
+                            key=f"strat_hub_rueckkehr_notbremse_{t}",
+                            help="Bei diesem Verlust (P&L) wird die Restposition sofort intraday geschlossen.",
+                        )
+                    with c2:
+                        rueckkehr_tranche_stufe2_pct = st.number_input(
+                            "Tranche Sicherheitslinie 2 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
+                            key=f"strat_hub_rueckkehr_tranche_2_{t}",
+                            help="Tranche bei Schluss unter Tief Tag 0.",
+                        )
+                        rueckkehr_pivot_tage_schwelle = int(st.number_input(
+                            "Tage unter Pivot", min_value=1, max_value=60, value=10, step=1,
+                            key=f"strat_hub_rueckkehr_pivot_tage_{t}",
+                            help="Anzahl Handelstage in Folge unter dem Pivot, ab der die Zeitkomponente auslöst.",
+                        ))
+                        rueckkehr_tranche_pivot_pct = st.number_input(
+                            "Tranche Zeitkomponente Pivot (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0,
+                            key=f"strat_hub_rueckkehr_pivot_tranche_{t}",
+                            help="Tranche, wenn die Aktie X Handelstage in Folge unter dem Pivot bleibt.",
+                        )
+                elif key == "einfache_verluststufen":
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        verlust_stufe_1 = st.number_input("Verluststufe 1 (%)", min_value=0.5, max_value=30.0, value=3.0, step=0.5, key=f"strat_hub_loss_stage1_{t}", help="Bei diesem Verlust wird die erste Tranche (33%) verkauft.")
+                    with c2:
+                        verlust_stufe_2 = st.number_input("Verluststufe 2 (%)", min_value=0.5, max_value=30.0, value=5.0, step=0.5, key=f"strat_hub_loss_stage2_{t}", help="Bei diesem Verlust folgt die zweite Tranche (33%).")
+                    with c3:
+                        verlust_stufe_3 = st.number_input("Verluststufe 3 (%)", min_value=0.5, max_value=30.0, value=7.0, step=0.5, key=f"strat_hub_loss_stage3_{t}", help="Bei diesem Verlust wird die Restposition sofort geschlossen.")
+                elif key == "einfach_halbe_position":
+                    erste_haelfte_gewinn_pct = st.number_input("Gewinnmitnahme 1. Hälfte (%)", min_value=5.0, max_value=100.0, value=20.0, step=0.5, key=f"strat_hub_first_half_profit_{t}", help="Ab diesem Gewinn wird die erste Hälfte (50%) verkauft.")
+                elif key == "ma_basierte_sequenz":
+                    st.markdown(
+                        """
+**Sequenzlogik (Kap. 6.4):**
+- **Punkt 1:** Teilverkauf in der Gewinnzone (Standard: 20–25%).
+- **Punkt 2:** Zusatz-Tranche bei Überdehnung über 10-MA (Standard: +10%).
+- **Punkt 3:** Verkauf bei Schluss unter 10-MA; bei **Pendelverhalten** um die 10-MA höhere Tranche.
+- **Punkt 4:** Weitere Reduktion bei Schluss unter 21-MA.
+- **Punkt 5 (final):** Vollausstieg bei klarem Bruch der 50-MA.
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        ma_seq_gewinnzone_min_pct = st.number_input("Gewinnzone min (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5, key=f"strat_hub_ma_seq_gain_min_{t}", help="Untere Grenze für Punkt 1.")
+                        ma_seq_gewinnzone_tranche_pct = st.number_input("Tranche Punkt 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_seq_gain_tranche_{t}", help="Verkaufsgröße in der Gewinnzone.")
+                        ma_seq_unter_ma10_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 3 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under10_minpnl_{t}", help="Punkt 3 erst ab diesem Mindestgewinn.")
+                        ma_seq_pendel_lookback_tage = int(st.number_input("Pendel-Lookback (Tage)", min_value=2, max_value=20, value=5, step=1, key=f"strat_hub_ma_seq_pendel_lb_{t}", help="Anzahl Tage für den Pendel-Check um die 10-MA."))
+                    with c2:
+                        ma_seq_gewinnzone_max_pct = st.number_input("Gewinnzone max (%)", min_value=0.0, max_value=200.0, value=25.0, step=0.5, key=f"strat_hub_ma_seq_gain_max_{t}", help="Obere Grenze für Punkt 1.")
+                        ma_seq_ueber_ma10_pct = st.number_input("Überdehnung über 10-MA (%)", min_value=0.5, max_value=100.0, value=10.0, step=0.5, key=f"strat_hub_ma_seq_over10_pct_{t}", help="Schwelle für Punkt 2.")
+                        ma_seq_unter_ma10_tranche_pct = st.number_input("Tranche Punkt 3 normal (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_under10_tranche_{t}", help="Standard-Tranche bei Schluss unter 10-MA.")
+                        ma_seq_pendel_wechsel_min = int(st.number_input("Min. Pendel-Wechsel", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_ma_seq_pendel_switch_{t}", help="Ab so vielen Seitenwechseln gilt das Verhalten als pendelnd."))
+                    with c3:
+                        ma_seq_ueber_ma10_tranche_pct = st.number_input("Tranche Punkt 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_over10_tranche_{t}", help="Verkaufsgröße bei Überdehnung über 10-MA.")
+                        ma_seq_pendel_tranche_pct = st.number_input("Tranche Punkt 3 pendelnd (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_pendel_tranche_{t}", help="Erhöhte Tranche, wenn Punkt 3 pendelnd erkannt wird.")
+                        ma_seq_unter_ma21_tranche_pct = st.number_input("Tranche Punkt 4 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_under21_tranche_{t}", help="Verkaufsgröße bei Schluss unter 21-MA.")
+                        ma_seq_klarer_ma50_bruch_pct = st.number_input("Klarer 50-MA-Bruch (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5, key=f"strat_hub_ma_seq_under50_clear_{t}", help="Mindestabstand unter 50-MA für Punkt 5.")
+                    ma_seq_unter_ma21_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 4 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under21_minpnl_{t}", help="Punkt 4 erst ab diesem Mindestgewinn.")
+                elif key == "rs_linie":
+                    st.markdown(
+                        """
+**RS-Linien-3-Stufen-Strategie (Kap. 6.4):**
+- **Stufe 1 (20%)**: RS-Linie bricht den schnellen MA erstmalig.
+- **Stufe 2 (30%)**: RS bleibt 3 Perioden in Folge unter dem schnellen MA.
+- **Stufe 3 (50%)**: RS bricht den langsamen MA (Restverkauf).
+
+**Automatischer Zeithorizont:**
+- unter Schwelle 1: **Tag** (21/50-MA)
+- zwischen Schwelle 1 und 2: **Woche** (10/25-MA)
+- ab Schwelle 2: **Monat** (12/24-MA)
+                        """
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        rs_pnl_tag_zu_woche = st.number_input(
+                            "PnL-Schwelle Tag → Woche (%)", min_value=0.0, max_value=200.0, value=20.0, step=0.5,
+                            key=f"strat_hub_rs_pnl_day_week_{t}",
+                            help="Ab diesem Gewinn wechselt Strategie 18 von Tages- auf Wochensignale.",
+                        )
+                    with c2:
+                        rs_pnl_woche_zu_monat = st.number_input(
+                            "PnL-Schwelle Woche → Monat (%)", min_value=0.0, max_value=300.0, value=80.0, step=0.5,
+                            key=f"strat_hub_rs_pnl_week_month_{t}",
+                            help="Ab diesem Gewinn wechselt Strategie 18 von Wochen- auf Monatssignale.",
+                        )
+                elif key == "ma21_bruch":
+                    st.markdown(
+                        """
+**Strategie 4 – 21-MA-Bruch (Kap. 6.2):**
+- **Aggressiv:** klarer Bruch (mind. 2% unter 21-MA) mit erhöhtem Volumen (≥1.2) triggert 33%.
+      Zusatzregel: am zweiten Tag unter 21-MA und Tagesverlust ≤ -7% wird sofort 50% reduziert.
+- **Gestaffelt:** 3-stufiges Vorgehen (Tag 1/2/3 jeweils 25% nach Regelwerk).
+- **Geduldig:** erst nach bestätigtem Bruch (mind. 3 Tage unter 21-MA) 33%.
+
+Die Variante wird **einmalig pro Position** gespeichert und beim nächsten Öffnen des Strategien-Hubs wiederverwendet.
+                        """
+                    )
+                    st.selectbox(
+                        "Variante 21-MA-Bruch",
+                        ["gestaffelt", "aggressiv", "geduldig"],
+                        index=["gestaffelt", "aggressiv", "geduldig"].index(ma21_variante),
+                        key=f"strat_hub_ma21_variante_{t}",
+                        help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-MA behandelt.",
+                    )
+                elif key == "groesster_einbruch":
+                    st.markdown(
+                        """
+**Strategie 17 – Größter Tages-/Wocheneinbruch seit Beginn (Kap. 6.3):**
+- Nur aktiv, wenn die Position bereits mindestens die definierte **Mindest-P&L-Schwelle** erreicht hat.
+- **Tagesregel**: Aktueller Tagesverlust ist der größte seit Einstieg und über der Mindest-Verlustschwelle.
+      - Bei normalem Volumen: **33%** Tranche (defensive Reduktion).
+      - Bei hohem Volumen (Volumenfaktor ≥ Schwelle): **50%** Tranche (stärkeres Warnsignal).
+- **Wochenregel**: Aktuelle Verlustwoche ist die größte seit Einstieg und Wochenvolumen liegt über dem 12-Wochen-Durchschnitt (Faktor ≥ Schwelle).
+      - Signal: **66%** Tranche.
+
+Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnlich große Abgaben auftreten.
+                        """
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        groesster_einbruch_min_pnl_pct = st.number_input(
+                            "Mindest-P&L vor Aktivierung (%)", min_value=0.0, max_value=300.0, value=10.0, step=0.5,
+                            key=f"strat_hub_worst_drop_min_pnl_{t}",
+                            help="Strategie 17 wird erst geprüft, wenn die Position mindestens diesen Gewinn erreicht hat.",
+                        )
+                        groesster_einbruch_tagesvol_ratio_schwelle = st.number_input(
+                            "Volumenfaktor Tagesregel", min_value=0.5, max_value=10.0, value=1.5, step=0.1,
+                            key=f"strat_hub_worst_drop_day_vol_ratio_{t}",
+                            help="Ab diesem Faktor (heutiges Volumen / 50-Tage-Durchschnitt) gilt die Tageswarnung als volumenbestätigt (50%-Tranche).",
+                        )
+                    with c2:
+                        groesster_einbruch_min_tagesverlust_pct = st.number_input(
+                            "Mindest-Tagesverlust (%)", min_value=0.5, max_value=30.0, value=3.0, step=0.1,
+                            key=f"strat_hub_worst_drop_day_loss_{t}",
+                            help="Nur wenn der größte Tagesverlust zugleich über dieser Schwelle liegt, wird ein Signal ausgelöst.",
+                        )
+                        groesster_einbruch_wochenvol_ratio_schwelle = st.number_input(
+                            "Volumenfaktor Wochenregel", min_value=0.5, max_value=10.0, value=1.3, step=0.1,
+                            key=f"strat_hub_worst_drop_week_vol_ratio_{t}",
+                            help="Ab diesem Faktor (aktuelles Wochenvolumen / 12-Wochen-Durchschnitt) gilt die Wochenwarnung als bestätigt.",
+                        )
+                elif key == "stau_tage":
+                    st.markdown(
+                        """
+**Strategie 13 – Stau-Tage (Kap. 6.2):**
+- Prüft die letzten **N Sessions** auf verdeckte Distribution.
+- Ein Tag gilt als Stau-Tag, wenn:
+      - **kaum Fortschritt**: \|Close-Open\| in % < Schwelle
+      - **hohes Volumen**: Tagesvolumen / Referenzvolumen ≥ Schwelle
+- Ab **mindestens X Stau-Tagen** im Fenster wird ein Signal aktiv.
+- Die Tranche ist höher, wenn die Aktie noch **nahe am Hoch** notiert (geringer Drawdown).
+- Als Stopp-Marke wird das **Tief des schwächsten Stau-Tags** genutzt.
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        stau_fenster_tage = int(st.number_input("Fenster (Sessions)", min_value=5, max_value=30, value=10, step=1, key=f"strat_hub_stall_window_{t}"))
+                        stau_max_tagesveraenderung_pct = st.number_input("Max. Tagesveränderung (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1, key=f"strat_hub_stall_max_day_change_{t}")
+                        stau_min_tage = int(st.number_input("Min. Stau-Tage", min_value=1, max_value=10, value=2, step=1, key=f"strat_hub_stall_min_days_{t}"))
+                    with c2:
+                        stau_volumen_lookback_tage = int(st.number_input("Volumen-Lookback (Tage)", min_value=10, max_value=200, value=50, step=1, key=f"strat_hub_stall_vol_lookback_{t}"))
+                        stau_min_vol_ratio = st.number_input("Min. Volumenfaktor", min_value=0.8, max_value=5.0, value=1.3, step=0.1, key=f"strat_hub_stall_min_vol_ratio_{t}")
+                        stau_nahe_hoch_drawdown_max_pct = st.number_input("Nahe-Hoch Drawdown max (%)", min_value=0.5, max_value=20.0, value=5.0, step=0.5, key=f"strat_hub_stall_near_high_dd_{t}")
+                    with c3:
+                        stau_tranche_nahe_hoch_pct = st.number_input("Tranche nahe Hoch (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_stall_tranche_near_high_{t}")
+                        stau_tranche_standard_pct = st.number_input("Standard-Tranche (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_stall_tranche_standard_{t}")
+                elif key == "verlusttage_haeufung":
+                    st.markdown(
+                        """
+**Strategie 7 – Häufung Verlusttage / Verhältnis Auf-/Abwärtstage (Kap. 6.2):**
+- Nur aktiv bei Gewinnerpositionen (P&L > 0).
+- **Signal A (Sequenz):** Mehrere tiefere Schlusskurse in Folge (Standard 3) + erhöhte Volumenquote (Ø letzte 3 Tage / Ø Lookback-Volumen).
+- **Signal B (Persönlichkeitswechsel):** Im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen mit Mindestdifferenz.
+- Beide Signale verwenden standardmäßig **25%** Tranche und setzen die nächste Marke auf lokale Tiefs.
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        verlusttage_min_tiefere_schlusskurse_in_folge = int(st.number_input("Min. tiefere Schlusskurse in Folge", min_value=2, max_value=5, value=3, step=1, key=f"strat_hub_losscluster_min_seq_{t}"))
+                        verlusttage_tief_marker_lookback_tage = int(st.number_input("Tief-Marker Lookback", min_value=2, max_value=20, value=5, step=1, key=f"strat_hub_losscluster_low_marker_lb_{t}"))
+                    with c2:
+                        verlusttage_volumen_lookback_tage = int(st.number_input("Volumen-Lookback (Tage)", min_value=10, max_value=200, value=50, step=1, key=f"strat_hub_losscluster_vol_lb_{t}"))
+                        verlusttage_volumen_ratio_min = st.number_input("Min. Volumenquote (3T / LB)", min_value=0.8, max_value=3.0, value=1.1, step=0.05, key=f"strat_hub_losscluster_vol_ratio_{t}")
+                    with c3:
+                        verlusttage_updown_fenster_tage = int(st.number_input("Up/Down-Fenster (Tage)", min_value=5, max_value=40, value=15, step=1, key=f"strat_hub_losscluster_ud_window_{t}"))
+                        verlusttage_updown_diff_min = int(st.number_input("Min. Abwärts-Überhang (Tage)", min_value=1, max_value=10, value=3, step=1, key=f"strat_hub_losscluster_ud_diff_{t}"))
+                        verlusttage_tranche_pct = st.number_input("Tranche je Signal (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_losscluster_tranche_{t}")
+                elif key == "ma_abstand":
+                    st.markdown(
+                        """
+**Strategie 6 – Abstand zu gleitenden Durchschnitten (Kap. 6.2):**
+- Nur aktiv, wenn die Position im Gewinn ist (**P&L > 0**).
+- Es werden vier Überdehnungen gemessen: Abstand zum **10/21/50/200-MA** in Prozent.
+- Signalstufen (Standard):
+      - **10-MA ab 10%** → kurzfristig überhitzt, **25%** Tranche
+      - **21-MA ab 15%** → klare Überdehnung, **33%** Tranche
+      - **50-MA ab 25%** → Spätphasen-Signal, **33%** Tranche
+      - **200-MA ab 70%** → Klimaxzone, **50%** Tranche
+      - **200-MA ab 100%** → Extrem-Klimax, **100%** Tranche
+- Nächste Marke: jeweiliger MA (bei 200-MA-Klimax als engere Kontrolllinie die 50-MA).
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        ma_abstand_schwelle_ma10_pct = st.number_input("Schwelle 10-MA (%)", min_value=1.0, max_value=50.0, value=10.0, step=0.5, key=f"strat_hub_ma_dist_th10_{t}")
+                        ma_abstand_schwelle_ma21_pct = st.number_input("Schwelle 21-MA (%)", min_value=1.0, max_value=80.0, value=15.0, step=0.5, key=f"strat_hub_ma_dist_th21_{t}")
+                        ma_abstand_schwelle_ma50_pct = st.number_input("Schwelle 50-MA (%)", min_value=1.0, max_value=120.0, value=25.0, step=0.5, key=f"strat_hub_ma_dist_th50_{t}")
+                    with c2:
+                        ma_abstand_schwelle_ma200_pct = st.number_input("Klimax-Schwelle 200-MA (%)", min_value=10.0, max_value=200.0, value=70.0, step=1.0, key=f"strat_hub_ma_dist_th200_{t}")
+                        ma_abstand_klimax_ma200_vollausstieg_pct = st.number_input("Vollausstieg ab 200-MA (%)", min_value=20.0, max_value=300.0, value=100.0, step=1.0, key=f"strat_hub_ma_dist_th200_full_{t}")
+                    with c3:
+                        ma_abstand_tranche_ma10_pct = st.number_input("Tranche 10-MA (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_dist_tr10_{t}")
+                        ma_abstand_tranche_ma21_pct = st.number_input("Tranche 21-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr21_{t}")
+                        ma_abstand_tranche_ma50_pct = st.number_input("Tranche 50-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr50_{t}")
+                        ma_abstand_tranche_ma200_basis_pct = st.number_input("Tranche 200-MA Basis (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0, key=f"strat_hub_ma_dist_tr200_{t}")
+                elif key == "downside_reversal":
+                    st.markdown(
+                        """
+**Strategie 12 – Downside Reversal (Kap. 6.2):**
+- Nur aktiv, wenn die Position im Gewinn ist.
+- **Variante 1 (stark):** neues Hoch + Schluss im unteren Tagesdrittel + erhöhtes Volumen.
+- **Variante 2 (mittel):** weite Umkehrkerze + Schluss im unteren Drittel + erhöhtes Volumen.
+- **Variante 3 (Warnstufe):** weite Kerze + Schluss unter Spannenmitte.
+- Stopp-/Entwarnungsmarke ist das Hoch der Signalkerze.
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        downside_kerzenweite_lookback_tage = int(st.number_input("Kerzenweiten-Lookback", min_value=5, max_value=60, value=10, step=1, key=f"strat_hub_downside_candle_lb_{t}"))
+                        downside_neues_hoch_lookback_tage = int(st.number_input("Neues-Hoch-Lookback", min_value=10, max_value=120, value=30, step=1, key=f"strat_hub_downside_high_lb_{t}"))
+                        downside_schluss_unteres_drittel_faktor = st.number_input("Schluss im unteren 1/x", min_value=2.0, max_value=6.0, value=3.0, step=0.1, key=f"strat_hub_downside_lower_third_factor_{t}")
+                    with c2:
+                        downside_volumen_lookback_tage = int(st.number_input("Volumen-Lookback", min_value=20, max_value=200, value=50, step=1, key=f"strat_hub_downside_vol_lb_{t}"))
+                        downside_volumen_ratio_min = st.number_input("Min. Volumenquote", min_value=0.8, max_value=5.0, value=1.2, step=0.1, key=f"strat_hub_downside_vol_ratio_{t}")
+                        downside_weite_kerze_faktor = st.number_input("Weite-Kerze-Faktor", min_value=1.0, max_value=4.0, value=1.5, step=0.1, key=f"strat_hub_downside_wide_factor_{t}")
+                    with c3:
+                        downside_tranche_neues_hoch_pct = st.number_input("Tranche Variante 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_downside_tranche_high_{t}")
+                        downside_tranche_weite_umkehr_pct = st.number_input("Tranche Variante 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_downside_tranche_wide_{t}")
+                        downside_tranche_warnstufe_pct = st.number_input("Tranche Warnstufe (%)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key=f"strat_hub_downside_tranche_warn_{t}")
+                elif key == "split_anstieg":
+                    st.markdown(
+                        """
+**Strategie 10 – Preisanstieg nach Split (Kap. 6.2):**
+- Die Regel ist nur kurz nach einem Split relevant (**erste 14 Tage**).
+- Gemessen wird der prozentuale Anstieg vom **Schlusskurs am Split-Tag** zum aktuellen Schluss.
+- Signalstufen:
+      - ab **+25%**: Teilverkauf (Standard **33%**)
+      - ab **+50%**: stärkere Reduktion (Standard **50%**)
+- Datumsquelle:
+      1. bevorzugt automatische Yahoo-Split-Historie,
+      2. falls nicht verfügbar/ungeeignet: manuelle Datumseingabe.
+                        """
+                    )
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.number_input("Yahoo Split-Lookback (Tage)", min_value=14, max_value=365, value=30, step=1, key=f"strat_hub_split_lookback_{t}", help="So weit zurück wird nach dem letzten Split-Ereignis in Yahoo gesucht.")
+                        st.number_input("Max. Tage seit Split", min_value=7, max_value=30, value=14, step=1, key=f"strat_hub_split_age_window_{t}", help="Nur Splits innerhalb dieses Fensters werden für Strategie 10 automatisch berücksichtigt.")
+                    with c2:
+                        st.number_input("Signal-Schwelle (%)", min_value=5.0, max_value=100.0, value=25.0, step=0.5, key=f"strat_hub_split_signal_threshold_{t}", help="Ab diesem Kursanstieg seit Split wird ein Signal ausgelöst.")
+                        st.number_input("Starke Tranche ab (%)", min_value=10.0, max_value=200.0, value=50.0, step=0.5, key=f"strat_hub_split_strong_threshold_{t}", help="Ab diesem Anstieg wird die stärkere Tranche verwendet.")
+                    if split_auto_msg is not None:
+                        level, msg = split_auto_msg
+                        if level == "success":
+                            st.success(msg)
+                        elif level == "warning":
+                            st.warning(msg)
+                        else:
+                            st.info(msg)
+                    manual_default = split_auto_datum.date() if split_auto_datum is not None else None
+                    st.date_input(
+                        "Manuelles Split-Datum (Fallback)",
+                        value=manual_default,
+                        key=f"strat_hub_split_manual_date_{t}",
+                        help="Falls Yahoo keinen passenden Split liefert, hier Split-Datum manuell setzen.",
+                    )
+                    if split_datum is not None:
+                        st.caption(f"Aktives Split-Datum für Strategie 10: {pd.Timestamp(split_datum).date().isoformat()}")
+                else:
+                    st.caption("Für diese Strategie sind aktuell keine zusätzlichen Parameter verfügbar.")
+
 
 def _tab_verkaufsentscheidung():
     if not _render_private_gate("🔐 Verkaufs-Entscheidung"):
