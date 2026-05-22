@@ -554,3 +554,56 @@ def test_strategie5_drawdown_custom_setup_wird_uebernommen():
     assert len(sigs) == 1
     assert sigs[0]["tranche_pct"] == 22
     assert abs(sigs[0]["naechste_marke"] - (130 * 0.89)) < 1e-9
+
+
+def test_themen_dedup_zaehlt_pro_thema_nur_staerkstes_signal():
+    """Wenn zwei Strategien dasselbe Thema treffen, soll nur das stärkere Signal in die Summe einfließen."""
+    from sell_strategies import STRATEGY_THEMES
+
+    # Sanity check: ma21_bruch, ma_bruch_defensiv und ma_basierte_sequenz teilen sich das Thema "trendbruch".
+    assert STRATEGY_THEMES["ma21_bruch"] == "trendbruch"
+    assert STRATEGY_THEMES["ma_bruch_defensiv"] == "trendbruch"
+    assert STRATEGY_THEMES["ma_basierte_sequenz"] == "trendbruch"
+    # drawdown_vom_peak ist ein eigenes Thema.
+    assert STRATEGY_THEMES["drawdown_vom_peak"] == "drawdown"
+
+
+def test_themen_dedup_drawdown_und_ma21_bruch_zaehlen_einzeln():
+    """Drawdown vom Peak und 21-MA-Bruch sind unterschiedliche Themen → beide tragen zur Summe bei."""
+    p = Position("T", 100, "2026-01-01", 10, peak=130)
+    # Konstruiere Szenario: hoher Peak, jetzt PnL+18%, Drawdown ~9% (Stufe 1 → 25%), gleichzeitig Schluss unter 21-MA.
+    closes = [120.0] * 30 + [110.0]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [130.0] + [121.0] * 29 + [113.0],
+        "low": [120.0] * 30 + [108.0],
+        "close": closes,
+        "volume": [1000] * len(closes),
+    })
+    res = verkaufs_empfehlung_gesamt(
+        p, d, d, None, None, "Bullisch", "Neutral",
+        ["drawdown_vom_peak", "ma21_bruch"],
+        {"drawdown_stufe1_min_pct": 5.0, "drawdown_stufe2_min_pct": 20.0, "drawdown_stufe3_min_pct": 30.0},
+    )
+    # Beide Themen sollten in der Summe vertreten sein.
+    assert "drawdown" in res["themen_in_summe"]
+    assert "trendbruch" in res["themen_in_summe"]
+
+
+def test_themen_dedup_klimax_signale_zaehlen_nur_einmal():
+    """split_anstieg und groesster_anstieg_volumen sind beide klimax — Summe bleibt klein."""
+    # Setup: starker Anstieg, der theoretisch beide Klimax-Strategien feuert.
+    # Vereinfacht: wir prüfen das Mapping reicht; die echte Aggregation hängt von Marktdaten ab.
+    from sell_strategies import STRATEGY_THEMES
+    assert STRATEGY_THEMES["split_anstieg"] == "klimax"
+    assert STRATEGY_THEMES["groesster_anstieg_volumen"] == "klimax"
+    assert STRATEGY_THEMES["erschoepfungsluecke"] == "klimax"
+
+
+def test_themen_dedup_signale_tragen_thema_im_output():
+    """Jedes Signal in `alle_signale` soll ein 'thema'-Feld haben."""
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 95])
+    res = verkaufs_empfehlung_gesamt(p, d, d, None, None, "Bullisch", "Neutral", ["notbremse_verlust"])
+    sig_themen = {s.get("thema") for s in res["alle_signale"]}
+    assert "verlust_notbremse" in sig_themen

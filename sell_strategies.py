@@ -4,6 +4,35 @@ from typing import Any
 import pandas as pd
 
 
+# Themen-Klassifikation jeder Hub-Strategie. Wird in `verkaufs_empfehlung_gesamt`
+# verwendet, um pro Thema nur das stärkste aktive Signal in die Tranche-Summe einzubringen.
+# Damit wird verhindert, dass mehrere Strategien dieselbe Ursache mehrfach zählen
+# (z. B. Drawdown + 21-MA-Bruch + MA-Abstand bei demselben Pullback).
+STRATEGY_THEMES: dict[str, str] = {
+    "notbremse_verlust": "verlust_notbremse",
+    "einfache_verluststufen": "verlust_notbremse",
+    "rueckkehr_pivot": "pivot_fail",
+    "misslungener_ausbruch_5stufen": "pivot_fail",
+    "ma21_bruch": "trendbruch",
+    "ma_bruch_defensiv": "trendbruch",
+    "ma_basierte_sequenz": "trendbruch",
+    "drawdown_vom_peak": "drawdown",
+    "gewinn_in_stufen": "gewinnmitnahme",
+    "einfach_halbe_position": "gewinnmitnahme",
+    "atr_basiert": "gewinnmitnahme",
+    "ma_abstand": "ueberdehnung",
+    "groesster_anstieg_volumen": "klimax",
+    "split_anstieg": "klimax",
+    "erschoepfungsluecke": "klimax",
+    "downside_reversal": "umkehr",
+    "groesster_einbruch": "umkehr",
+    "verlusttage_haeufung": "distribution",
+    "stau_tage": "distribution",
+    "drei_verlustwochen": "distribution",
+    "rs_linie": "rs_schwaeche",
+}
+
+
 STRATEGIE_INFO: dict[str, str] = {
     "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
     "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
@@ -729,16 +758,41 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
                 if isinstance(sig, dict):
                     sig.setdefault("strategy_key", k)
                 all_signals.append(sig)
+    # Tag every signal with its theme for downstream consumers and deduplication.
+    for sig in all_signals:
+        if isinstance(sig, dict):
+            sig.setdefault("thema", STRATEGY_THEMES.get(str(sig.get("strategy_key", "")), "sonstige"))
+
     killer=[s for s in all_signals if s["aktuell_aktiv"] and s["tranche_pct"]==100]
     if killer:
         ges, grund = 100, killer[0]["name"]
+        themen_in_summe: list[str] = []
     else:
         act=[s for s in all_signals if s["aktuell_aktiv"] and s["tranche_pct"]>0]
-        summe=sum(s["tranche_pct"] for s in act)
-        if len(act)>=4 and summe<75: summe=75
+        # Themen-Deduplizierung: pro Thema nur das Signal mit dem höchsten Tranche-Beitrag
+        # in die Summe einbringen. Verhindert, dass mehrere Strategien dieselbe Ursache
+        # (z. B. Pullback unter 21-MA) zur Summe verstärken.
+        best_per_theme: dict[str, dict] = {}
+        for s in act:
+            thema = str(s.get("thema") or "sonstige")
+            current = best_per_theme.get(thema)
+            if current is None or int(s["tranche_pct"]) > int(current["tranche_pct"]):
+                best_per_theme[thema] = s
+        dominanten = list(best_per_theme.values())
+        themen_in_summe = list(best_per_theme.keys())
+        summe=sum(s["tranche_pct"] for s in dominanten)
+        # Breiten-Boost: ab 4 unterschiedlichen Themen mindestens 75% Ziel.
+        if len(dominanten)>=4 and summe<75: summe=75
         st=[0,25,33,50,66,75,100]
         ges=max(v for v in st if v<=min(summe,100))
         if markt=="Bärisch" and 0<ges<100: ges=next((v for v in st if v>ges),100)
-        grund=", ".join(s["name"] for s in act[:3]) if act else "keine aktiven Signale"
+        grund=", ".join(s["name"] for s in dominanten[:3]) if dominanten else "keine aktiven Signale"
     schon=sum(position.realisierte_tranchen or [])
-    return {"gesamt_tranche":ges,"bereits_realisiert":schon,"jetzt_zu_verkaufen":max(0,ges-schon),"haupt_grund":grund,"alle_signale":all_signals}
+    return {
+        "gesamt_tranche":ges,
+        "bereits_realisiert":schon,
+        "jetzt_zu_verkaufen":max(0,ges-schon),
+        "haupt_grund":grund,
+        "alle_signale":all_signals,
+        "themen_in_summe":themen_in_summe,
+    }

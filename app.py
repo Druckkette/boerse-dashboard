@@ -39,6 +39,8 @@ from sell_decision_metrics import (
 import sell_decision_rules
 from sell_decision_rules import (
     LM_HUB_DEFAULTS,
+    LM_HUB_PROFILES,
+    LM_HUB_PROFILE_DEFAULT,
     LM_HUB_STRATEGIES_ALL,
     LM_HUB_STRATEGIES_DEFAULT,
     LM_HUB_STRATEGIEN,
@@ -269,6 +271,7 @@ def _default_position_manual_sell_data(ticker: str = "") -> dict:
         "personality_changed": False,
         "strength_checkboxes": {},
         "warning_checkboxes": {},
+        "sell_setup": {},
     }
 
 
@@ -278,6 +281,20 @@ def _default_sell_decision_state() -> dict:
         "tranche_log": [],
         "closed_trades": [],
         "post_mortem_log": [],
+        # Hysterese- und Snooze-Status pro Ticker (ticker → dict).
+        "recommendation_state": {},
+    }
+
+
+def _normalize_recommendation_state_entry(entry) -> dict:
+    if not isinstance(entry, dict):
+        return {"last_seen_date": "", "last_pct": 0, "consecutive_days": 0, "snoozed_until": "", "snoozed_pct": 0}
+    return {
+        "last_seen_date": _normalize_date_string(entry.get("last_seen_date")),
+        "last_pct": int(_safe_optional_float(entry.get("last_pct")) or 0),
+        "consecutive_days": int(_safe_optional_float(entry.get("consecutive_days")) or 0),
+        "snoozed_until": _normalize_date_string(entry.get("snoozed_until")),
+        "snoozed_pct": int(_safe_optional_float(entry.get("snoozed_pct")) or 0),
     }
 
 
@@ -333,6 +350,17 @@ def _normalize_position_manual_sell_data(ticker: str, data) -> dict:
     base["personality_changed"] = _safe_bool(data.get("personality_changed", False))
     base["strength_checkboxes"] = _normalize_checkbox_map(data.get("strength_checkboxes"))
     base["warning_checkboxes"] = _normalize_checkbox_map(data.get("warning_checkboxes"))
+    setup_raw = data.get("sell_setup")
+    if isinstance(setup_raw, dict):
+        # Setup wird unverändert durchgereicht (Profile, Tranche-Parameter, Schwellen).
+        # Nur Timestamp-Werte werden zu Strings normalisiert, damit das State serialisierbar bleibt.
+        clean_setup = {}
+        for key, value in setup_raw.items():
+            if isinstance(value, pd.Timestamp):
+                clean_setup[str(key)] = value.strftime("%Y-%m-%d")
+            else:
+                clean_setup[str(key)] = value
+        base["sell_setup"] = clean_setup
     return base
 
 
@@ -359,6 +387,14 @@ def _normalize_sell_decision_state(raw) -> dict:
     state["closed_trades"] = [entry for entry in state["closed_trades"] if entry.get("ticker")]
     state["post_mortem_log"] = [_normalize_post_mortem_entry(entry) for entry in raw.get("post_mortem_log", []) if isinstance(entry, dict)]
     state["post_mortem_log"] = [entry for entry in state["post_mortem_log"] if entry.get("ticker")]
+
+    rec_source = raw.get("recommendation_state", {})
+    if isinstance(rec_source, dict):
+        for ticker_key, entry in rec_source.items():
+            ticker = _normalize_single_ticker(ticker_key)
+            if not ticker:
+                continue
+            state["recommendation_state"][ticker] = _normalize_recommendation_state_entry(entry)
     return state
 
 
@@ -618,6 +654,51 @@ def append_tranche_log(entry: dict) -> dict:
     state["tranche_log"] = rows[-3000:]
     save_sell_decision_state(state)
     return dict(normalized)
+
+
+def get_recommendation_state(ticker: str) -> dict:
+    """Read the hysteresis/snooze state for one ticker. Returns an empty default if absent."""
+    norm = _normalize_single_ticker(ticker)
+    if not norm:
+        return _normalize_recommendation_state_entry({})
+    state = load_sell_decision_state()
+    entry = (state.get("recommendation_state") or {}).get(norm) or {}
+    return _normalize_recommendation_state_entry(entry)
+
+
+def save_recommendation_state(ticker: str, entry: dict) -> dict:
+    """Persist the hysteresis/snooze state for one ticker."""
+    norm = _normalize_single_ticker(ticker)
+    if not norm:
+        return _normalize_recommendation_state_entry({})
+    normalized = _normalize_recommendation_state_entry(entry)
+    state = load_sell_decision_state()
+    state.setdefault("recommendation_state", {})[norm] = normalized
+    save_sell_decision_state(state)
+    return dict(normalized)
+
+
+def snooze_recommendation(ticker: str, snoozed_pct: int, days: int = 5) -> dict:
+    """Mark the current recommendation as snoozed for the next `days` trading days."""
+    norm = _normalize_single_ticker(ticker)
+    if not norm:
+        return _normalize_recommendation_state_entry({})
+    current = get_recommendation_state(norm)
+    snoozed_until = (datetime.now(timezone.utc).date() + timedelta(days=max(int(days), 1))).strftime("%Y-%m-%d")
+    current["snoozed_until"] = snoozed_until
+    current["snoozed_pct"] = int(max(0, min(100, int(snoozed_pct))))
+    return save_recommendation_state(norm, current)
+
+
+def clear_recommendation_snooze(ticker: str) -> dict:
+    """Cancel an active snooze for the given ticker."""
+    norm = _normalize_single_ticker(ticker)
+    if not norm:
+        return _normalize_recommendation_state_entry({})
+    current = get_recommendation_state(norm)
+    current["snoozed_until"] = ""
+    current["snoozed_pct"] = 0
+    return save_recommendation_state(norm, current)
 
 
 def load_closed_trades() -> list[dict]:
@@ -10502,20 +10583,53 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
     with st.expander("⚙️ Strategie-Setup (Hub-Engine)", expanded=False):
         st.caption("Vollständiges Setup analog zum Strategien-Hub. Alle Parameter wirken auf die Hub-Berechnung im Live-Monitor. Patterns #11 Distribution-Tage und #15 Volumen-Faktor bleiben LM-nativ.")
 
+        # --- Strategie-Profil: kuratierte Bündel statt freier Multiselect-Liste ---
+        st.markdown("#### 🧭 Strategie-Profil")
+        st.caption('Profile bündeln aufeinander abgestimmte Strategien. Bei „Frei (Expert)" bleibt der volle Multiselect aktiv.')
+        profile_keys = list(LM_HUB_PROFILES.keys())
+        profile_labels = [str(LM_HUB_PROFILES[k].get("label") or k) for k in profile_keys]
+        saved_profile = str(_val("profile", LM_HUB_PROFILE_DEFAULT) or LM_HUB_PROFILE_DEFAULT).strip().lower()
+        if saved_profile not in profile_keys:
+            saved_profile = LM_HUB_PROFILE_DEFAULT
+        profile_index = profile_keys.index(saved_profile)
+        chosen_profile_label = st.selectbox(
+            "Profil",
+            profile_labels,
+            index=profile_index,
+            key=f"lm_setup_profile_{ticker}",
+        )
+        chosen_profile_key = profile_keys[profile_labels.index(chosen_profile_label)]
+        active["profile"] = chosen_profile_key
+        profile_info = LM_HUB_PROFILES.get(chosen_profile_key) or {}
+        st.caption(f"ℹ️ {profile_info.get('beschreibung', '')}")
+
+        is_free_profile = chosen_profile_key == "frei"
+
         # --- Verkaufsstrategien (feste Verkaufsregeln) ---
         st.markdown("#### 🎯 Verkaufsstrategien")
         st.caption('Feste Verkaufsregeln mit klarer Tranche-Logik. Aktive Signale erscheinen im Bereich „Tranche-Signale".')
-        strat_default = list(_val("active_strategies", list(LM_HUB_STRATEGIEN_DEFAULT)) or LM_HUB_STRATEGIEN_DEFAULT)
-        strat_default = [k for k in strat_default if k in LM_HUB_STRATEGIEN]
-        if not strat_default:
-            strat_default = list(LM_HUB_STRATEGIEN_DEFAULT)
-        selected_strats = st.multiselect(
-            "Aktive Strategien",
-            LM_HUB_STRATEGIEN,
-            default=strat_default,
-            key=f"lm_setup_active_strats_{ticker}",
-            help="Standardmäßig sind 12 Strategien aktiv. Opt-in: atr_basiert, ma_basierte_sequenz, einfach_halbe_position, einfache_verluststufen, misslungener_ausbruch_5stufen.",
-        )
+        if is_free_profile:
+            strat_default = list(_val("active_strategies", list(LM_HUB_STRATEGIEN_DEFAULT)) or LM_HUB_STRATEGIEN_DEFAULT)
+            strat_default = [k for k in strat_default if k in LM_HUB_STRATEGIEN]
+            if not strat_default:
+                strat_default = list(LM_HUB_STRATEGIEN_DEFAULT)
+            selected_strats = st.multiselect(
+                "Aktive Strategien",
+                LM_HUB_STRATEGIEN,
+                default=strat_default,
+                key=f"lm_setup_active_strats_{ticker}",
+                help="Standardmäßig sind 12 Strategien aktiv. Opt-in: atr_basiert, ma_basierte_sequenz, einfach_halbe_position, einfache_verluststufen, misslungener_ausbruch_5stufen.",
+            )
+        else:
+            profile_strats = [k for k in (profile_info.get("strategien") or []) if k in LM_HUB_STRATEGIEN]
+            selected_strats = profile_strats
+            strat_list_html = html.escape(', '.join(profile_strats) or '—')
+            profile_label_html = html.escape(str(profile_info.get('label') or chosen_profile_key))
+            st.markdown(
+                f'<div class="mini-help">Im Profil <b>{profile_label_html}</b> aktive Strategien: {strat_list_html}. '
+                f'Für eine freie Auswahl auf <i>Frei (Expert)</i> wechseln.</div>',
+                unsafe_allow_html=True,
+            )
         active["active_strategies"] = selected_strats
 
         with st.expander("ℹ️ Strategie-Erklärungen", expanded=False):
@@ -10525,17 +10639,22 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
         # --- Warnsignale (Verhaltens-/Distributionssignale) ---
         st.markdown("#### ⚠️ Warnsignale (Hub)")
         st.caption('Verhaltens- und Distributionsmuster als Frühwarnung. Aktive Signale erscheinen im separaten Bereich „Warnsignale" und tragen weiterhin zur Gesamt-Tranche bei.')
-        warn_default = list(_val("active_warnings", list(LM_HUB_WARNUNGEN_DEFAULT)) or LM_HUB_WARNUNGEN_DEFAULT)
-        warn_default = [k for k in warn_default if k in LM_HUB_WARNUNGEN]
-        if not warn_default:
-            warn_default = list(LM_HUB_WARNUNGEN_DEFAULT)
-        selected_warns = st.multiselect(
-            "Aktive Warnsignale",
-            LM_HUB_WARNUNGEN,
-            default=warn_default,
-            key=f"lm_setup_active_warns_{ticker}",
-            help="Standardmäßig sind 3 Warnsignale aktiv. Opt-in: groesster_anstieg_volumen (Klimax-Single-Day), erschoepfungsluecke (Gap-up Klimax).",
-        )
+        if is_free_profile:
+            warn_default = list(_val("active_warnings", list(LM_HUB_WARNUNGEN_DEFAULT)) or LM_HUB_WARNUNGEN_DEFAULT)
+            warn_default = [k for k in warn_default if k in LM_HUB_WARNUNGEN]
+            if not warn_default:
+                warn_default = list(LM_HUB_WARNUNGEN_DEFAULT)
+            selected_warns = st.multiselect(
+                "Aktive Warnsignale",
+                LM_HUB_WARNUNGEN,
+                default=warn_default,
+                key=f"lm_setup_active_warns_{ticker}",
+                help="Standardmäßig sind 3 Warnsignale aktiv. Opt-in: groesster_anstieg_volumen (Klimax-Single-Day), erschoepfungsluecke (Gap-up Klimax).",
+            )
+        else:
+            profile_warns = [k for k in (profile_info.get("warnungen") or []) if k in LM_HUB_WARNUNGEN]
+            selected_warns = profile_warns
+            st.markdown(f"<div class='mini-help'>Im Profil aktive Warnsignale: {', '.join(profile_warns) or '—'}.</div>", unsafe_allow_html=True)
         active["active_warnings"] = selected_warns
 
         with st.expander("ℹ️ Warnsignal-Erklärungen", expanded=False):
@@ -10837,13 +10956,25 @@ def load_sell_decision_chart_frame(ticker: str, buy_date, benchmark_ticker: str 
     return _coerce_ohlc_frame(frames.get(norm_ticker))
 
 
-def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: float, market_currency: str) -> None:
-    label = result.get("recommendation_label", "HALTEN")
+def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: float, market_currency: str, ticker: str = "") -> None:
+    raw_label = result.get("recommendation_label", "HALTEN")
+    display_label = result.get("display_label") or raw_label
+    pending_status = str(result.get("pending_status") or "")
     pct = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
-    tone = "#16a34a" if label == "HALTEN" else "#d97706" if label == "TEILVERKAUF" else "#dc2626"
-    bg = "#f0fdf4" if label == "HALTEN" else "#fffbeb" if label == "TEILVERKAUF" else "#fef2f2"
-    border = "#bbf7d0" if label == "HALTEN" else "#fde68a" if label == "TEILVERKAUF" else "#fecaca"
     killer_signals = result.get("killer_signals", []) or []
+
+    # Farb-/Ton-Wahl: Pending-Status überschreibt den Roh-Label-Ton.
+    if pending_status == "snoozed":
+        tone, bg, border = "#64748b", "#f1f5f9", "#cbd5e1"
+    elif pending_status == "in_bestaetigung":
+        tone, bg, border = "#ca8a04", "#fefce8", "#fde047"
+    elif raw_label == "HALTEN":
+        tone, bg, border = "#16a34a", "#f0fdf4", "#bbf7d0"
+    elif raw_label == "TEILVERKAUF":
+        tone, bg, border = "#d97706", "#fffbeb", "#fde68a"
+    else:
+        tone, bg, border = "#dc2626", "#fef2f2", "#fecaca"
+
     if killer_signals:
         first_killer = killer_signals[0] if isinstance(killer_signals[0], dict) else {}
         st.markdown(
@@ -10855,20 +10986,51 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
             """,
             unsafe_allow_html=True,
         )
+
+    pending_hint_html = ""
+    if pending_status == "in_bestaetigung":
+        pending_hint_html = (
+            '<div style="margin-top:6px;font-size:.78rem;color:#854d0e;font-weight:600;">⏳ Signal in Bestätigung — '
+            'Empfehlung muss morgen erneut auftauchen, bevor sie scharf gestellt wird.</div>'
+        )
+    elif pending_status == "snoozed":
+        snoozed_until = str((result.get("next_recommendation_state") or {}).get("snoozed_until") or "")
+        until_text = f" bis {snoozed_until}" if snoozed_until else ""
+        pending_hint_html = (
+            f'<div style="margin-top:6px;font-size:.78rem;color:#475569;font-weight:600;">🔕 Stumm geschaltet{until_text}. '
+            'Eine stärkere Empfehlung oder ein Killer-Signal hebt die Stummschaltung sofort auf.</div>'
+        )
+
     st.markdown(
         f"""
         <div class="summary-hero sell-rec-hero" style="background:{bg};border-color:{border};border-left:5px solid {tone};margin-bottom:14px;">
           <div class="card-label" style="color:{tone};">Verkaufs-Empfehlung</div>
           <div class="sell-rec-hero__row">
-            <div class="sell-rec-hero__label" style="color:{tone};">{html.escape(label)}</div>
+            <div class="sell-rec-hero__label" style="color:{tone};">{html.escape(display_label)}</div>
             <div class="sell-rec-hero__pct" style="color:{tone};">Konkrete Tranche: {pct}% jetzt verkaufen</div>
           </div>
           <div style="margin-top:8px;color:#334155;font-size:.9rem;line-height:1.45;">{html.escape(str(result.get('explanation_short', '')))}</div>
+          {pending_hint_html}
           <div class="sell-mode-pill">{html.escape(str(result.get('sell_mode') or ''))}{(' · ' + html.escape(str(result.get('sell_style')))) if result.get('sell_style') else ''}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    # Snooze-Aktionen rendern, sobald eine scharfe Empfehlung vorliegt oder eine bereits aktive Snooze laufen.
+    if ticker and pct > 0 and not killer_signals:
+        snooze_cols = st.columns([1, 1, 2])
+        if pending_status == "snoozed":
+            if snooze_cols[0].button("🔔 Stummschaltung aufheben", key=f"sell_snooze_clear_{ticker}"):
+                clear_recommendation_snooze(ticker)
+                st.rerun()
+        else:
+            if snooze_cols[0].button("🔕 5 Tage stumm schalten", key=f"sell_snooze_5d_{ticker}", help="Empfehlung bis maximal zur eingestellten Tranche für 5 Handelstage stumm schalten. Eskalation und Killer-Signale überschreiben die Stummschaltung."):
+                snooze_recommendation(ticker, snoozed_pct=pct, days=5)
+                st.rerun()
+            if snooze_cols[1].button("🔕 10 Tage stumm", key=f"sell_snooze_10d_{ticker}"):
+                snooze_recommendation(ticker, snoozed_pct=pct, days=10)
+                st.rerun()
 
     already = float(result.get("already_sold_percent", 0.0) or 0.0)
     shares_to_sell = _sell_monitor_shares_for_percent(shares, already, pct)
@@ -11187,10 +11349,14 @@ def _render_sell_decision_live_monitor() -> None:
     active_setup = _render_sell_monitor_setup_panel(selected_ticker, manual_data)
     metrics_payload["lm_setup"] = active_setup
 
-    result = evaluate_sell_decision(metrics_payload, manual_for_rules, tranche_log)
+    prior_recommendation_state = get_recommendation_state(selected_ticker)
+    result = evaluate_sell_decision(metrics_payload, manual_for_rules, tranche_log, recommendation_state=prior_recommendation_state)
+    next_recommendation_state = result.get("next_recommendation_state") or {}
+    if next_recommendation_state and next_recommendation_state != prior_recommendation_state:
+        save_recommendation_state(selected_ticker, next_recommendation_state)
 
     # A. Empfehlung (Hero)
-    _render_sell_monitor_recommendation(result, metrics, shares, market_currency)
+    _render_sell_monitor_recommendation(result, metrics, shares, market_currency, selected_ticker)
 
     # B. Live-Kennzahlen
     st.markdown("#### Live-Kennzahlen")

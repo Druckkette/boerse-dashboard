@@ -79,6 +79,78 @@ LM_HUB_WARNUNGEN_DEFAULT = [
     "downside_reversal",
 ]
 
+
+# Strategie-Profile reduzieren die Vielzahl an konfigurierbaren Strategien auf wenige
+# kuratierte Bündel. Pro Position wählt der Anwender genau ein Profil. Im Profil "frei"
+# bleibt die volle Multiselect-Auswahl wie zuvor erhalten.
+LM_HUB_PROFILES: dict[str, dict[str, object]] = {
+    "konservativ": {
+        "label": "Konservativ",
+        "beschreibung": "Reagiert nur auf harte Trendbrüche und Verluste. Wenige Tranche-Empfehlungen, dafür spät.",
+        "strategien": [
+            "notbremse_verlust",
+            "einfache_verluststufen",
+            "ma_bruch_defensiv",
+            "drei_verlustwochen",
+        ],
+        "warnungen": [],
+    },
+    "standard": {
+        "label": "Standard",
+        "beschreibung": "Ausgewogen. Vermeidet doppelte Trendbruch-Signale dank Themen-Deduplizierung.",
+        "strategien": [
+            "notbremse_verlust",
+            "ma21_bruch",
+            "drawdown_vom_peak",
+            "rueckkehr_pivot",
+            "ma_bruch_defensiv",
+            "rs_linie",
+        ],
+        "warnungen": [
+            "stau_tage",
+            "downside_reversal",
+        ],
+    },
+    "aktiv_gewinnsicherung": {
+        "label": "Aktiv-Gewinnsicherung",
+        "beschreibung": "Sichert aktiv Gewinne. Mehr Tranche-Empfehlungen, dafür früher.",
+        "strategien": [
+            "notbremse_verlust",
+            "gewinn_in_stufen",
+            "ma21_bruch",
+            "drawdown_vom_peak",
+            "ma_abstand",
+            "rueckkehr_pivot",
+            "ma_bruch_defensiv",
+            "groesster_einbruch",
+            "rs_linie",
+        ],
+        "warnungen": [
+            "verlusttage_haeufung",
+            "stau_tage",
+            "downside_reversal",
+        ],
+    },
+    "frei": {
+        "label": "Frei (Expert)",
+        "beschreibung": "Volle Kontrolle über die Multiselect-Listen. Achtung: >8 aktive Strategien führen erfahrungsgemäß zu vielen Verkaufsempfehlungen.",
+        "strategien": list(LM_HUB_STRATEGIEN_DEFAULT),
+        "warnungen": list(LM_HUB_WARNUNGEN_DEFAULT),
+    },
+}
+
+LM_HUB_PROFILE_DEFAULT = "standard"
+
+
+def get_profile_strategies(profile_key: str) -> tuple[list[str], list[str]]:
+    """Return (active_strategies, active_warnings) for the given profile key."""
+    profile = LM_HUB_PROFILES.get(str(profile_key or "").strip().lower())
+    if not profile:
+        profile = LM_HUB_PROFILES[LM_HUB_PROFILE_DEFAULT]
+    strategien = [k for k in (profile.get("strategien") or []) if k in LM_HUB_STRATEGIEN]
+    warnungen = [k for k in (profile.get("warnungen") or []) if k in LM_HUB_WARNUNGEN]
+    return strategien, warnungen
+
 # Backwards compatibility.
 LM_HUB_STRATEGIES_DEFAULT = LM_HUB_STRATEGIEN_DEFAULT + LM_HUB_WARNUNGEN_DEFAULT
 LM_HUB_STRATEGIES = LM_HUB_STRATEGIES_DEFAULT
@@ -241,12 +313,23 @@ WARNING_CONTRIBUTIONS = {
 
 def _resolve_setup(metrics_payload: dict, manual_data: dict | None) -> dict:
     setup = dict(LM_HUB_DEFAULTS)
-    payload_setup = (metrics_payload or {}).get("lm_setup") if isinstance(metrics_payload, dict) else None
-    if isinstance(payload_setup, dict):
-        setup.update(payload_setup)
+    # Gespeichertes Setup als Basis: langlebige Profilwahl + Parameter pro Ticker.
     manual_setup = (manual_data or {}).get("sell_setup") if isinstance(manual_data, dict) else None
     if isinstance(manual_setup, dict):
         setup.update(manual_setup)
+    # Live-Override aus dem aktuell gerenderten Setup-Panel: hat Vorrang vor dem
+    # gespeicherten Setup, sodass Änderungen sofort wirken, ohne erst zu speichern.
+    payload_setup = (metrics_payload or {}).get("lm_setup") if isinstance(metrics_payload, dict) else None
+    if isinstance(payload_setup, dict):
+        setup.update(payload_setup)
+    # Wenn ein Profil gesetzt ist und nicht "frei", überschreiben die Profil-Listen
+    # die aktiven Strategien/Warnungen. So bleibt die Profil-Auswahl der einzige
+    # Wahrheitswert für kuratierte Bündel.
+    profile_key = str(setup.get("profile") or "").strip().lower()
+    if profile_key and profile_key != "frei" and profile_key in LM_HUB_PROFILES:
+        strategien, warnungen = get_profile_strategies(profile_key)
+        setup["active_strategies"] = strategien
+        setup["active_warnings"] = warnungen
     return setup
 
 
@@ -672,12 +755,104 @@ def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = 
     return {"health_score": round(score, 1), "status": status, "rs_trend": rs_trend, "reasons": reasons}
 
 
-def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None) -> dict[str, Any]:
+# Hysterese-Schwelle: Ab diesem Beitrag muss eine Empfehlung mindestens
+# `HYSTERESIS_MIN_CONSECUTIVE_DAYS` Tage stabil sein, bevor sie als "scharf" angezeigt wird.
+HYSTERESIS_MIN_CONTRIBUTION = 33
+HYSTERESIS_MIN_CONSECUTIVE_DAYS = 2
+# Empfehlungen >= dieser Schwelle umgehen die Hysterese (z. B. 75% → sofort scharf).
+HYSTERESIS_BYPASS_CONTRIBUTION = 75
+
+
+def _normalize_state_date(value) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        return pd.Timestamp(value).strftime("%Y-%m-%d")
+    except Exception:
+        return str(value).strip()
+
+
+def _compute_recommendation_status(
+    *,
+    sell_now: int,
+    has_killer: bool,
+    as_of_date: str,
+    prior_state: dict | None,
+) -> tuple[str, dict]:
+    """Apply hysteresis + snooze on top of the raw recommendation.
+
+    Returns (pending_status, next_state) where pending_status is one of:
+    - "scharf": Empfehlung ist scharf (Hero rot/orange).
+    - "in_bestaetigung": Empfehlung noch nicht stabil (gelb, abwartend).
+    - "snoozed": Empfehlung wurde vom User stummgeschaltet.
+    - "halten": Keine Empfehlung aktiv.
+
+    Killer-Signale bypassen Hysterese und Snooze immer.
+    """
+    today = _normalize_state_date(as_of_date) or _normalize_state_date(pd.Timestamp.now())
+    state = dict(prior_state or {})
+    next_state: dict[str, Any] = {
+        "last_seen_date": today,
+        "last_pct": int(sell_now),
+        "consecutive_days": 1,
+        "snoozed_until": state.get("snoozed_until") or "",
+        "snoozed_pct": int(state.get("snoozed_pct") or 0),
+    }
+
+    if has_killer:
+        # Killer overrides everything — Snooze wird verworfen.
+        next_state["snoozed_until"] = ""
+        next_state["snoozed_pct"] = 0
+        return "scharf", next_state
+
+    if sell_now <= 0:
+        # Keine Empfehlung aktiv — Hysterese-Zähler bleibt zurück. Snooze bleibt erhalten.
+        next_state["consecutive_days"] = 0
+        return "halten", next_state
+
+    # Snooze prüfen: Wenn snoozed_until in Zukunft und sell_now nicht über snoozed_pct hinaus eskaliert.
+    snoozed_until = _normalize_state_date(state.get("snoozed_until"))
+    snoozed_pct = int(state.get("snoozed_pct") or 0)
+    if snoozed_until and snoozed_until >= today and sell_now <= snoozed_pct:
+        next_state["snoozed_until"] = snoozed_until
+        next_state["snoozed_pct"] = snoozed_pct
+        return "snoozed", next_state
+
+    # Snooze ist abgelaufen oder Empfehlung eskaliert über die Snooze-Schwelle → Snooze fallen lassen.
+    if snoozed_until and (snoozed_until < today or sell_now > snoozed_pct):
+        next_state["snoozed_until"] = ""
+        next_state["snoozed_pct"] = 0
+
+    # Hysterese: Zähle aufeinanderfolgende Tage mit identischer Stufe.
+    prior_pct = int(state.get("last_pct") or 0)
+    prior_date = _normalize_state_date(state.get("last_seen_date"))
+    prior_streak = int(state.get("consecutive_days") or 0)
+    if prior_date == today:
+        # Gleicher Tag — Streak unverändert (Mehrfach-Aufrufe innerhalb desselben Tages zählen nicht doppelt).
+        next_state["consecutive_days"] = max(1, prior_streak)
+    elif prior_pct == sell_now and prior_date:
+        next_state["consecutive_days"] = prior_streak + 1
+    else:
+        next_state["consecutive_days"] = 1
+
+    # Bypass: niedrige Stufen (< 33%) oder sehr hohe Stufen (>= 75%) brauchen keine Hysterese.
+    if sell_now < HYSTERESIS_MIN_CONTRIBUTION or sell_now >= HYSTERESIS_BYPASS_CONTRIBUTION:
+        return "scharf", next_state
+    if next_state["consecutive_days"] >= HYSTERESIS_MIN_CONSECUTIVE_DAYS:
+        return "scharf", next_state
+    return "in_bestaetigung", next_state
+
+
+def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None, recommendation_state: dict | None = None) -> dict[str, Any]:
     """Evaluate sell-decision rules using the Strategien-Hub engine for patterns 1-10/12-14.
 
     Patterns #11 (Distribution-Tage) and #15 (Volumen-Faktor) remain in LM-native code
     below, together with all LM-only features (regime, stop price, health-score,
     personality check, industry-group penalty, watch signals).
+
+    `recommendation_state` (optional) drives the hysteresis + snooze gating on top of
+    the raw recommendation. When omitted (e.g. in stateless tests), the recommendation
+    is reported as `pending_status="scharf"` without any debouncing.
     """
     manual_data = manual_data or {}
     metrics, ticker, buy_price, _shares = _extract_inputs(metrics_payload or {})
@@ -829,9 +1004,26 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         sell_mode_summary = strength_offensive_mode
         sell_style_summary = STRENGTH_OFFENSIVE_STYLE
 
+    # Hysterese + Snooze auf das Roh-Ergebnis anwenden.
+    pending_status, next_state = _compute_recommendation_status(
+        sell_now=int(sell_now),
+        has_killer=bool(killer_signals),
+        as_of_date=as_of_date,
+        prior_state=recommendation_state,
+    )
+
+    # Wenn die Empfehlung in Bestätigung steckt oder schlummert, melden wir die
+    # gleiche Tranche, aber das Hero-Label wird in der UI abgeschwächt.
+    display_label = label
+    if pending_status == "in_bestaetigung" and recommendation_percent > 0:
+        display_label = "BESTÄTIGUNG ABWARTEN"
+    elif pending_status == "snoozed" and recommendation_percent > 0:
+        display_label = "STUMM GESCHALTET"
+
     return {
         "recommendation_percent": int(recommendation_percent),
         "recommendation_label": label,
+        "display_label": display_label,
         "regime": regime,
         "killer_signals": [sig.to_dict() for sig in killer_signals],
         "tranche_signals": [sig.to_dict() for sig in tranche_signals],
@@ -849,4 +1041,6 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
         "remaining_after_sale_percent": remaining_after_sale,
         "sell_mode": sell_mode_summary,
         "sell_style": sell_style_summary,
+        "pending_status": pending_status,
+        "next_recommendation_state": next_state,
     }
