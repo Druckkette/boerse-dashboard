@@ -23,7 +23,6 @@ STRENGTH_DEFENSIVE_MODE = "Stärke defensiv verkaufen: Gewinn nach Rückzug sich
 # Users select the active subset via the Setup-Panel's multiselect.
 LM_HUB_STRATEGIES_ALL = [
     "notbremse_verlust",
-    "drei_stufen_nach_kauf",
     "gewinn_in_stufen",
     "ma21_bruch",
     "drawdown_vom_peak",
@@ -63,7 +62,6 @@ LM_HUB_STRATEGIEN = [k for k in LM_HUB_STRATEGIES_ALL if k not in LM_HUB_WARNUNG
 # Strategien und Warnsignale getrennt, beide sind standardmäßig vorausgewählt.
 LM_HUB_STRATEGIEN_DEFAULT = [
     "notbremse_verlust",
-    "drei_stufen_nach_kauf",
     "gewinn_in_stufen",
     "ma21_bruch",
     "drawdown_vom_peak",
@@ -92,10 +90,13 @@ LM_HUB_DEFAULTS = {
     "notbremse_verlust_schwelle_baerisch_pct": 4.0,
     "notbremse_verlust_schwelle_unsicher_pct": 5.0,
     "notbremse_verlust_schwelle_bullisch_pct": 7.0,
-    "drei_stufen_max_gewinn_aktiv_pct": 8.0,
-    "drei_stufen_tranche_stufe1_pct": 33.0,
-    "drei_stufen_tranche_stufe2_pct": 33.0,
-    "drei_stufen_notbremse_verlust_pct": 7.0,
+    "rueckkehr_tranche_stufe1_pct": 33.0,
+    "rueckkehr_tranche_stufe1_volumen_pct": 50.0,
+    "rueckkehr_volumen_schwelle": 1.5,
+    "rueckkehr_tranche_stufe2_pct": 33.0,
+    "rueckkehr_pivot_tage_schwelle": 10,
+    "rueckkehr_tranche_pivot_pct": 50.0,
+    "rueckkehr_notbremse_verlust_pct": 7.0,
     "gewinn_nachdenken_schwelle_bull_pct": 15.0,
     "gewinn_teilverkauf_unten_bull_pct": 20.0,
     "gewinn_teilverkauf_oben_bull_pct": 35.0,

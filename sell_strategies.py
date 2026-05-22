@@ -6,7 +6,6 @@ import pandas as pd
 
 STRATEGIE_INFO: dict[str, str] = {
     "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
-    "drei_stufen_nach_kauf": "Strategie 1 (Kap. 5.3 / 6.4): Drei-Stufen-Regel direkt nach Kauf für fehlgeschlagene Ausbrüche in der Frühphase. Nur aktiv, solange der Gewinn noch nicht nennenswert ist (Standard: bis +8% P&L). Stufe 1: Schluss unter Tief Ausbruchstag (Standard 33%). Stufe 2: Schluss unter Tief Vortag (Standard 33%). Stufe 3: Notbremse bei max. Verlust (Standard -7%) als Intraday-Vollausstieg.",
     "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
     "ma21_bruch": "Strategie 4 (Kap. 6.2): Bruch der 21-Tage-Linie in drei Risikoprofilen. Aggressiv: schneller Teilverkauf bei klarem Bruch + Volumenbestätigung (33%, +50% bei -7% Tagesverlust Tag 2). Gestaffelt: stufenweises Vorgehen über 3 Tage unter 21-MA (jeweils 25%). Geduldig: erst nach 3 bestätigten Tagen unter 21-MA aktiv (33%). Nur im Gewinnfall aktiv.",
     "drawdown_vom_peak": "Strategie 5 (Kap. 6.2): Drawdown vom Peak mit 3 Eskalationsstufen. Stufe 1 (Standard 8%): erstes Sicherungssignal 25%. Stufe 2 (12%): deutliche Reduktion 33%. Stufe 3 (15%): harte Reduktion (50%); bei zusätzlichem Trendbruch unter 21-MA Vollausstieg (100%).",
@@ -17,7 +16,7 @@ STRATEGIE_INFO: dict[str, str] = {
     "erschoepfungsluecke": "Strategie 11 (Kap. 6.2): Gap-up nach langem Aufwärtstrend mit hohem Volumen und großer Distanz zur Basis. Identifiziert ein potenzielles Spätphasen-/Klimax-Muster. Standard-Tranche 33%.",
     "downside_reversal": "Strategie 12 (Kap. 6.2): Downside Reversal für Gewinnerpositionen. Variante 1 (stark): neues 30-Tage-Hoch, Schluss im unteren Tagesdrittel und Volumenquote ≥ 1.2 erzeugt 33%-Signal. Variante 2 (mittel): weite Umkehrkerze (Tagesspanne ≥ 1.5× 10-Tage-Schnitt), Schluss im unteren Drittel und Volumenquote ≥ 1.2 erzeugt 20%-Signal. Variante 3 (Warnstufe): weite Kerze mit Schluss unter Spannenmitte erzeugt 15%-Signal.",
     "stau_tage": "Strategie 13 (Kap. 6.2): Sucht in einem Fenster (Standard 10 Sessions) nach Stau-Tagen mit kaum Fortschritt (|Tagesveränderung| < 1%) bei überdurchschnittlichem Volumen (≥1.3× gegen 50-Tage-Schnitt). Ab mindestens 2 Stau-Tagen entsteht ein aktives Verkaufssignal. Die Tranche ist kontextabhängig: nahe Hoch (Drawdown < 5%) defensiver mit 33%, sonst 20%.",
-    "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkts.",
+    "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkt. Alternativ Notbremse bei max. Verlust (Standard -7%) als Intraday-Vollausstieg.",
     "ma_bruch_defensiv": "Strategie 15 (Kap. 6.3): Defensiver Exit-Prozess bei Trendbruch. Klarer 50-MA-Bruch (mind. max(2%, ATR%) unter MA und Volumenanstieg ≥1.3) triggert 50%, sonst nach 3 Schlusskursen unter 50-MA 33%. Nach 8 Wochen unter der 10-Wochen-Linie folgt ein Vollsignal (100%). Unter 200-MA werden 75% reduziert bzw. 100% bei hohem Volumen; dreht die 200-MA zusätzlich nach unten, wird ein bestätigendes Info-Signal ausgegeben.",
     "drei_verlustwochen": "Strategie 16 (Kap. 6.3): Triggert bei drei Verlustwochen in Folge mit jeweils tieferem Wochenschluss als in der Vorwoche und gleichzeitig steigendem Wochenvolumen. Vollsignal (100%) nur, wenn alle drei Wochen klare Abwärtswochen sind (Close < Open). Vorwarnstufe (33%) falls nur die Sequenz aus fallenden Wochenschlüssen + steigendem Volumen erfüllt ist.",
     "groesster_einbruch": "Strategie 17 (Kap. 6.3): Reagiert auf den größten Einbruch seit Einstieg nach bereits gelaufener Position. Tagesregel: wenn der heutige Verlust der größte seit Einstieg ist und über einer Mindestschwelle liegt, wird defensiv reduziert (33%) oder bei deutlich erhöhtem Volumen stärker (50%). Wochenregel: wenn die aktuelle Verlustwoche die größte seit Einstieg ist und gleichzeitig das Wochenvolumen überdurchschnittlich hoch ist, folgt eine starke Reduktion (66%).",
@@ -89,35 +88,7 @@ def _linear_marke(points, idx):
     n = max(1, len(points)-1)
     return y0 + (y1-y0) * (n/n)
 
-# Strategien 1-23
-
-def strategie_drei_stufen_nach_kauf(
-    position: Position,
-    daten: pd.DataFrame,
-    max_gewinn_aktiv_pct: float = 8.0,
-    stufe1_tranche_pct: float = 33.0,
-    stufe2_tranche_pct: float = 33.0,
-    notbremse_verlust_pct: float = 7.0,
-):
-    """Strategie 1 (Kap. 5.3/6.4): Drei-Stufen-Regel direkt nach Kauf.
-
-    Aktiv nur in der frühen Phase nach Kauf, solange die Position noch keinen
-    nennenswerten Gewinn aufgebaut hat (PnL <= max_gewinn_aktiv_pct).
-    """
-    s, pnl, out = letzter_schlusskurs(daten), pnl_pct(position, daten), []
-    max_gewinn = float(max_gewinn_aktiv_pct)
-    stufe1 = float(stufe1_tranche_pct)
-    stufe2 = float(stufe2_tranche_pct)
-    notbremse = abs(float(notbremse_verlust_pct))
-    if pnl > max_gewinn:
-        return out
-    if position.tief_tag_1 and s < position.tief_tag_1:
-        out.append(_signal("Schluss unter Tief Ausbruchstag",stufe1,"schluss",True,position.tief_tag_0,"Kap. 5.3 / 6.4 Drei-Stufen-Regel, Stufe 1","Ausbruch hält nicht — erstes Drittel reduzieren"))
-    if position.tief_tag_0 and s < position.tief_tag_0:
-        out.append(_signal("Schluss unter Tief Vortag",stufe2,"schluss",True,position.einstiegspreis*(1-notbremse/100),"Kap. 5.3 / 6.4 Drei-Stufen-Regel, Stufe 2","Ausbruch endgültig gescheitert — zweites Drittel reduzieren"))
-    if pnl <= -notbremse:
-        out.append(_signal("7%-Notbremse",100,"intraday",True,None,"Kap. 5.3 / 6.1 / 6.4","Maximaler Verlust erreicht — Rest sofort verkaufen"))
-    return out
+# Strategien 2-23
 
 def strategie_notbremse_verlust(
     position: Position,
@@ -395,18 +366,51 @@ def strategie_stau_tage(
         return [_signal(f"{len(st)} Stau-Tage in {int(fenster_tage)} Sessions",tr,"schluss",True,float(min(x["low"] for x in st)),"Kap. 6.2 Stau-Tage","Verdeckte Distribution — Stopp auf Tief des Stau-Tags")]
     return []
 
-def strategie_rueckkehr_pivot(position,daten):
-    s=letzter_schlusskurs(daten); out=[]; vr=vol_verhaeltnis(daten)
-    if position.tief_tag_1 and s<position.tief_tag_1:
-        begr="Mit erhöhtem Volumen" if vr>=1.5 else "Erste Sicherheitslinie verletzt"
-        out.append(_signal("Schluss unter Tief Ausbruchstag",50 if vr>=1.5 else 33,"schluss",True,position.tief_tag_0,"Kap. 6.3 Rückkehr zum Ausbruchspunkt",begr))
-    if position.tief_tag_0 and s<position.tief_tag_0: out.append(_signal("Schluss unter Tief Vortag",33,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3 Rückkehr zum Ausbruchspunkt","Zweite Sicherheitslinie verletzt"))
+def strategie_rueckkehr_pivot(
+    position: Position,
+    daten: pd.DataFrame,
+    tranche_stufe1_pct: float = 33.0,
+    tranche_stufe1_volumen_pct: float = 50.0,
+    volumen_schwelle: float = 1.5,
+    tranche_stufe2_pct: float = 33.0,
+    pivot_tage_schwelle: int = 10,
+    tranche_pivot_pct: float = 50.0,
+    notbremse_verlust_pct: float = 7.0,
+):
+    """Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt + Notbremse.
+
+    Vereint die ursprüngliche Strategie 1 (Drei-Stufen-Regel direkt nach Kauf)
+    und Strategie 14 (Rückkehr zum Ausbruchspunkt). Sicherheitslinien greifen
+    bei Schluss unter Tief Tag 1 / Tag 0, ergänzt um die Zeitkomponente
+    (X Handelstage in Folge unter Pivot) und die -7%-Notbremse als Intraday-Exit.
+    """
+    s = letzter_schlusskurs(daten)
+    pnl = pnl_pct(position, daten)
+    vr = vol_verhaeltnis(daten)
+    out: list[dict] = []
+    stufe1 = float(tranche_stufe1_pct)
+    stufe1_vol = float(tranche_stufe1_volumen_pct)
+    vol_schwelle = float(volumen_schwelle)
+    stufe2 = float(tranche_stufe2_pct)
+    pivot_tage = max(1, int(pivot_tage_schwelle))
+    pivot_tranche = float(tranche_pivot_pct)
+    notbremse = abs(float(notbremse_verlust_pct))
+    if position.tief_tag_1 and s < position.tief_tag_1:
+        begr = "Mit erhöhtem Volumen" if vr >= vol_schwelle else "Erste Sicherheitslinie verletzt"
+        out.append(_signal("Schluss unter Tief Ausbruchstag", stufe1_vol if vr >= vol_schwelle else stufe1, "schluss", True, position.tief_tag_0, "Kap. 6.3 Rückkehr zum Ausbruchspunkt", begr))
+    if position.tief_tag_0 and s < position.tief_tag_0:
+        out.append(_signal("Schluss unter Tief Vortag", stufe2, "schluss", True, position.einstiegspreis * (1 - notbremse / 100), "Kap. 6.3 Rückkehr zum Ausbruchspunkt", "Zweite Sicherheitslinie verletzt"))
     if position.pivot:
-        under=(daten["close"]<position.pivot).iloc[::-1]; c=0
+        under = (daten["close"] < position.pivot).iloc[::-1]
+        c = 0
         for b in under:
-            if not b: break
-            c+=1
-        if s<position.pivot and c>=10: out.append(_signal(f"{c} Tage unter Pivot",50,"schluss",True,position.einstiegspreis*0.93,"Kap. 6.3 Rückkehr zum Ausbruchspunkt","Rückkehr über Ausbruchspunkt nicht gelungen"))
+            if not b:
+                break
+            c += 1
+        if s < position.pivot and c >= pivot_tage:
+            out.append(_signal(f"{c} Tage unter Pivot", pivot_tranche, "schluss", True, position.einstiegspreis * (1 - notbremse / 100), "Kap. 6.3 Rückkehr zum Ausbruchspunkt", "Rückkehr über Ausbruchspunkt nicht gelungen"))
+    if pnl <= -notbremse:
+        out.append(_signal(f"{notbremse:g}%-Notbremse", 100, "intraday", True, None, "Kap. 6.1 / 6.3 Notbremse", "Maximaler Verlust erreicht — Rest sofort verkaufen"))
     return out
 
 def strategie_ma_bruch_defensiv(position,daten,wochen_daten):
@@ -605,13 +609,6 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
             o.get("notbremse_verlust_schwelle_unsicher_pct",5.0),
             o.get("notbremse_verlust_schwelle_bullisch_pct",7.0),
         ),
-        "drei_stufen_nach_kauf": lambda: strategie_drei_stufen_nach_kauf(
-            position,daten,
-            o.get("drei_stufen_max_gewinn_aktiv_pct", 8.0),
-            o.get("drei_stufen_tranche_stufe1_pct", 33.0),
-            o.get("drei_stufen_tranche_stufe2_pct", 33.0),
-            o.get("drei_stufen_notbremse_verlust_pct", 7.0),
-        ),
         "gewinn_in_stufen": lambda: strategie_gewinn_in_stufen(
             position,daten,markt,
             o.get("gewinn_nachdenken_schwelle_bull_pct",15.0),
@@ -684,7 +681,16 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
             o.get("stau_tranche_nahe_hoch_pct",33.0),
             o.get("stau_tranche_standard_pct",20.0),
         ),
-        "rueckkehr_pivot": lambda: strategie_rueckkehr_pivot(position,daten),
+        "rueckkehr_pivot": lambda: strategie_rueckkehr_pivot(
+            position,daten,
+            o.get("rueckkehr_tranche_stufe1_pct", 33.0),
+            o.get("rueckkehr_tranche_stufe1_volumen_pct", 50.0),
+            o.get("rueckkehr_volumen_schwelle", 1.5),
+            o.get("rueckkehr_tranche_stufe2_pct", 33.0),
+            o.get("rueckkehr_pivot_tage_schwelle", 10),
+            o.get("rueckkehr_tranche_pivot_pct", 50.0),
+            o.get("rueckkehr_notbremse_verlust_pct", 7.0),
+        ),
         "ma_bruch_defensiv": lambda: strategie_ma_bruch_defensiv(position,daten,wochen_daten),
         "drei_verlustwochen": lambda: strategie_drei_verlustwochen(position,wochen_daten),
         "groesster_einbruch": lambda: strategie_groesster_einbruch(

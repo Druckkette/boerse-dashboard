@@ -10537,12 +10537,15 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
                     active["notbremse_verlust_schwelle_unsicher_pct"] = c2.number_input("Notbremse Unsicher (%)", min_value=0.5, max_value=30.0, value=float(_val("notbremse_verlust_schwelle_unsicher_pct", 5.0)), step=0.5, key=f"lm_setup_notbremse_uncertain_{ticker}")
                     active["notbremse_verlust_schwelle_bullisch_pct"] = c3.number_input("Notbremse Bullisch (%)", min_value=0.5, max_value=30.0, value=float(_val("notbremse_verlust_schwelle_bullisch_pct", 7.0)), step=0.5, key=f"lm_setup_notbremse_bull_{ticker}")
 
-                elif key == "drei_stufen_nach_kauf":
+                elif key == "rueckkehr_pivot":
                     c1, c2 = st.columns(2)
-                    active["drei_stufen_max_gewinn_aktiv_pct"] = c1.number_input("Max. Gewinn für Aktivität (%)", min_value=0.0, max_value=50.0, value=float(_val("drei_stufen_max_gewinn_aktiv_pct", 8.0)), step=0.5, key=f"lm_setup_three_stage_max_gain_{ticker}")
-                    active["drei_stufen_notbremse_verlust_pct"] = c1.number_input("Notbremse Verlust (%)", min_value=1.0, max_value=30.0, value=float(_val("drei_stufen_notbremse_verlust_pct", 7.0)), step=0.5, key=f"lm_setup_three_stage_stop_{ticker}")
-                    active["drei_stufen_tranche_stufe1_pct"] = c2.number_input("Tranche Stufe 1 (%)", min_value=1.0, max_value=100.0, value=float(_val("drei_stufen_tranche_stufe1_pct", 33.0)), step=1.0, key=f"lm_setup_three_stage_t1_{ticker}")
-                    active["drei_stufen_tranche_stufe2_pct"] = c2.number_input("Tranche Stufe 2 (%)", min_value=1.0, max_value=100.0, value=float(_val("drei_stufen_tranche_stufe2_pct", 33.0)), step=1.0, key=f"lm_setup_three_stage_t2_{ticker}")
+                    active["rueckkehr_tranche_stufe1_pct"] = c1.number_input("Tranche Sicherheitslinie 1 (%)", min_value=1.0, max_value=100.0, value=float(_val("rueckkehr_tranche_stufe1_pct", 33.0)), step=1.0, key=f"lm_setup_rueckkehr_t1_{ticker}")
+                    active["rueckkehr_tranche_stufe1_volumen_pct"] = c1.number_input("Tranche Sicherheitslinie 1 bei Volumen (%)", min_value=1.0, max_value=100.0, value=float(_val("rueckkehr_tranche_stufe1_volumen_pct", 50.0)), step=1.0, key=f"lm_setup_rueckkehr_t1_vol_{ticker}")
+                    active["rueckkehr_volumen_schwelle"] = c1.number_input("Volumenquoten-Schwelle", min_value=0.5, max_value=10.0, value=float(_val("rueckkehr_volumen_schwelle", 1.5)), step=0.1, key=f"lm_setup_rueckkehr_vol_schwelle_{ticker}")
+                    active["rueckkehr_notbremse_verlust_pct"] = c1.number_input("Notbremse Verlust (%)", min_value=1.0, max_value=30.0, value=float(_val("rueckkehr_notbremse_verlust_pct", 7.0)), step=0.5, key=f"lm_setup_rueckkehr_notbremse_{ticker}")
+                    active["rueckkehr_tranche_stufe2_pct"] = c2.number_input("Tranche Sicherheitslinie 2 (%)", min_value=1.0, max_value=100.0, value=float(_val("rueckkehr_tranche_stufe2_pct", 33.0)), step=1.0, key=f"lm_setup_rueckkehr_t2_{ticker}")
+                    active["rueckkehr_pivot_tage_schwelle"] = int(c2.number_input("Tage unter Pivot", min_value=1, max_value=60, value=int(_val("rueckkehr_pivot_tage_schwelle", 10)), step=1, key=f"lm_setup_rueckkehr_pivot_tage_{ticker}"))
+                    active["rueckkehr_tranche_pivot_pct"] = c2.number_input("Tranche Zeitkomponente Pivot (%)", min_value=1.0, max_value=100.0, value=float(_val("rueckkehr_tranche_pivot_pct", 50.0)), step=1.0, key=f"lm_setup_rueckkehr_pivot_tranche_{ticker}")
 
                 elif key == "gewinn_in_stufen":
                     c1, c2 = st.columns(2)
@@ -11759,10 +11762,9 @@ def _render_sell_strategy_hub() -> None:
     pivot_from_entry_low = _safe_float(entry_row["low"].iloc[0], np.nan) if not entry_row.empty else np.nan
     effective_pivot = manual_pivot if not np.isnan(manual_pivot) and manual_pivot > 0 else (pivot_from_tag if not np.isnan(pivot_from_tag) and pivot_from_tag > 0 else pivot_from_entry_low)
     p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
-    alle = ["notbremse_verlust","drei_stufen_nach_kauf","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
+    alle = ["notbremse_verlust","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
     strategie_info = {
         "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
-        "drei_stufen_nach_kauf": "Strategie 1 (Kap. 5.3 / 6.4): Drei-Stufen-Regel direkt nach Kauf für fehlgeschlagene Ausbrüche in der Frühphase. Nur aktiv, solange der Gewinn noch nicht nennenswert ist (Standard: bis +8% P&L). Stufe 1: Schluss unter Tief Ausbruchstag (Standard 33%). Stufe 2: Schluss unter Tief Vortag (Standard 33%). Stufe 3: Notbremse bei max. Verlust (Standard -7%) als Intraday-Vollausstieg.",
         "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
         "ma21_bruch": "Verkaufssignale bei Bruch der 21-Tage-Linie (aggressiv/gestaffelt/geduldig).",
         "drawdown_vom_peak": "Reduktion nach Rückgang vom Zwischenhoch, abgestuft nach Drawdown-Tiefe.",
@@ -11773,7 +11775,7 @@ def _render_sell_strategy_hub() -> None:
         "erschoepfungsluecke": "Gap-up nach langem Lauf mit hohem Volumen als Erschöpfungssignal.",
         "downside_reversal": "Strategie 12 (Kap. 6.2): Downside Reversal für Gewinnerpositionen. Variante 1 (stark): neues 30-Tage-Hoch, Schluss im unteren Tagesdrittel und Volumenquote ≥ 1.2 erzeugt 33%-Signal („Downside Reversal an neuem Hoch“). Variante 2 (mittel): weite Umkehrkerze (Tagesspanne ≥ 1.5× 10-Tage-Schnitt), Schluss im unteren Drittel und Volumenquote ≥ 1.2 erzeugt 20%-Signal. Variante 3 (Warnstufe): weite Kerze mit Schluss unter Spannenmitte erzeugt 15%-Signal. Nächste Marke ist jeweils das Tageshoch der Umkehrkerze.",
         "stau_tage": "Strategie 13 (Kap. 6.2): Sucht in einem Fenster (Standard 10 Sessions) nach Stau-Tagen mit kaum Fortschritt (|Tagesveränderung| < 1%) bei überdurchschnittlichem Volumen (≥1.3× gegen 50-Tage-Schnitt). Ab mindestens 2 Stau-Tagen entsteht ein aktives Verkaufssignal. Die Tranche ist kontextabhängig: nahe Hoch (Drawdown < 5%) defensiver mit 33%, sonst 20%. Als nächste Marke wird das tiefste Tagestief der erkannten Stau-Tage gesetzt (Stopp-Logik).",
-        "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkts. Pivot-Quelle: zuerst Wert aus dem Bereich ‚Meine Positionen‘; falls dort kein Pivot hinterlegt ist, wird der Kauftag als Fallback genutzt.",
+        "rueckkehr_pivot": "Strategie 14 (Kap. 6.3): Rückkehr zum Ausbruchspunkt. Sicherheitslinie 1 ist ein Schlusskurs unter Tief Tag 1 (33%; bei Volumenquote ≥1.5 auf 50% erhöht). Sicherheitslinie 2 ist ein Schlusskurs unter Tief Tag 0 (weitere 33%). Bleibt die Aktie 10 Handelstage in Folge unter dem Pivot, folgt ein 50%-Signal wegen ausbleibender Rückeroberung des Ausbruchspunkt. Alternativ Notbremse bei max. Verlust (Standard -7%) als Intraday-Vollausstieg. Pivot-Quelle: zuerst Wert aus dem Bereich ‚Meine Positionen‘; falls dort kein Pivot hinterlegt ist, wird der Kauftag als Fallback genutzt.",
         "ma_bruch_defensiv": "Strategie 15 (Kap. 6.3): Defensiver Exit-Prozess bei Trendbruch. Klarer 50-MA-Bruch (mind. max(2%, ATR%) unter MA und Volumenanstieg) triggert 50%, sonst nach 3 Schlusskursen unter 50-MA 33%. Nach 8 Wochen unter der 10-Wochen-Linie folgt ein Vollsignal (100%). Unter 200-MA werden 75% reduziert bzw. 100% bei hohem Volumen; dreht die 200-MA zusätzlich nach unten, wird ein bestätigendes Info-Signal ausgegeben.",
         "drei_verlustwochen": "Strategie 16 (Kap. 6.3): Triggert bei drei Verlustwochen in Folge mit jeweils tieferem Wochenschluss als in der Vorwoche und gleichzeitig steigendem Wochenvolumen (Woche 2 > Woche 1, Woche 3 > Woche 2). Vollsignal (100%) nur, wenn alle drei Wochen klare Abwärtswochen sind (Close < Open) – das spricht für ein sauberes Verteilungsmuster und eine komplette Reduktion. Vorwarnstufe (33%) falls nur die Sequenz aus fallenden Wochenschlüssen + steigendem Volumen erfüllt ist; dann Stopps enger nachziehen.",
         "groesster_einbruch": "Strategie 17 (Kap. 6.3): Reagiert auf den größten Einbruch seit Einstieg nach bereits gelaufener Position. Tagesregel: wenn der heutige Verlust der größte seit Einstieg ist und über einer Mindestschwelle liegt, wird defensiv reduziert (33%) oder bei deutlich erhöhtem Volumen stärker (50%). Wochenregel: wenn die aktuelle Verlustwoche die größte seit Einstieg ist und gleichzeitig das Wochenvolumen überdurchschnittlich hoch ist, folgt eine starke Reduktion (66%). Ziel: späte Rally-Phasen mit möglicher Verteilung früh absichern.",
@@ -11866,10 +11868,13 @@ def _render_sell_strategy_hub() -> None:
     ma_abstand_tranche_ma21_pct = 33.0
     ma_abstand_tranche_ma50_pct = 33.0
     ma_abstand_tranche_ma200_basis_pct = 50.0
-    drei_stufen_max_gewinn_aktiv_pct = 8.0
-    drei_stufen_tranche_stufe1_pct = 33.0
-    drei_stufen_tranche_stufe2_pct = 33.0
-    drei_stufen_notbremse_verlust_pct = 7.0
+    rueckkehr_tranche_stufe1_pct = 33.0
+    rueckkehr_tranche_stufe1_volumen_pct = 50.0
+    rueckkehr_volumen_schwelle = 1.5
+    rueckkehr_tranche_stufe2_pct = 33.0
+    rueckkehr_pivot_tage_schwelle = 10
+    rueckkehr_tranche_pivot_pct = 50.0
+    rueckkehr_notbremse_verlust_pct = 7.0
 
 
     for key in aktive:
@@ -11920,37 +11925,53 @@ def _render_sell_strategy_hub() -> None:
                     gewinn_nachdenken_schwelle_bear_pct = st.number_input("Nachdenkschwelle Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_think_bear_{t}")
                     gewinn_teilverkauf_unten_bear_pct = st.number_input("Gewinnzone unten Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_lo_bear_{t}")
                     gewinn_teilverkauf_oben_bear_pct = st.number_input("Gewinnzone oben Bärisch (%)", min_value=0.0, max_value=300.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_hi_bear_{t}")
-            elif key == "drei_stufen_nach_kauf":
+            elif key == "rueckkehr_pivot":
                 st.markdown(
                     """
-**Strategie 1 – Drei-Stufen-Regel direkt nach Kauf (Kap. 5.3 / 6.4):**
-- Schützt direkt nach dem Einstieg vor gescheiterten Ausbrüchen.
-- Nur aktiv, solange die Position noch **keinen nennenswerten Gewinn** aufgebaut hat.
-- **Stufe 1:** Schluss unter Tief des Ausbruchstags → Teilverkauf.
-- **Stufe 2:** Schluss unter Tief des Vortags → weiterer Teilverkauf.
-- **Stufe 3:** Verlust-Notbremse → Restposition sofort intraday schließen.
+**Strategie 14 – Rückkehr zum Ausbruchspunkt (Kap. 6.3):**
+- **Sicherheitslinie 1:** Schluss unter Tief Tag 1 → Teilverkauf (bei erhöhtem Volumen größere Tranche).
+- **Sicherheitslinie 2:** Schluss unter Tief Tag 0 → weiterer Teilverkauf.
+- **Zeitkomponente:** Bleibt die Aktie X Handelstage in Folge unter dem Pivot → Signal wegen ausbleibender Rückeroberung.
+- **Notbremse:** Bei Erreichen der Verlustschwelle Restposition sofort intraday schließen.
                     """
                 )
                 c1, c2 = st.columns(2)
                 with c1:
-                    drei_stufen_max_gewinn_aktiv_pct = st.number_input(
-                        "Max. Gewinn für Aktivität (%)", min_value=0.0, max_value=50.0, value=8.0, step=0.5,
-                        key=f"strat_hub_three_stage_max_gain_{t}",
-                        help="Ab einem höheren Gewinn wird Strategie 1 deaktiviert, um nur die frühe Nachkauf-Phase abzudecken.",
+                    rueckkehr_tranche_stufe1_pct = st.number_input(
+                        "Tranche Sicherheitslinie 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
+                        key=f"strat_hub_rueckkehr_tranche_1_{t}",
+                        help="Standard-Tranche bei Schluss unter Tief Tag 1.",
                     )
-                    drei_stufen_notbremse_verlust_pct = st.number_input(
+                    rueckkehr_tranche_stufe1_volumen_pct = st.number_input(
+                        "Tranche Sicherheitslinie 1 bei Volumen (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0,
+                        key=f"strat_hub_rueckkehr_tranche_1_vol_{t}",
+                        help="Erhöhte Tranche, wenn die Volumenquote die Schwelle erreicht.",
+                    )
+                    rueckkehr_volumen_schwelle = st.number_input(
+                        "Volumenquoten-Schwelle", min_value=0.5, max_value=10.0, value=1.5, step=0.1,
+                        key=f"strat_hub_rueckkehr_vol_schwelle_{t}",
+                        help="Ab dieser Volumenquote (heutiges Volumen / 50-Tage-Durchschnitt) wird Tranche 1 erhöht.",
+                    )
+                    rueckkehr_notbremse_verlust_pct = st.number_input(
                         "Notbremse Verlust (%)", min_value=1.0, max_value=30.0, value=7.0, step=0.5,
-                        key=f"strat_hub_three_stage_stop_loss_{t}",
+                        key=f"strat_hub_rueckkehr_notbremse_{t}",
                         help="Bei diesem Verlust (P&L) wird die Restposition sofort intraday geschlossen.",
                     )
                 with c2:
-                    drei_stufen_tranche_stufe1_pct = st.number_input(
-                        "Tranche Stufe 1 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
-                        key=f"strat_hub_three_stage_tranche_1_{t}",
+                    rueckkehr_tranche_stufe2_pct = st.number_input(
+                        "Tranche Sicherheitslinie 2 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
+                        key=f"strat_hub_rueckkehr_tranche_2_{t}",
+                        help="Tranche bei Schluss unter Tief Tag 0.",
                     )
-                    drei_stufen_tranche_stufe2_pct = st.number_input(
-                        "Tranche Stufe 2 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0,
-                        key=f"strat_hub_three_stage_tranche_2_{t}",
+                    rueckkehr_pivot_tage_schwelle = int(st.number_input(
+                        "Tage unter Pivot", min_value=1, max_value=60, value=10, step=1,
+                        key=f"strat_hub_rueckkehr_pivot_tage_{t}",
+                        help="Anzahl Handelstage in Folge unter dem Pivot, ab der die Zeitkomponente auslöst.",
+                    ))
+                    rueckkehr_tranche_pivot_pct = st.number_input(
+                        "Tranche Zeitkomponente Pivot (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0,
+                        key=f"strat_hub_rueckkehr_pivot_tranche_{t}",
+                        help="Tranche, wenn die Aktie X Handelstage in Folge unter dem Pivot bleibt.",
                     )
             elif key == "einfache_verluststufen":
                 c1, c2, c3 = st.columns(3)
@@ -12247,10 +12268,13 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
             "notbremse_verlust_schwelle_baerisch_pct": float(notbremse_verlust_schwelle_baerisch_pct),
             "notbremse_verlust_schwelle_unsicher_pct": float(notbremse_verlust_schwelle_unsicher_pct),
             "notbremse_verlust_schwelle_bullisch_pct": float(notbremse_verlust_schwelle_bullisch_pct),
-            "drei_stufen_max_gewinn_aktiv_pct": float(drei_stufen_max_gewinn_aktiv_pct),
-            "drei_stufen_tranche_stufe1_pct": float(drei_stufen_tranche_stufe1_pct),
-            "drei_stufen_tranche_stufe2_pct": float(drei_stufen_tranche_stufe2_pct),
-            "drei_stufen_notbremse_verlust_pct": float(drei_stufen_notbremse_verlust_pct),
+            "rueckkehr_tranche_stufe1_pct": float(rueckkehr_tranche_stufe1_pct),
+            "rueckkehr_tranche_stufe1_volumen_pct": float(rueckkehr_tranche_stufe1_volumen_pct),
+            "rueckkehr_volumen_schwelle": float(rueckkehr_volumen_schwelle),
+            "rueckkehr_tranche_stufe2_pct": float(rueckkehr_tranche_stufe2_pct),
+            "rueckkehr_pivot_tage_schwelle": int(rueckkehr_pivot_tage_schwelle),
+            "rueckkehr_tranche_pivot_pct": float(rueckkehr_tranche_pivot_pct),
+            "rueckkehr_notbremse_verlust_pct": float(rueckkehr_notbremse_verlust_pct),
             "gewinn_nachdenken_schwelle_bull_pct": float(gewinn_nachdenken_schwelle_bull_pct),
             "gewinn_teilverkauf_unten_bull_pct": float(max(gewinn_teilverkauf_unten_bull_pct, gewinn_nachdenken_schwelle_bull_pct)),
             "gewinn_teilverkauf_oben_bull_pct": float(max(gewinn_teilverkauf_oben_bull_pct, gewinn_teilverkauf_unten_bull_pct, gewinn_nachdenken_schwelle_bull_pct)),

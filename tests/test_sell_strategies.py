@@ -18,7 +18,6 @@ from sell_strategies import (
     strategie_ma_abstand,
     strategie_drawdown_vom_peak,
     strategie_gewinn_in_stufen,
-    strategie_drei_stufen_nach_kauf,
 )
 
 
@@ -61,28 +60,31 @@ def test_notbremse_custom_thresholds_from_setup():
     assert any("Verlustgrenze -6%" in s.get("begruendung", "") for s in res["alle_signale"])
 
 
-def test_drei_stufen_nach_kauf_ist_bei_hohem_gewinn_inaktiv():
-    p = Position("T", 100, "2026-01-01", 10, tief_tag_1=98, tief_tag_0=96)
-    d = make_df([100, 109])  # +9%
-    sigs = strategie_drei_stufen_nach_kauf(p, d, max_gewinn_aktiv_pct=8.0)
-    assert sigs == []
-
-
-def test_drei_stufen_nach_kauf_custom_setup_wird_uebernommen():
+def test_rueckkehr_pivot_custom_setup_wird_uebernommen():
     p = Position("T", 100, "2026-01-01", 10, tief_tag_1=99, tief_tag_0=98)
     d = make_df([100, 97])  # unter Tag-1 und Tag-0
     res = verkaufs_empfehlung_gesamt(
-        p, d, d, None, None, "Unsicher", "Neutral", ["drei_stufen_nach_kauf"],
+        p, d, d, None, None, "Unsicher", "Neutral", ["rueckkehr_pivot"],
         {
-            "drei_stufen_max_gewinn_aktiv_pct": 12.0,
-            "drei_stufen_tranche_stufe1_pct": 25.0,
-            "drei_stufen_tranche_stufe2_pct": 40.0,
-            "drei_stufen_notbremse_verlust_pct": 6.0,
+            "rueckkehr_tranche_stufe1_pct": 25.0,
+            "rueckkehr_tranche_stufe2_pct": 40.0,
+            "rueckkehr_notbremse_verlust_pct": 6.0,
         },
     )
     sigs = res["alle_signale"]
     assert any(s["name"] == "Schluss unter Tief Ausbruchstag" and s["tranche_pct"] == 25 for s in sigs)
     assert any(s["name"] == "Schluss unter Tief Vortag" and s["tranche_pct"] == 40 and s["naechste_marke"] == 94.0 for s in sigs)
+
+
+def test_rueckkehr_pivot_notbremse_bei_max_verlust():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 92])  # -8% < -7% Default-Notbremse
+    sigs = strategie_rueckkehr_pivot(p, d)
+    notbremse = [s for s in sigs if s["trigger_typ"] == "intraday"]
+    assert notbremse
+    assert notbremse[0]["tranche_pct"] == 100
+
+
 def test_gewinn_in_stufen_default_bulkowski_bullisch():
     p = Position("T", 100, "2026-01-01", 10)
     d = make_df([100, 125])
