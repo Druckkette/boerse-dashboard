@@ -65,6 +65,53 @@ class SellDecisionMetricsTest(unittest.TestCase):
         self.assertTrue(result["auto_checkboxes"]["warning_checkboxes"]["lower_lows_no_rebound"])
         self.assertIn("tiefere Tagestiefs", result["auto_checkboxes"]["reasons"]["lower_lows_no_rebound"])
 
+    def test_pivot_date_overrides_buy_date_for_pivot_defaults(self):
+        dates, price_frame, benchmark_frame = _base_frames()
+        # buy_date later than pivot_date; ensure low_day_1 follows pivot_date not buy_date.
+        buy_idx = 30
+        pivot_idx = 20
+        # Mark the day at pivot_idx and pivot_idx-1 with distinctive Lows to verify selection.
+        price_frame.iloc[pivot_idx, price_frame.columns.get_loc("Low")] = 42.0
+        price_frame.iloc[pivot_idx - 1, price_frame.columns.get_loc("Low")] = 41.0
+
+        result = build_sell_decision_metrics_payload(
+            ticker="TST",
+            buy_date=dates[buy_idx],
+            buy_price=float(price_frame["Close"].iloc[buy_idx]),
+            shares=1,
+            price_frame=price_frame,
+            benchmark_frame=benchmark_frame,
+            pivot_date=dates[pivot_idx],
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["manual_defaults"]["low_day_1"], 42.0)
+        self.assertEqual(result["manual_defaults"]["low_day_0"], 41.0)
+        # pivot_default = highest High in the 30 sessions BEFORE pivot_date.
+        pre_pivot_high_max = float(price_frame["High"].iloc[:pivot_idx].tail(30).max())
+        self.assertEqual(result["manual_defaults"]["pivot"], pre_pivot_high_max)
+        self.assertEqual(result["pivot_date"], dates[pivot_idx].strftime("%Y-%m-%d"))
+
+    def test_pivot_date_omitted_falls_back_to_buy_date(self):
+        dates, price_frame, benchmark_frame = _base_frames()
+        buy_idx = 30
+        price_frame.iloc[buy_idx, price_frame.columns.get_loc("Low")] = 77.0
+        price_frame.iloc[buy_idx - 1, price_frame.columns.get_loc("Low")] = 76.0
+
+        result = build_sell_decision_metrics_payload(
+            ticker="TST",
+            buy_date=dates[buy_idx],
+            buy_price=float(price_frame["Close"].iloc[buy_idx]),
+            shares=1,
+            price_frame=price_frame,
+            benchmark_frame=benchmark_frame,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["manual_defaults"]["low_day_1"], 77.0)
+        self.assertEqual(result["manual_defaults"]["low_day_0"], 76.0)
+        self.assertEqual(result["pivot_date"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

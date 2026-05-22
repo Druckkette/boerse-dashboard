@@ -1988,7 +1988,7 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: float, benchmark_ticker: str = "SPY", currency: str = "", cache_buster: int = 0) -> dict:
+def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: float, benchmark_ticker: str = "SPY", currency: str = "", cache_buster: int = 0, pivot_date=None) -> dict:
     """Load cached Yahoo data and build reusable metrics for the sell-decision area."""
     _ = cache_buster
     norm_ticker = _normalize_single_ticker(ticker)
@@ -1999,10 +1999,17 @@ def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: 
         buy_ts = pd.Timestamp(buy_date).normalize()
     except Exception:
         return {"ok": False, "error": "Ungültiges Einstiegsdatum.", "ticker": norm_ticker, "benchmark_ticker": norm_benchmark, "metrics": {}, "manual_defaults": {}, "as_of": ""}
+    pivot_ts = None
+    if pivot_date not in (None, ""):
+        try:
+            pivot_ts = pd.Timestamp(pivot_date).normalize()
+        except Exception:
+            pivot_ts = None
 
     end = datetime.now(timezone.utc).replace(tzinfo=None)
     # 420 calendar days usually covers >=250 trading days; include pre-buy data for pivot defaults.
-    start = min(end - timedelta(days=420), buy_ts.to_pydatetime() - timedelta(days=60))
+    earliest_ref = pivot_ts.to_pydatetime() if pivot_ts is not None else buy_ts.to_pydatetime()
+    start = min(end - timedelta(days=420), earliest_ref - timedelta(days=60))
     frames = _bulk_download_ohlc((norm_ticker, norm_benchmark), start, end)
     price_frame = frames.get(norm_ticker, pd.DataFrame())
     benchmark_frame = frames.get(norm_benchmark, pd.DataFrame())
@@ -2040,6 +2047,7 @@ def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: 
         currency=market_currency,
         pnl_abs_eur=pnl_abs_eur,
         fx_rate_to_eur=fx_rate_to_eur,
+        pivot_date=pivot_ts,
     )
 
 
@@ -2270,6 +2278,7 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
             "current_price": price,
             "current_value": current_value,
             "buy_date": pos.get("buy_date", ""),
+            "pivot_tag": pos.get("pivot_tag", ""),
             "currency": pos.get("currency", "EUR"),
             "market_currency": market_currency,
             "note": pos.get("note", ""),
@@ -2321,6 +2330,7 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
             "current_price": 1.0,
             "current_value": cash_value,
             "buy_date": "",
+            "pivot_tag": "",
             "currency": "EUR",
             "market_currency": "EUR",
             "note": "Freie Liquidität",
@@ -3127,15 +3137,18 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             overview = invested_df[[
                 "ticker", "name", "shares", "entry", "current_price", "current_value",
                 "pnl_pct", "stop_pct", "stop_price", "stop_distance_pct",
-                "atr_pct", "beta", "risk_contribution", "max_position_value",
+                "atr_pct", "beta", "risk_contribution", "max_position_value", "pivot_tag",
             ]].copy().rename(columns={
                 "ticker": "Ticker", "name": "Name", "shares": "Stück", "entry": "Einstand",
                 "current_price": "Aktuell", "current_value": "Wert EUR",
                 "pnl_pct": "P&L %", "stop_pct": "Stopp %", "stop_price": "Stoppkurs",
                 "stop_distance_pct": "Abstand Stop %", "atr_pct": "ATR %",
                 "beta": "Beta", "risk_contribution": "Risikobeitrag",
-                "max_position_value": "Max. Wert",
+                "max_position_value": "Max. Wert", "pivot_tag": "Pivot-Tag",
             }).sort_values("Wert EUR", ascending=False)
+            overview["Pivot-Tag"] = overview["Pivot-Tag"].apply(
+                lambda v: pd.Timestamp(v).strftime("%d.%m.%Y") if v not in (None, "", pd.NaT) and pd.notna(pd.to_datetime(v, errors="coerce")) else "—"
+            )
             depot_names = _ticker_display_names(tuple(overview["Ticker"].tolist()))
             overview["Name"] = overview.apply(
                 lambda row: row["Name"] if str(row.get("Name", "") or "").strip() and str(row.get("Name", "")).upper() != str(row["Ticker"]).upper()
@@ -3159,6 +3172,7 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     "Beta": st.column_config.NumberColumn("Beta", format="%.2f"),
                     "Risikobeitrag": st.column_config.NumberColumn("Risikobeitrag", format="%.3f"),
                     "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f €"),
+                    "Pivot-Tag": st.column_config.TextColumn("Pivot-Tag", help="Tag 1 des Ausbruchs. Wird in den Verkaufs-Strategien als Referenz für Tag 1 und Tag 0 verwendet. Fallback: Kauftag."),
                 },
             )
             st.caption("Mehrfach-Löschen: Positionen auswählen und gesammelt entfernen. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
@@ -3233,7 +3247,12 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
             pivot_tag_default = pd.Timestamp((selected_pos or {}).get("pivot_tag")).date() if (selected_pos or {}).get("pivot_tag") else buy_date
         except Exception:
             pivot_tag_default = buy_date
-        pivot_tag = st.date_input("Pivot-Tag", value=pivot_tag_default, key="pf_pivot_tag")
+        pivot_tag = st.date_input(
+            "Pivot-Tag",
+            value=pivot_tag_default,
+            key="pf_pivot_tag",
+            help="Ausbruchstag (Tag 1). Wird im Live-Monitor als Referenz für Tag 1 und Tag 0 (Vortag) genutzt. Bleibt der Wert leer/identisch zum Kauftag, wird der Kauftag als Fallback verwendet.",
+        )
     with curr_col:
         curr_default = (selected_pos or {}).get("currency", "EUR")
         currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if curr_default != "USD" else 1, key="pf_currency")
@@ -10696,17 +10715,6 @@ def _sell_monitor_auto_checkbox_data(metrics_payload: dict) -> tuple[dict, dict,
     return strength, warning, reasons
 
 
-def _sell_monitor_checkbox_label(label: str, key: str, auto_values: dict) -> str:
-    return f"{label} · automatisch erkannt" if bool((auto_values or {}).get(key, False)) else label
-
-
-def _sell_monitor_sync_auto_checkbox(widget_key: str, is_auto: bool) -> None:
-    # Streamlit keeps checkbox values in session_state once a key exists.
-    # Explicitly setting auto-detected keys before rendering keeps refreshed
-    # Yahoo metrics visible instead of leaving stale unchecked boxes in place.
-    if is_auto:
-        st.session_state[widget_key] = True
-
 def _sell_monitor_fmt_money(value, currency: str = "") -> str:
     if value is None or pd.isna(value):
         return "—"
@@ -10847,38 +10855,6 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
             """,
             unsafe_allow_html=True,
         )
-    contributors: list[tuple[str, int, str, str]] = []
-    for sig in (result.get("killer_signals", []) or []) + (result.get("tranche_signals", []) or []) + (result.get("warning_signals", []) or []):
-        if not isinstance(sig, dict):
-            continue
-        contribution = int(sig.get("contribution_percent", 0) or 0)
-        if contribution <= 0:
-            continue
-        strat = str(sig.get("strategy_key") or "lm_native").strip() or "lm_native"
-        sig_label = str(sig.get("label") or "Signal")
-        kind = "Warnsignal" if strat in LM_HUB_WARNUNGEN else "Strategie"
-        contributors.append((strat, contribution, sig_label, kind))
-    contributors.sort(key=lambda x: -x[1])
-    breakdown_html = ""
-    if contributors:
-        def _row(strat: str, pct_c: int, sig_label: str, kind: str) -> str:
-            color = "#9333ea" if kind == "Warnsignal" else "#3730a3"
-            tag_bg = "#faf5ff" if kind == "Warnsignal" else "#e0e7ff"
-            return (
-                f'<li style="margin:2px 0;">'
-                f'<span style="display:inline-block;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:800;background:{tag_bg};color:{color};margin-right:4px;">{kind}</span>'
-                f'<span style="font-weight:700;color:{color};">{html.escape(strat)}</span> · {pct_c}% — {html.escape(sig_label)}'
-                f'</li>'
-            )
-        rows = "".join(_row(s, p, l, k) for s, p, l, k in contributors[:8])
-        more = f'<li style="margin:2px 0;color:#64748b;">… und {len(contributors) - 8} weitere</li>' if len(contributors) > 8 else ""
-        breakdown_html = (
-            f'<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">'
-            f'<div class="card-label" style="margin-bottom:4px;">Strategie-Aufschlüsselung</div>'
-            f'<ul style="margin:0;padding-left:18px;font-size:.78rem;line-height:1.45;color:#334155;">{rows}{more}</ul>'
-            f'</div>'
-        )
-
     st.markdown(
         f"""
         <div class="summary-hero sell-rec-hero" style="background:{bg};border-color:{border};border-left:5px solid {tone};margin-bottom:14px;">
@@ -10889,7 +10865,6 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
           </div>
           <div style="margin-top:8px;color:#334155;font-size:.9rem;line-height:1.45;">{html.escape(str(result.get('explanation_short', '')))}</div>
           <div class="sell-mode-pill">{html.escape(str(result.get('sell_mode') or ''))}{(' · ' + html.escape(str(result.get('sell_style')))) if result.get('sell_style') else ''}</div>
-          {breakdown_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -10903,16 +10878,17 @@ def _render_sell_monitor_recommendation(result: dict, metrics: dict, shares: flo
     tranche_value_eur = tranche_value_market if str(market_currency).upper() == "EUR" else _usd_to_eur(tranche_value_market)
     cols = st.columns(4)
     cols[0].metric("Jetzt verkaufen", f"{shares_to_sell:,.2f} Stk.".replace(",", "."))
-    cols[1].metric("Verbleiben", f"{remaining_shares:,.2f} Stk.".replace(",", "."))
-    cols[2].metric("Tranche EUR", _format_eur(tranche_value_eur if not np.isnan(tranche_value_eur) else 0.0))
+    cols[1].metric("Tranche EUR", _format_eur(tranche_value_eur if not np.isnan(tranche_value_eur) else 0.0))
+    cols[2].metric("Verbleiben", f"{remaining_shares:,.2f} Stk.".replace(",", "."))
     cols[3].metric("Rest nach Verkauf", f"{float(result.get('remaining_after_sale_percent', 0.0) or 0.0):.0f}%")
 
-    action_cols = st.columns(4)
+    action_cols = st.columns(3)
     action_cols[0].metric("Stopp-Marke Restposition", _sell_monitor_fmt_money(result.get("stop_price"), market_currency))
     action_cols[1].metric("Nächste Tranche", _sell_monitor_fmt_money(result.get("next_tranche_trigger_price"), market_currency))
     action_cols[2].metric("Vollausstieg-Marke", _sell_monitor_fmt_money(result.get("full_exit_price"), market_currency))
-    with action_cols[3]:
-        st.markdown('<div class="info-card" style="min-height:91px;padding:12px;"><div class="card-label">Wieder aufstocken</div>' + html.escape(str(result.get("add_again_condition") or "—")) + '</div>', unsafe_allow_html=True)
+    add_again = str(result.get("add_again_condition") or "").strip()
+    if add_again and add_again != "—":
+        st.caption(f"**Wieder aufstocken:** {add_again}")
 
 def _sell_monitor_primary_signal(result: dict) -> str:
     for group in ("killer_signals", "tranche_signals", "watch_signals"):
@@ -11117,15 +11093,12 @@ def _render_sell_decision_live_monitor() -> None:
         st.info("Noch keine offenen Portfolio-Positionen vorhanden. Lege zuerst im Depot oder im Nach-Kauf-Check eine Position an.")
         return
 
-    st.markdown("#### 📡 Live-Monitor")
-    st.caption("Analysiert eine einzelne offene Position mit Yahoo-Kennzahlen, gespeicherten manuellen Daten und der Verkaufs-Regel-Engine.")
     ticker_options = list(dict.fromkeys(_normalize_single_ticker(p.get("ticker", "")) for p in positions if _normalize_single_ticker(p.get("ticker", ""))))
-    top_cols = st.columns([2.2, 1])
-    with top_cols[0]:
-        selected_ticker = st.selectbox("Offene Position", ticker_options, key="sell_live_ticker")
-    with top_cols[1]:
-        st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        if st.button("Yahoo-Daten neu laden", key="sell_live_reload", width="stretch"):
+    head_cols = st.columns([3, 1])
+    with head_cols[0]:
+        selected_ticker = st.selectbox("Offene Position", ticker_options, key="sell_live_ticker", label_visibility="collapsed")
+    with head_cols[1]:
+        if st.button("🔄 Yahoo neu laden", key="sell_live_reload", width="stretch"):
             st.session_state["sell_live_cache_buster"] = st.session_state.get("sell_live_cache_buster", 0) + 1
             st.rerun()
 
@@ -11137,6 +11110,13 @@ def _render_sell_decision_live_monitor() -> None:
     except Exception:
         st.error("Die gespeicherte Position hat kein gültiges Kaufdatum.")
         return
+    pivot_tag_raw = position.get("pivot_tag")
+    pivot_tag = None
+    if pivot_tag_raw:
+        try:
+            pivot_tag = pd.Timestamp(pivot_tag_raw).date()
+        except Exception:
+            pivot_tag = None
     stored_currency = str(position.get("currency", "EUR") or "EUR").upper()
     stored_buy_price = _safe_float(position.get("buy_price"), np.nan)
     if np.isnan(stored_buy_price) or stored_buy_price <= 0:
@@ -11155,6 +11135,7 @@ def _render_sell_decision_live_monitor() -> None:
             metrics_payload = load_sell_decision_metrics(
                 selected_ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency,
                 cache_buster=st.session_state.get("sell_live_cache_buster", 0),
+                pivot_date=pivot_tag,
             )
             chart_df = load_sell_decision_chart_frame(selected_ticker, buy_date, cache_buster=st.session_state.get("sell_live_cache_buster", 0))
         except Exception as exc:
@@ -11167,110 +11148,52 @@ def _render_sell_decision_live_monitor() -> None:
 
     manual_data = get_position_manual_sell_data(selected_ticker)
     defaults = metrics_payload.get("manual_defaults", {}) or {}
-    # Fill empty manual fields from measured defaults for display; save only on user action.
-    display_manual = dict(manual_data)
-    for key in ["pivot", "low_day_1", "low_day_0"]:
-        if display_manual.get(key) in (None, ""):
-            display_manual[key] = defaults.get(key)
     metrics = metrics_payload.get("metrics", {}) or {}
     tranche_log = load_tranche_log()
 
-    # Strategy setup (Hub-Engine parameters). Render first so the values are available
-    # for the recommendation hero on the same render pass.
+    # Compact stammdaten line
+    pivot_caption = pd.Timestamp(pivot_tag).strftime("%d.%m.%Y") if pivot_tag else "Kauftag (Fallback)"
+    st.caption(
+        f"**{selected_ticker}** · {shares:,.2f} Stk.".replace(",", ".")
+        + f" · gekauft {pd.Timestamp(buy_date).strftime('%d.%m.%Y')} zu {_sell_monitor_fmt_money(stored_buy_price, stored_currency)}"
+        + f" · Pivot-Tag: {pivot_caption}"
+        + f" · Markt {market_currency}"
+    )
+
+    # Auto-only checkboxes — derive once for use in the form and read-only display.
+    auto_strength, auto_warning, auto_reasons = _sell_monitor_auto_checkbox_data(metrics_payload)
+    auto_strength = dict(auto_strength)
+    auto_warning = dict(auto_warning)
+    auto_reasons = dict(auto_reasons)
+    industry_status_current = manual_data.get("industry_group_status", "Neutral")
+    if industry_status_current not in SELL_DECISION_INDUSTRY_GROUP_STATUSES:
+        industry_status_current = "Neutral"
+    if industry_status_current == "Stark":
+        auto_strength["strong_industry_group"] = True
+        auto_reasons["strong_industry_group"] = "Industriegruppe im Formular als stark eingestuft"
+    if industry_status_current == "Schwach":
+        auto_warning["weak_industry_group"] = True
+        auto_reasons["weak_industry_group"] = "Industriegruppe im Formular als schwach eingestuft"
+
+    # Rules engine uses only auto-derived checkbox state; manual overrides are no longer accepted.
+    manual_for_rules = dict(manual_data)
+    manual_for_rules["strength_checkboxes"] = {k: bool(v) for k, v in auto_strength.items()}
+    manual_for_rules["warning_checkboxes"] = {k: bool(v) for k, v in auto_warning.items()}
+    # Clear deprecated manual price fields so manual_defaults from metrics drive the rules.
+    for key in ("pivot", "low_day_1", "low_day_0"):
+        manual_for_rules[key] = None
+
+    # Strategy setup must be rendered before evaluate so live widget changes flow into the rules.
     active_setup = _render_sell_monitor_setup_panel(selected_ticker, manual_data)
     metrics_payload["lm_setup"] = active_setup
 
-    result_preview = evaluate_sell_decision(metrics_payload, display_manual, tranche_log)
-    _render_sell_monitor_recommendation(result_preview, metrics, shares, market_currency)
-    _render_sell_monitor_tranche_log(selected_ticker, result_preview, metrics, shares, market_currency, tranche_log)
-
-    st.markdown("#### Stammdaten & manuelle Overrides")
-    auto_cols = st.columns(5)
-    auto_cols[0].metric("Ticker", selected_ticker)
-    auto_cols[1].metric("Stückzahl", f"{shares:,.2f}".replace(",", "."))
-    auto_cols[2].metric("Kaufdatum", pd.Timestamp(buy_date).strftime("%d.%m.%Y"))
-    auto_cols[3].metric("Einstand", _sell_monitor_fmt_money(stored_buy_price, stored_currency))
-    auto_cols[4].metric("Yahoo-Währung", market_currency)
-
-    with st.form(f"sell_monitor_manual_{selected_ticker}"):
-        m1, m2, m3, m4, m5, m6 = st.columns([1, 1, 1, 1.1, 1.1, 1.4])
-        pivot = m1.number_input("Pivot", min_value=0.0, value=float(display_manual.get("pivot") or 0.0), step=0.01, key=f"sell_pivot_{selected_ticker}")
-        low_day_1 = m2.number_input("Tief Tag 1", min_value=0.0, value=float(display_manual.get("low_day_1") or 0.0), step=0.01, key=f"sell_low1_{selected_ticker}")
-        low_day_0 = m3.number_input("Tief Tag 0", min_value=0.0, value=float(display_manual.get("low_day_0") or 0.0), step=0.01, key=f"sell_low0_{selected_ticker}")
-        market_environment = m4.selectbox("Marktumfeld", ["Bullisch", "Unsicher", "Bärisch"], index=["Bullisch", "Unsicher", "Bärisch"].index(display_manual.get("market_environment", "Unsicher") if display_manual.get("market_environment", "Unsicher") in ["Bullisch", "Unsicher", "Bärisch"] else "Unsicher"), key=f"sell_env_{selected_ticker}")
-        industry_status = m5.selectbox("Industriegruppe", ["Stark", "Neutral", "Schwach"], index=["Stark", "Neutral", "Schwach"].index(display_manual.get("industry_group_status", "Neutral") if display_manual.get("industry_group_status", "Neutral") in ["Stark", "Neutral", "Schwach"] else "Neutral"), key=f"sell_ind_{selected_ticker}")
-        personality_changed = m6.checkbox("Persönlichkeits-Check: Aktie hat ihre Persönlichkeit geändert", value=bool(display_manual.get("personality_changed", False)), key=f"sell_personality_{selected_ticker}")
-
-        st.markdown("##### Verhaltenscheck")
-        s_col, w_col = st.columns(2)
-        strength_values = dict(display_manual.get("strength_checkboxes", {}) or {})
-        warning_values = dict(display_manual.get("warning_checkboxes", {}) or {})
-        auto_strength, auto_warning, auto_reasons = _sell_monitor_auto_checkbox_data(metrics_payload)
-        auto_strength = dict(auto_strength)
-        auto_warning = dict(auto_warning)
-        auto_reasons = dict(auto_reasons)
-        if industry_status == "Stark":
-            auto_strength["strong_industry_group"] = True
-            auto_reasons["strong_industry_group"] = "Industriegruppe im Formular als stark eingestuft"
-        if industry_status == "Schwach":
-            auto_warning["weak_industry_group"] = True
-            auto_reasons["weak_industry_group"] = "Industriegruppe im Formular als schwach eingestuft"
-        current_for_breakout = _safe_float(metrics.get("current_price"), np.nan)
-        volume_ratio_for_breakout = _safe_float(metrics.get("volume_ratio_50"), np.nan)
-        if low_day_1 and not np.isnan(current_for_breakout) and current_for_breakout < low_day_1 and not np.isnan(volume_ratio_for_breakout) and volume_ratio_for_breakout > 1.2:
-            auto_warning["failed_breakout_high_volume"] = True
-            auto_reasons["failed_breakout_high_volume"] = f"Kurs unter Tief Tag 1 bei Volumenfaktor {volume_ratio_for_breakout:.2f}"
-        with s_col:
-            st.markdown('<div class="card-label" style="color:#16a34a;">Stärke-Signale</div>', unsafe_allow_html=True)
-            for key, label in SELL_MONITOR_STRENGTH_SIGNALS:
-                is_auto = bool(auto_strength.get(key, False))
-                help_text = str(auto_reasons.get(key, "")) if is_auto else None
-                widget_key = f"sell_strength_{selected_ticker}_{key}"
-                _sell_monitor_sync_auto_checkbox(widget_key, is_auto)
-                strength_values[key] = st.checkbox(
-                    _sell_monitor_checkbox_label(label, key, auto_strength),
-                    value=bool(strength_values.get(key, False) or is_auto),
-                    key=widget_key,
-                    help=help_text,
-                )
-        with w_col:
-            st.markdown('<div class="card-label" style="color:#dc2626;">Warnzeichen</div>', unsafe_allow_html=True)
-            for key, label in SELL_MONITOR_WARNING_SIGNALS:
-                is_auto = bool(auto_warning.get(key, False))
-                help_text = str(auto_reasons.get(key, "")) if is_auto else None
-                widget_key = f"sell_warn_{selected_ticker}_{key}"
-                _sell_monitor_sync_auto_checkbox(widget_key, is_auto)
-                warning_values[key] = st.checkbox(
-                    _sell_monitor_checkbox_label(label, key, auto_warning),
-                    value=bool(warning_values.get(key, False) or is_auto),
-                    key=widget_key,
-                    help=help_text,
-                )
-
-        saved = st.form_submit_button("💾 Verkaufsdaten für diesen Ticker speichern", type="primary", use_container_width=True)
-        if saved:
-            save_position_manual_sell_data(selected_ticker, {
-                "ticker": selected_ticker,
-                "pivot": pivot or None,
-                "low_day_1": low_day_1 or None,
-                "low_day_0": low_day_0 or None,
-                "market_environment": market_environment,
-                "industry_group_status": industry_status,
-                "personality_changed": personality_changed,
-                "strength_checkboxes": strength_values,
-                "warning_checkboxes": warning_values,
-            })
-            st.success("Verkaufsdaten gespeichert.")
-            st.rerun()
-
-    manual_for_rules = get_position_manual_sell_data(selected_ticker)
-    for key in ["pivot", "low_day_1", "low_day_0"]:
-        if manual_for_rules.get(key) in (None, ""):
-            manual_for_rules[key] = defaults.get(key)
-    tranche_log = load_tranche_log()
     result = evaluate_sell_decision(metrics_payload, manual_for_rules, tranche_log)
 
-    st.markdown("#### Kennzahlen")
+    # A. Empfehlung (Hero)
+    _render_sell_monitor_recommendation(result, metrics, shares, market_currency)
+
+    # B. Live-Kennzahlen
+    st.markdown("#### Live-Kennzahlen")
     current = _safe_float(metrics.get("current_price"), np.nan)
     rs_status = "—"
     rs_line = _safe_float(metrics.get("rs_line"), np.nan)
@@ -11287,8 +11210,84 @@ def _render_sell_decision_live_monitor() -> None:
     _render_change_cards(kpis)
     st.markdown(f'<div class="info-card"><div class="card-label">RS-Linien-Status</div><div style="font-size:1.1rem;font-weight:800;">{html.escape(rs_status)}</div><div class="mini-help">RS {rs_line:.4f} · 21-MA {_fmt_num(rs21)} · 50-MA {_fmt_num(rs50)}</div></div>' if not np.isnan(rs_line) else '<div class="info-card"><div class="card-label">RS-Linien-Status</div>—</div>', unsafe_allow_html=True)
 
+    # C. Aktive Signale
     st.markdown("#### Aktive Signale")
     _render_sell_monitor_signals(result)
+
+    # D. Automatisch erkannte Muster (read-only, nur aktive)
+    active_strength = [(k, label) for (k, label) in SELL_MONITOR_STRENGTH_SIGNALS if bool(auto_strength.get(k, False))]
+    active_warning = [(k, label) for (k, label) in SELL_MONITOR_WARNING_SIGNALS if bool(auto_warning.get(k, False))]
+    if active_strength or active_warning:
+        st.markdown("#### Automatisch erkannte Muster")
+        cols = st.columns(2)
+        with cols[0]:
+            st.markdown('<div class="card-label" style="color:#16a34a;">Stärke-Signale</div>', unsafe_allow_html=True)
+            if not active_strength:
+                st.markdown('<div class="mini-help">Keine aktiven Stärke-Signale.</div>', unsafe_allow_html=True)
+            for key, label in active_strength:
+                reason = str(auto_reasons.get(key, "")).strip()
+                reason_html = f'<div class="mini-help">{html.escape(reason)}</div>' if reason else ""
+                st.markdown(
+                    f'<div class="info-card" style="border-color:#bbf7d0;background:#f0fdf4;margin:6px 0;padding:8px 10px;">'
+                    f'<div style="font-weight:700;color:#16a34a;">✓ {html.escape(label)}</div>{reason_html}</div>',
+                    unsafe_allow_html=True,
+                )
+        with cols[1]:
+            st.markdown('<div class="card-label" style="color:#dc2626;">Warnzeichen</div>', unsafe_allow_html=True)
+            if not active_warning:
+                st.markdown('<div class="mini-help">Keine aktiven Warnsignale.</div>', unsafe_allow_html=True)
+            for key, label in active_warning:
+                reason = str(auto_reasons.get(key, "")).strip()
+                reason_html = f'<div class="mini-help">{html.escape(reason)}</div>' if reason else ""
+                st.markdown(
+                    f'<div class="info-card" style="border-color:#fecaca;background:#fef2f2;margin:6px 0;padding:8px 10px;">'
+                    f'<div style="font-weight:700;color:#dc2626;">⚠ {html.escape(label)}</div>{reason_html}</div>',
+                    unsafe_allow_html=True,
+                )
+
+    # E. Tranche-Log
+    with st.expander("📒 Tranche-Log", expanded=bool([t for t in tranche_log if _normalize_single_ticker(t.get("ticker", "")) == selected_ticker])):
+        _render_sell_monitor_tranche_log(selected_ticker, result, metrics, shares, market_currency, tranche_log)
+
+    # F. Marktumfeld & Selbsteinschätzung (manuell)
+    with st.expander("🧭 Marktumfeld & Selbsteinschätzung", expanded=False):
+        st.caption("Felder, die nicht automatisch ableitbar sind und die Empfehlung beeinflussen.")
+        with st.form(f"sell_monitor_manual_{selected_ticker}"):
+            m1, m2, m3 = st.columns([1.1, 1.1, 1.4])
+            market_environment = m1.selectbox(
+                "Marktumfeld",
+                ["Bullisch", "Unsicher", "Bärisch"],
+                index=["Bullisch", "Unsicher", "Bärisch"].index(manual_data.get("market_environment", "Unsicher") if manual_data.get("market_environment", "Unsicher") in ["Bullisch", "Unsicher", "Bärisch"] else "Unsicher"),
+                key=f"sell_env_{selected_ticker}",
+            )
+            industry_status = m2.selectbox(
+                "Industriegruppe",
+                ["Stark", "Neutral", "Schwach"],
+                index=["Stark", "Neutral", "Schwach"].index(industry_status_current),
+                key=f"sell_ind_{selected_ticker}",
+            )
+            personality_changed = m3.checkbox(
+                "Persönlichkeits-Check: Aktie hat ihre Persönlichkeit geändert",
+                value=bool(manual_data.get("personality_changed", False)),
+                key=f"sell_personality_{selected_ticker}",
+            )
+            saved = st.form_submit_button("💾 Selbsteinschätzung speichern", type="primary", use_container_width=True)
+            if saved:
+                save_position_manual_sell_data(selected_ticker, {
+                    "ticker": selected_ticker,
+                    "pivot": None,
+                    "low_day_1": None,
+                    "low_day_0": None,
+                    "market_environment": market_environment,
+                    "industry_group_status": industry_status,
+                    "personality_changed": personality_changed,
+                    "strength_checkboxes": {},
+                    "warning_checkboxes": {},
+                })
+                st.success("Selbsteinschätzung gespeichert.")
+                st.rerun()
+
+    # G. Diagnose & Chart
     _render_sell_monitor_diagnostics(selected_ticker, metrics_payload, manual_for_rules, tranche_log, chart_df, market_currency)
 
 
@@ -11333,7 +11332,14 @@ def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: 
         symbol_metrics = _portfolio_symbol_metrics(ticker) or {}
         market_currency = str(symbol_metrics.get("currency", stored_currency) or stored_currency).upper()
         metric_buy_price = _sell_monitor_buy_price_for_market(ticker, buy_price, stored_currency, buy_date, market_currency)
-        metrics_payload = load_sell_decision_metrics(ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency, cache_buster=cache_buster)
+        pivot_tag_raw = (position or {}).get("pivot_tag")
+        pivot_tag_for_metrics = None
+        if pivot_tag_raw:
+            try:
+                pivot_tag_for_metrics = pd.Timestamp(pivot_tag_raw).date()
+            except Exception:
+                pivot_tag_for_metrics = None
+        metrics_payload = load_sell_decision_metrics(ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency, cache_buster=cache_buster, pivot_date=pivot_tag_for_metrics)
         if not metrics_payload.get("ok"):
             base["Fehler"] = metrics_payload.get("error") or "Kennzahlen fehlen."
             return base
