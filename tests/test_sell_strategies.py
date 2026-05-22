@@ -665,3 +665,44 @@ def test_diagnose_unbekannter_key_liefert_fallback():
     d = make_df([100, 110])
     grund = diagnose_strategie_kein_signal("kein_existierender_key", p, d, d, None, None, "Bullisch", {})
     assert isinstance(grund, str) and len(grund) > 0
+
+
+def test_diagnose_groesster_einbruch_zeigt_gewinntag_nicht_als_verlust():
+    """Bei einem Gewinntag soll die Diagnose 'Gewinntag' / + statt 'Tagesverlust' ausgeben."""
+    idx = pd.date_range("2026-01-02", periods=20, freq="B")
+    # 19 Tage flach um 100, letzter Tag +4.72% (gain → close-to-close negative drop)
+    closes = [100.0] * 19 + [104.72]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [c * 1.001 for c in closes],
+        "low": [c * 0.999 for c in closes],
+        "close": closes,
+        "volume": [1000] * len(closes),
+    }, index=idx)
+    p = Position("T", 90.0, idx[0], 10)  # ~16% Gewinn → über min_pnl 10%
+    grund = diagnose_strategie_kein_signal(
+        "groesster_einbruch", p, d, None, None, None, "Bullisch", {},
+    )
+    assert "Gewinntag" in grund
+    assert "Tagesverlust" not in grund or grund.count("Tagesverlust") <= 1
+    assert "+4.72" in grund or "4.72" in grund
+
+
+def test_groesster_einbruch_vergleicht_nur_seit_einstieg():
+    """Pre-Einstieg-Drops dürfen den 'größten Einbruch' nicht maskieren."""
+    idx = pd.date_range("2025-01-02", periods=60, freq="B")
+    # Erst Riesendrop -20% (vor Einstieg), dann flach, dann am Ende -5% (seit Einstieg größter Drop)
+    closes = [100.0] * 30 + [80.0] + [120.0] * 28 + [114.0]
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [c * 1.001 for c in closes],
+        "low": [c * 0.999 for c in closes],
+        "close": closes,
+        "volume": [1000] * len(closes),
+    }, index=idx)
+    # Einstieg nach dem großen Drop
+    p = Position("T", 100.0, idx[35], 10)
+    from sell_strategies import strategie_groesster_einbruch
+    sigs = strategie_groesster_einbruch(p, d, None, min_pnl_pct=10.0, min_tagesverlust_pct=3.0)
+    # Heute ist der größte Einbruch seit Einstieg → Signal soll feuern
+    assert any("Tagesverlust seit Beginn" in s["name"] or "hohes Volumen" in s["name"] for s in sigs)

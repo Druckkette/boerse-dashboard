@@ -117,6 +117,29 @@ def _linear_marke(points, idx):
     n = max(1, len(points)-1)
     return y0 + (y1-y0) * (n/n)
 
+
+def _seit_einstieg(daten: pd.DataFrame, position: Position) -> pd.DataFrame:
+    """Schneidet ``daten`` auf den Zeitraum ab Einstiegsdatum der Position.
+
+    Wird von Strategien genutzt, die explizit „seit Einstieg" rechnen sollen
+    (z. B. größter Einbruch). Indikator-basierte Strategien (MAs, ATR) erhalten
+    weiterhin die vollständige Historie, damit gleitende Durchschnitte
+    berechenbar sind.
+    """
+    if daten is None or len(daten) == 0 or position.einstiegsdatum is None:
+        return daten
+    try:
+        idx = pd.to_datetime(daten.index)
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        einstieg = pd.Timestamp(position.einstiegsdatum)
+        if getattr(einstieg, "tzinfo", None) is not None:
+            einstieg = einstieg.tz_localize(None)
+        gefiltert = daten.loc[idx >= einstieg]
+        return gefiltert if len(gefiltert) > 0 else daten
+    except Exception:
+        return daten
+
 # Strategien 2-23
 
 def strategie_notbremse_verlust(
@@ -474,15 +497,19 @@ def strategie_groesster_einbruch(
     tagesvol_ratio_schwelle: float = 1.5,
     wochenvol_ratio_schwelle: float = 1.3,
 ):
-    if pnl_pct(position,daten)<=float(min_pnl_pct) or len(daten)<4:return []
-    out=[]; d=(daten["close"].shift(1)-daten["close"])/daten["close"].shift(1)*100; h=float(d.iloc[-1]); mx=float(d.iloc[1:-1].max()) if len(d)>3 else 0; vr=vol_verhaeltnis(daten)
+    if pnl_pct(position,daten)<=float(min_pnl_pct):return []
+    # „Seit Einstieg" — Vergleich der Tages-/Wochenverluste nur ab Kaufdatum.
+    daten_seit = _seit_einstieg(daten, position)
+    wochen_seit = _seit_einstieg(wochen_daten, position) if wochen_daten is not None else None
+    if len(daten_seit)<4:return []
+    out=[]; d=(daten_seit["close"].shift(1)-daten_seit["close"])/daten_seit["close"].shift(1)*100; h=float(d.iloc[-1]); mx=float(d.iloc[1:-1].max()) if len(d)>3 else 0; vr=vol_verhaeltnis(daten)
     if h>=mx and h>float(min_tagesverlust_pct):
         if vr>=float(tagesvol_ratio_schwelle):
-            out.append(_signal("Größter Tagesverlust + hohes Volumen",50,"schluss",True,tagestief(daten),"Kap. 6.3 Größter Einbruch","Spätphasen-Warnsignal mit Volumen"))
+            out.append(_signal("Größter Tagesverlust + hohes Volumen",50,"schluss",True,tagestief(daten_seit),"Kap. 6.3 Größter Einbruch","Spätphasen-Warnsignal mit Volumen"))
         else:
-            out.append(_signal("Größter Tagesverlust seit Beginn",33,"schluss",True,tagestief(daten),"Kap. 6.3","Defensive Reduktion"))
-    if len(wochen_daten)>=12:
-        w=(wochen_daten["close"].shift(1)-wochen_daten["close"])/wochen_daten["close"].shift(1)*100; cur=float(w.iloc[-1]); mxw=float(w.iloc[1:-1].max()) if len(w)>3 else 0; wr=float(wochen_daten["volume"].iloc[-1]/wochen_daten["volume"].tail(12).mean())
+            out.append(_signal("Größter Tagesverlust seit Beginn",33,"schluss",True,tagestief(daten_seit),"Kap. 6.3","Defensive Reduktion"))
+    if wochen_seit is not None and len(wochen_seit)>=12:
+        w=(wochen_seit["close"].shift(1)-wochen_seit["close"])/wochen_seit["close"].shift(1)*100; cur=float(w.iloc[-1]); mxw=float(w.iloc[1:-1].max()) if len(w)>3 else 0; wr=float(wochen_seit["volume"].iloc[-1]/wochen_seit["volume"].tail(12).mean())
         if cur>=mxw and wr>=float(wochenvol_ratio_schwelle): out.append(_signal("Größte Verlustwoche seit Beginn",66,"schluss",True,None,"Kap. 6.3","Wahrscheinliches Rally-Ende"))
     return out
 
@@ -829,11 +856,18 @@ def diagnose_strategie_kein_signal(
         min_pnl = float(o.get("groesster_einbruch_min_pnl_pct", 10.0))
         if pnl <= min_pnl:
             return f"Aktueller Gewinn {pnl:.1f}% liegt unter Mindestgewinn {min_pnl:g}% für diese Strategie."
-        if len(daten) < 4:
-            return "Zu wenige Daten für Größter-Einbruch-Vergleich."
-        d = (daten["close"].shift(1) - daten["close"]) / daten["close"].shift(1) * 100
+        daten_seit = _seit_einstieg(daten, position)
+        if len(daten_seit) < 4:
+            return f"Zu wenige Daten seit Einstieg ({len(daten_seit)}) für Größter-Einbruch-Vergleich (mind. 4 Sessions nötig)."
+        d = (daten_seit["close"].shift(1) - daten_seit["close"]) / daten_seit["close"].shift(1) * 100
         h = float(d.iloc[-1]); mx = float(d.iloc[1:-1].max()) if len(d) > 3 else 0.0
-        return f"Heutiger Tagesverlust {h:+.2f}% nicht der größte seit Beginn (bisher max. {mx:+.2f}%)."
+        min_verlust = float(o.get("groesster_einbruch_min_tagesverlust_pct", 3.0))
+        # Heute war ein Gewinntag — kein Verlust zum Vergleichen.
+        if h <= 0:
+            return f"Heute ist ein Gewinntag (+{-h:.2f}%) — die Strategie reagiert nur auf Tagesverluste; bisher größter Verlust seit Einstieg {mx:+.2f}%."
+        if h <= min_verlust:
+            return f"Heutiger Tagesverlust {h:.2f}% liegt unter der Mindestschwelle ({min_verlust:g}%); bisher größter Verlust seit Einstieg {mx:.2f}%."
+        return f"Heutiger Tagesverlust {h:.2f}% ist nicht der größte seit Einstieg (bisher max. {mx:.2f}%)."
 
     if strategie_key == "rs_linie":
         if daten_spy is None or len(daten_spy) == 0:
