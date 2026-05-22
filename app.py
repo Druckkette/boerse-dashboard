@@ -49,7 +49,7 @@ from sell_decision_rules import (
     LM_HUB_WARNUNGEN_DEFAULT,
 )
 from sell_strategies import STRATEGIE_INFO
-from sell_strategies import Position, verkaufs_empfehlung_gesamt
+from sell_strategies import Position, verkaufs_empfehlung_gesamt, diagnose_strategie_kein_signal
 from ui.charts import CHART_COLORS, apply_consistent_layout
 from ui.tables import flow_column_config, performance_column_config, rating_overview_column_config
 from ui.theme import APP_CSS, PAGE_CONFIG
@@ -12088,16 +12088,7 @@ def _render_sell_strategy_hub() -> None:
     # ═══════════════════════════════════════════════════════════
     # Ergebnis berechnen
     # ═══════════════════════════════════════════════════════════
-    res = verkaufs_empfehlung_gesamt(
-        p,
-        daily,
-        weekly,
-        None,
-        None,
-        markt,
-        man.get("industry_group_status","Neutral"),
-        aktive,
-        {
+    strategie_optionen = {
             "ma21_variante": ma21_variante,
             "ziel_atr_multiplikator": float(ziel_atr),
             "ueberdehnung_atr_start": float(atr_ueberdehnung_start),
@@ -12177,7 +12168,17 @@ def _render_sell_strategy_hub() -> None:
             "ma_abstand_tranche_ma21_pct": float(ma_abstand_tranche_ma21_pct),
             "ma_abstand_tranche_ma50_pct": float(ma_abstand_tranche_ma50_pct),
             "ma_abstand_tranche_ma200_basis_pct": float(ma_abstand_tranche_ma200_basis_pct),
-        },
+    }
+    res = verkaufs_empfehlung_gesamt(
+        p,
+        daily,
+        weekly,
+        None,
+        None,
+        markt,
+        man.get("industry_group_status","Neutral"),
+        aktive,
+        strategie_optionen,
     )
 
     # ═══════════════════════════════════════════════════════════
@@ -12258,7 +12259,13 @@ def _render_sell_strategy_hub() -> None:
             st.markdown("---")
             st.markdown(f"**📈 Aktuelles Ergebnis für `{t}`:**")
             if not sigs:
-                st.info("Keine Signale dieser Strategie verfügbar (z. B. weil Voraussetzungen wie Gewinn/Lookback nicht erfüllt sind).")
+                try:
+                    grund = diagnose_strategie_kein_signal(
+                        key, p, daily, weekly, None, None, markt, strategie_optionen,
+                    )
+                except Exception as exc:
+                    grund = f"Diagnose fehlgeschlagen: {exc}"
+                st.info(f"Kein aktives Signal — {grund}")
             else:
                 for s in sigs:
                     _render_signal_card(s)
