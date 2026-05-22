@@ -629,6 +629,262 @@ def berechne_watch_signale(position,daten):
     return w
 
 
+def diagnose_strategie_kein_signal(
+    strategie_key: str,
+    position: Position,
+    daten: pd.DataFrame,
+    wochen_daten: pd.DataFrame | None = None,
+    daten_spy: pd.DataFrame | None = None,
+    wochen_daten_spy: pd.DataFrame | None = None,
+    markt: str = "Unsicher",
+    strategie_optionen: dict | None = None,
+) -> str:
+    """Erklärt, warum eine Strategie aktuell kein aktives Signal liefert.
+
+    Wird vom UI aufgerufen, wenn `verkaufs_empfehlung_gesamt` für diese
+    Strategie eine leere Signalliste zurückgegeben hat. Liefert je nach
+    Strategie-Konfiguration einen konkreten Grund (z. B. „Position im
+    Verlust", „21-MA noch nicht gebrochen", „Variante geduldig braucht
+    mindestens 3 Tage unter MA"), so dass im Hub nicht nur eine generische
+    Fallback-Meldung steht.
+    """
+    o = strategie_optionen or {}
+    if daten is None or len(daten) == 0:
+        return "Keine Kursdaten verfügbar."
+    pnl = pnl_pct(position, daten)
+    s = letzter_schlusskurs(daten)
+
+    if strategie_key == "notbremse_verlust":
+        b = abs(float(o.get("notbremse_verlust_schwelle_baerisch_pct", 4.0)))
+        u = abs(float(o.get("notbremse_verlust_schwelle_unsicher_pct", 5.0)))
+        bull = abs(float(o.get("notbremse_verlust_schwelle_bullisch_pct", 7.0)))
+        sch = b if markt == "Bärisch" else u if markt == "Unsicher" else bull
+        return (f"P&L {pnl:.1f}% liegt über der Notbremse-Schwelle (-{sch:g}%, Markt {markt}). "
+                "Die Strategie zeigt normalerweise eine Info-Marke; falls hier nichts erscheint, liefert sie aktuell trotzdem kein Signal.")
+
+    if strategie_key == "gewinn_in_stufen":
+        if markt == "Bärisch":
+            nd = float(o.get("gewinn_nachdenken_schwelle_bear_pct", 10.0))
+            lo = float(max(o.get("gewinn_teilverkauf_unten_bear_pct", 10.0), nd))
+        else:
+            nd = float(o.get("gewinn_nachdenken_schwelle_bull_pct", 15.0))
+            lo = float(max(o.get("gewinn_teilverkauf_unten_bull_pct", 20.0), nd))
+        r = sum(position.realisierte_tranchen or [])
+        if pnl < nd:
+            return f"Aktueller Gewinn {pnl:.1f}% liegt unter der Nachdenkschwelle ({nd:g}%, Markt {markt}). Warten auf erste Gewinnzone."
+        if pnl < lo and r > 0:
+            return f"Nachdenkschwelle erreicht ({pnl:.1f}%), Pflicht-Teilverkauf erst ab {lo:g}%. Bereits {r:.0f}% realisiert — Hinweissignal ausgeblendet."
+        if r >= 50:
+            return f"Bereits {r:.0f}% realisiert — Pflicht-Teilverkauf abgedeckt."
+        return f"Gewinn {pnl:.1f}% — derzeit zwischen den Stufen, kein Trigger aktiv."
+
+    if strategie_key == "ma21_bruch":
+        if pnl <= 0:
+            return f"Position im Verlust ({pnl:.1f}%). Strategie ist nur im Gewinnfall aktiv (im Verlust greift Strategie 1 / rueckkehr_pivot)."
+        variante = str(o.get("ma21_variante", "gestaffelt"))
+        ma21 = sma(daten["close"], 21)
+        if pd.isna(ma21.iloc[-1]):
+            return "21-Tage-Linie konnte nicht berechnet werden (zu wenige Daten)."
+        m = float(ma21.iloc[-1]); t = tage_unter_ma(daten, ma21)
+        if t == 0:
+            return f"Kurs ({s:.2f}) liegt über der 21-Tage-Linie ({m:.2f}) — kein Bruch."
+        if variante == "geduldig":
+            return f"Variante 'geduldig': erst nach 3 Tagen unter 21-MA aktiv, aktuell {t} Tag(e) unter MA."
+        if variante == "aggressiv":
+            br = (m - s) / m * 100 if m else 0
+            vr = vol_verhaeltnis(daten)
+            return f"Variante 'aggressiv': Bruch nur {br:.1f}% (≥2% nötig) oder Volumenfaktor {vr:.2f} (≥1.2 nötig); Tage unter MA: {t}."
+        # gestaffelt
+        if t == 2 and len(daten) >= 2 and not (s < float(daten["close"].iloc[-2])):
+            return f"Variante 'gestaffelt': Tag 2 unter 21-MA, aber Schluss ({s:.2f}) nicht tiefer als Vortag ({float(daten['close'].iloc[-2]):.2f})."
+        return f"Variante 'gestaffelt': {t} Tag(e) unter 21-MA, Stufe-Bedingung aktuell nicht erfüllt."
+
+    if strategie_key == "drawdown_vom_peak":
+        if pnl <= 0:
+            return f"Position im Verlust ({pnl:.1f}%). Strategie greift nur im Gewinnfall."
+        d1 = float(o.get("drawdown_stufe1_min_pct", 8.0))
+        dd = drawdown_vom_peak(position, daten)
+        return f"Drawdown vom Peak nur {dd:.1f}% — Stufe 1 startet erst ab {d1:g}%."
+
+    if strategie_key == "ma_abstand":
+        if pnl <= 0:
+            return f"Position im Verlust ({pnl:.1f}%). Strategie greift nur im Gewinnfall."
+        ma10 = _none_if_nan(sma(daten["close"], 10).iloc[-1])
+        ma21 = _none_if_nan(sma(daten["close"], 21).iloc[-1])
+        ma50 = _none_if_nan(sma(daten["close"], 50).iloc[-1])
+        ma200 = _none_if_nan(sma(daten["close"], 200).iloc[-1])
+        teile = []
+        if ma10: teile.append(f"10-MA {((s-ma10)/ma10*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma10_pct', 10.0)):g}%)")
+        if ma21: teile.append(f"21-MA {((s-ma21)/ma21*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma21_pct', 15.0)):g}%)")
+        if ma50: teile.append(f"50-MA {((s-ma50)/ma50*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma50_pct', 25.0)):g}%)")
+        if ma200: teile.append(f"200-MA {((s-ma200)/ma200*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma200_pct', 70.0)):g}%)")
+        return "Keine MA-Überdehnung erreicht: " + "; ".join(teile) if teile else "MA-Abstände nicht berechenbar (zu wenige Daten)."
+
+    if strategie_key == "verlusttage_haeufung":
+        if pnl <= 0:
+            return f"Position im Verlust ({pnl:.1f}%). Strategie greift nur im Gewinnfall."
+        fenster = int(o.get("verlusttage_updown_fenster_tage", 15))
+        if len(daten) < max(3, fenster):
+            return f"Zu wenige Daten ({len(daten)}) für Up/Down-Fenster von {fenster} Tagen."
+        l3 = daten.tail(3); seq = 1
+        for i in [1, 2]:
+            if l3["close"].iloc[i] < l3["close"].iloc[i-1]: seq += 1
+            else: seq = 1
+        min_seq = int(o.get("verlusttage_min_tiefere_schlusskurse_in_folge", 3))
+        fen = daten.tail(fenster); up = int((fen["close"] > fen["open"]).sum()); dn = int((fen["close"] < fen["open"]).sum())
+        return (f"Nur {seq} tiefere Schlusskurse in Folge (≥{min_seq} nötig); "
+                f"im {fenster}-Tage-Fenster {up} Auf- vs. {dn} Abwärtstage.")
+
+    if strategie_key == "groesster_anstieg_volumen":
+        if pnl <= 15:
+            return f"Aktueller Gewinn {pnl:.1f}% liegt unter dem Mindestgewinn 15%."
+        if len(daten) < 3:
+            return f"Zu wenige Daten ({len(daten)}) für Klimax-Vergleich."
+        ch = daten["close"].pct_change() * 100
+        return f"Heutige Tagesveränderung {float(ch.iloc[-1]):+.1f}% ist nicht der größte Anstieg seit Datenbeginn ({float(ch.iloc[1:].max()):+.1f}%)."
+
+    if strategie_key == "split_anstieg":
+        split_datum = o.get("split_datum")
+        if not split_datum:
+            return "Kein Split-Datum gesetzt (kein automatischer Yahoo-Treffer und keine manuelle Eingabe)."
+        try:
+            split_dt = pd.Timestamp(split_datum).tz_localize(None)
+        except Exception:
+            return f"Split-Datum konnte nicht interpretiert werden: {split_datum!r}."
+        d = daten.copy(); d.index = pd.to_datetime(d.index).tz_localize(None)
+        if split_dt not in d.index:
+            return f"Split-Datum {split_dt.date().isoformat()} liegt nicht im Datensatz."
+        age = (d.index[-1] - split_dt).days
+        if age > 14:
+            return f"Split ist {age} Tage alt — Fenster (max. 14 Tage) überschritten."
+        kurs = float(d.loc[split_dt, "close"]); an = (s/kurs - 1)*100 if kurs else 0
+        schwelle = float(o.get("split_signal_schwelle_pct", 25.0))
+        return f"Anstieg seit Split {an:+.1f}% liegt unter Signal-Schwelle {schwelle:g}%."
+
+    if strategie_key == "erschoepfungsluecke":
+        if not position.pivot:
+            return "Kein Pivot in der Position hinterlegt — Distanz zur Basis nicht berechenbar."
+        if pnl <= 15:
+            return f"Gewinn {pnl:.1f}% liegt unter Mindestgewinn 15%."
+        if len(daten) < 2:
+            return "Zu wenige Daten für Gap-Berechnung."
+        heute = daten.iloc[-1]; gestern = daten.iloc[-2]
+        gap = (heute["open"] - gestern["close"]) / gestern["close"] * 100 if gestern["close"] else 0.0
+        avg = float(daten["volume"].tail(50).mean()) if len(daten) >= 50 else float(daten["volume"].mean())
+        vr = (float(heute["volume"]) / avg) if avg else 0.0
+        dist = (float(heute["close"]) - float(position.pivot)) / float(position.pivot) * 100
+        return f"Gap {gap:+.1f}% (≥3% nötig), Volumenfaktor {vr:.2f} (≥1.5 nötig), Distanz zur Basis {dist:+.1f}% (≥30% nötig)."
+
+    if strategie_key == "downside_reversal":
+        if pnl <= 0:
+            return f"Position im Verlust ({pnl:.1f}%). Strategie greift nur im Gewinnfall."
+        if len(daten) < 12:
+            return f"Zu wenige Daten ({len(daten)}) — mindestens 12 Tage nötig."
+        h = daten.iloc[-1]; span = h["high"] - h["low"]
+        if span <= 0:
+            return "Tagesspanne ist 0 (Kerze ohne Range)."
+        return "Keine Umkehrkerze: weder neues 30-Tage-Hoch mit Schluss im unteren Drittel noch weite Reversal-Kerze nach Volumen-/Spannenkriterien."
+
+    if strategie_key == "stau_tage":
+        if pnl <= 0:
+            return f"Position im Verlust ({pnl:.1f}%). Strategie greift nur im Gewinnfall."
+        fenster = int(o.get("stau_fenster_tage", 10))
+        if len(daten) < fenster:
+            return f"Zu wenige Daten ({len(daten)}) für Stau-Fenster {fenster}."
+        return f"Weniger als {int(o.get('stau_min_tage', 2))} Stau-Tage im {fenster}-Tage-Fenster (|Tagesveränderung|<{float(o.get('stau_max_tagesveraenderung_pct', 1.0)):g}% + Volumen ≥{float(o.get('stau_min_vol_ratio', 1.3)):.2f}× Schnitt)."
+
+    if strategie_key == "rueckkehr_pivot":
+        # Diese Strategie liefert idR immer mindestens ein Info-Signal, wenn relevante Werte gesetzt sind.
+        if not (position.tief_tag_0 or position.tief_tag_1 or position.pivot):
+            return "Keine Sicherheitslinien hinterlegt (Tief Tag 0/1, Pivot fehlen in der Position)."
+        nb = abs(float(o.get("rueckkehr_notbremse_verlust_pct", 7.0)))
+        teile = []
+        if position.tief_tag_1: teile.append(f"Tief Tag 1 {float(position.tief_tag_1):.2f}")
+        if position.tief_tag_0: teile.append(f"Tief Tag 0 {float(position.tief_tag_0):.2f}")
+        if position.pivot: teile.append(f"Pivot {float(position.pivot):.2f}")
+        return f"Schlusskurs {s:.2f} verletzt keine Sicherheitslinie ({', '.join(teile)}); Notbremse erst bei {pnl:.1f}% ≤ -{nb:g}%."
+
+    if strategie_key == "ma_bruch_defensiv":
+        ma50 = _none_if_nan(sma(daten["close"], 50).iloc[-1])
+        ma200 = _none_if_nan(sma(daten["close"], 200).iloc[-1])
+        teile = []
+        if ma50: teile.append(f"50-MA {ma50:.2f} (Kurs {s:.2f})")
+        if ma200: teile.append(f"200-MA {ma200:.2f}")
+        if wochen_daten is not None and len(wochen_daten) >= 10:
+            w10 = sma(wochen_daten["close"], 10)
+            wt = tage_unter_ma(wochen_daten, w10)
+            teile.append(f"{wt} Wochen unter 10-Wochen-Linie (≥8 für Vollsignal)")
+        return "Kein 50-MA-/200-MA-/10-Wochen-Bruch: " + "; ".join(teile) if teile else "MAs nicht berechenbar."
+
+    if strategie_key == "drei_verlustwochen":
+        if wochen_daten is None or len(wochen_daten) < 3:
+            return f"Zu wenige Wochenkerzen ({0 if wochen_daten is None else len(wochen_daten)}) — mindestens 3 nötig."
+        l = wochen_daten.tail(3)
+        three = (l["close"].iloc[0] > l["close"].iloc[1] > l["close"].iloc[2])
+        vol = (l["volume"].iloc[0] < l["volume"].iloc[1] < l["volume"].iloc[2])
+        red = bool((l["close"] < l["open"]).all())
+        return f"Bedingungen letzte 3 Wochen: fallende Schlüsse={three}, steigendes Volumen={vol}, alle Wochen rot={red}."
+
+    if strategie_key == "groesster_einbruch":
+        min_pnl = float(o.get("groesster_einbruch_min_pnl_pct", 10.0))
+        if pnl <= min_pnl:
+            return f"Aktueller Gewinn {pnl:.1f}% liegt unter Mindestgewinn {min_pnl:g}% für diese Strategie."
+        if len(daten) < 4:
+            return "Zu wenige Daten für Größter-Einbruch-Vergleich."
+        d = (daten["close"].shift(1) - daten["close"]) / daten["close"].shift(1) * 100
+        h = float(d.iloc[-1]); mx = float(d.iloc[1:-1].max()) if len(d) > 3 else 0.0
+        return f"Heutiger Tagesverlust {h:+.2f}% nicht der größte seit Beginn (bisher max. {mx:+.2f}%)."
+
+    if strategie_key == "rs_linie":
+        if daten_spy is None or len(daten_spy) == 0:
+            return "Keine Benchmark-Daten (SPY) verfügbar — RS-Linie kann nicht berechnet werden."
+        return f"RS-Linie liegt aktuell über den relevanten gleitenden Durchschnitten (P&L {pnl:.1f}% bestimmt die Zeitebene tag/woche/monat)."
+
+    if strategie_key == "ma_basierte_sequenz":
+        ma10 = _none_if_nan(sma(daten["close"], 10).iloc[-1])
+        ma21 = _none_if_nan(sma(daten["close"], 21).iloc[-1])
+        ma50 = _none_if_nan(sma(daten["close"], 50).iloc[-1])
+        teile = [f"Gewinn {pnl:.1f}%"]
+        if ma10: teile.append(f"10-MA {ma10:.2f} ({'über' if s >= ma10 else 'unter'})")
+        if ma21: teile.append(f"21-MA {ma21:.2f} ({'über' if s >= ma21 else 'unter'})")
+        if ma50: teile.append(f"50-MA {ma50:.2f} ({'über' if s >= ma50 else 'unter'})")
+        return "Kein Sequenzpunkt aktiv — " + "; ".join(teile) + "."
+
+    if strategie_key == "einfach_halbe_position":
+        gw = float(o.get("erste_haelfte_gewinn_pct", 20.0))
+        r = sum(position.realisierte_tranchen or [])
+        if pnl < gw and r < 50:
+            return f"Aktueller Gewinn {pnl:.1f}% liegt unter Schwelle {gw:g}% (erste Hälfte sichern)."
+        if r >= 50 and pnl < 20 and not (-1 <= pnl <= 1):
+            return f"Erste Hälfte bereits realisiert ({r:.0f}%); zweite Tranche erst ab +20% Gewinn oder BE-Stopp."
+        return f"Status passt aktuell zu keinem Trigger (Gewinn {pnl:.1f}%, realisiert {r:.0f}%)."
+
+    if strategie_key == "misslungener_ausbruch_5stufen":
+        if not (position.tief_tag_0 or position.tief_tag_1):
+            return "Keine Tiefs Tag 0/Tag 1 in der Position hinterlegt — Stufen können nicht ausgewertet werden."
+        return f"Weder Gap-down noch Intraday-/Schluss-Bruch der Tiefs Tag 0/1 noch -7%-Notbremse aktiv (Schluss {s:.2f}, P&L {pnl:.1f}%)."
+
+    if strategie_key == "einfache_verluststufen":
+        s1 = abs(float(o.get("verlust_stufe_1", 3.0)))
+        if pnl > -s1:
+            return f"P&L {pnl:.1f}% liegt über der ersten Verluststufe (-{s1:g}%) — keine Stufe aktiv."
+        return f"P&L {pnl:.1f}% — Stufe-Logik aktuell zwischen den definierten Schwellen."
+
+    if strategie_key == "atr_basiert":
+        a = atr(daten, 14)
+        if not a:
+            return "ATR konnte nicht berechnet werden (zu wenige Daten)."
+        ga = pnl / a if a else 0
+        ziel = float(o.get("ziel_atr_multiplikator", 3.0))
+        start = float(o.get("ueberdehnung_atr_start", 3.0))
+        e = _none_if_nan(ema(daten["close"], 21).iloc[-1])
+        ext = ((s - e) / e * 100 / a) if e and a else 0.0
+        return (f"ATR-Gewinn {ga:.2f} ATR (Ziel {ziel:g} ATR nicht erreicht); "
+                f"Abstand zu 21-EMA {ext:.2f} ATR (Überdehnung ab {start:g} ATR); kein -1.5 ATR-Stopp verletzt.")
+
+    return "Keine Signale dieser Strategie aktiv — keine spezifische Diagnose hinterlegt."
+
+
 def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_daten: pd.DataFrame, daten_spy: pd.DataFrame | None, wochen_daten_spy: pd.DataFrame | None, markt: str, industrie: str, aktive_strategien: list[str], strategie_optionen: dict | None = None):
     o = strategie_optionen or {}
     r = {

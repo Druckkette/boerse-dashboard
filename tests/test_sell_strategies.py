@@ -13,6 +13,7 @@ from sell_strategies import (
     strategie_rs_linie,
     strategie_einfache_verluststufen,
     verkaufs_empfehlung_gesamt,
+    diagnose_strategie_kein_signal,
     strategie_downside_reversal,
     strategie_verlusttage_haeufung,
     strategie_ma_abstand,
@@ -607,3 +608,60 @@ def test_themen_dedup_signale_tragen_thema_im_output():
     res = verkaufs_empfehlung_gesamt(p, d, d, None, None, "Bullisch", "Neutral", ["notbremse_verlust"])
     sig_themen = {s.get("thema") for s in res["alle_signale"]}
     assert "verlust_notbremse" in sig_themen
+
+
+def test_diagnose_ma21_bruch_position_im_verlust():
+    """Im Verlust soll die Diagnose explizit auf den Verlustfall hinweisen."""
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 95])  # Position aktuell im Verlust
+    grund = diagnose_strategie_kein_signal("ma21_bruch", p, d, d, None, None, "Bullisch", {})
+    assert "Verlust" in grund
+    assert "Gewinnfall" in grund or "Strategie 1" in grund or "rueckkehr_pivot" in grund
+
+
+def test_diagnose_ma21_bruch_geduldig_braucht_drei_tage():
+    """Mit Variante 'geduldig' im Gewinn aber <3 Tage unter MA — Grund muss Variante nennen."""
+    closes = [100, 105, 110, 115, 120, 125, 130, 135, 140, 145,
+              150, 155, 160, 165, 170, 175, 180, 185, 190, 195,
+              200, 205, 210, 215, 220, 225, 200]  # letzter Tag plötzlich unter MA, aber nur 1 Tag
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df(closes)
+    grund = diagnose_strategie_kein_signal(
+        "ma21_bruch", p, d, d, None, None, "Bullisch", {"ma21_variante": "geduldig"},
+    )
+    assert "geduldig" in grund
+
+
+def test_diagnose_einfache_verluststufen_ueber_schwelle():
+    """Wenn P&L oberhalb der ersten Verluststufe liegt, soll die Diagnose das nennen."""
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 99])
+    grund = diagnose_strategie_kein_signal(
+        "einfache_verluststufen", p, d, d, None, None, "Bullisch",
+        {"verlust_stufe_1": 3.0, "verlust_stufe_2": 5.0, "verlust_stufe_3": 7.0},
+    )
+    assert "3" in grund
+    assert "%" in grund
+
+
+def test_diagnose_split_anstieg_kein_datum():
+    """Ohne split_datum soll ein klarer Hinweis kommen."""
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 110])
+    grund = diagnose_strategie_kein_signal("split_anstieg", p, d, d, None, None, "Bullisch", {})
+    assert "Split" in grund
+
+
+def test_diagnose_rs_linie_ohne_benchmark():
+    """Ohne SPY-Daten soll die Diagnose das nennen."""
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 110])
+    grund = diagnose_strategie_kein_signal("rs_linie", p, d, d, None, None, "Bullisch", {})
+    assert "Benchmark" in grund or "SPY" in grund
+
+
+def test_diagnose_unbekannter_key_liefert_fallback():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100, 110])
+    grund = diagnose_strategie_kein_signal("kein_existierender_key", p, d, d, None, None, "Bullisch", {})
+    assert isinstance(grund, str) and len(grund) > 0
