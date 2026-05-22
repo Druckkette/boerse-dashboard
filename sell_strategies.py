@@ -302,9 +302,12 @@ def strategie_verlusttage_haeufung(
 
 def strategie_groesster_anstieg_volumen(position,daten):
     if pnl_pct(position,daten)<=15 or len(daten)<3:return []
-    ch=daten["close"].pct_change()*100; t=ch.iloc[-1]; mx=float(ch.iloc[1:].max()); v=daten["volume"].iloc[-1] >= daten["volume"].max()
-    if t>=mx and v:return [_signal("Größter Anstieg + höchstes Volumen",33,"schluss",True,float(daten["low"].iloc[-1]),"Kap. 6.2","Klimax-Muster")]
-    if t>=mx:return [_signal("Größter Tagesanstieg",20,"schluss",True,float(daten["low"].iloc[-1]),"Kap. 6.2","Vorwarnung")]
+    # „Seit Kauf" — Vergleich des größten Tagesanstiegs/Volumens nur ab Einstiegsdatum.
+    daten_seit = _seit_einstieg(daten, position)
+    if len(daten_seit)<3:return []
+    ch=daten_seit["close"].pct_change()*100; t=ch.iloc[-1]; mx=float(ch.iloc[1:].max()); v=daten_seit["volume"].iloc[-1] >= daten_seit["volume"].max()
+    if t>=mx and v:return [_signal("Größter Anstieg + höchstes Volumen",33,"schluss",True,float(daten_seit["low"].iloc[-1]),"Kap. 6.2","Klimax-Muster")]
+    if t>=mx:return [_signal("Größter Tagesanstieg",20,"schluss",True,float(daten_seit["low"].iloc[-1]),"Kap. 6.2","Vorwarnung")]
     return []
 
 def strategie_split_anstieg(position,daten,split_datum=None,signal_schwelle_pct: float = 25.0,starke_tranche_ab_pct: float = 50.0):
@@ -767,8 +770,11 @@ def diagnose_strategie_kein_signal(
             return f"Aktueller Gewinn {pnl:.1f}% liegt unter dem Mindestgewinn 15%."
         if len(daten) < 3:
             return f"Zu wenige Daten ({len(daten)}) für Klimax-Vergleich."
-        ch = daten["close"].pct_change() * 100
-        return f"Heutige Tagesveränderung {float(ch.iloc[-1]):+.1f}% ist nicht der größte Anstieg seit Datenbeginn ({float(ch.iloc[1:].max()):+.1f}%)."
+        daten_seit = _seit_einstieg(daten, position)
+        if len(daten_seit) < 3:
+            return f"Zu wenige Daten seit Einstieg ({len(daten_seit)}) für Klimax-Vergleich (mind. 3 Sessions nötig)."
+        ch = daten_seit["close"].pct_change() * 100
+        return f"Heutige Tagesveränderung {float(ch.iloc[-1]):+.1f}% ist nicht der größte Anstieg seit Einstieg ({float(ch.iloc[1:].max()):+.1f}%)."
 
     if strategie_key == "split_anstieg":
         split_datum = o.get("split_datum")
@@ -822,13 +828,16 @@ def diagnose_strategie_kein_signal(
 
     if strategie_key == "rueckkehr_pivot":
         # Diese Strategie liefert idR immer mindestens ein Info-Signal, wenn relevante Werte gesetzt sind.
-        if not (position.tief_tag_0 or position.tief_tag_1 or position.pivot):
+        tt1 = _none_if_nan(position.tief_tag_1)
+        tt0 = _none_if_nan(position.tief_tag_0)
+        pvt = _none_if_nan(position.pivot)
+        if not (tt0 or tt1 or pvt):
             return "Keine Sicherheitslinien hinterlegt (Tief Tag 0/1, Pivot fehlen in der Position)."
         nb = abs(float(o.get("rueckkehr_notbremse_verlust_pct", 7.0)))
         teile = []
-        if position.tief_tag_1: teile.append(f"Tief Tag 1 {float(position.tief_tag_1):.2f}")
-        if position.tief_tag_0: teile.append(f"Tief Tag 0 {float(position.tief_tag_0):.2f}")
-        if position.pivot: teile.append(f"Pivot {float(position.pivot):.2f}")
+        if tt1: teile.append(f"Tief Tag 1 {float(tt1):.2f}")
+        if tt0: teile.append(f"Tief Tag 0 {float(tt0):.2f}")
+        if pvt: teile.append(f"Pivot {float(pvt):.2f}")
         return f"Schlusskurs {s:.2f} verletzt keine Sicherheitslinie ({', '.join(teile)}); Notbremse erst bei {pnl:.1f}% ≤ -{nb:g}%."
 
     if strategie_key == "ma_bruch_defensiv":

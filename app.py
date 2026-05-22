@@ -11953,7 +11953,25 @@ def _render_sell_strategy_hub() -> None:
     entry_row = daily_all.loc[daily_all.index >= buy_date].head(1)
     pivot_from_entry_low = _safe_float(entry_row["low"].iloc[0], np.nan) if not entry_row.empty else np.nan
     effective_pivot = manual_pivot if not np.isnan(manual_pivot) and manual_pivot > 0 else (pivot_from_tag if not np.isnan(pivot_from_tag) and pivot_from_tag > 0 else pivot_from_entry_low)
-    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=_safe_float(man.get("low_day_1")),tief_tag_0=_safe_float(man.get("low_day_0")),peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
+    # Tag 1 = Kauftag (oder Pivot-Tag, falls gesetzt). Tag 0 = der Handelstag davor.
+    # Fallen aus Kursdaten als Auto-Wert, falls keine manuelle Eingabe vorliegt.
+    ref_ts_tief = pivot_tag_ts if pd.notna(pivot_tag_ts) else buy_date
+    auto_tief_tag_1 = np.nan
+    auto_tief_tag_0 = np.nan
+    if not daily_all.empty:
+        after_ref = daily_all.loc[daily_all.index >= ref_ts_tief]
+        before_ref = daily_all.loc[daily_all.index < ref_ts_tief]
+        if not after_ref.empty:
+            auto_tief_tag_1 = _safe_float(after_ref["low"].iloc[0], np.nan)
+        if not before_ref.empty:
+            auto_tief_tag_0 = _safe_float(before_ref["low"].iloc[-1], np.nan)
+    manual_low_day_1 = _safe_float(man.get("low_day_1"), np.nan)
+    manual_low_day_0 = _safe_float(man.get("low_day_0"), np.nan)
+    effective_tief_tag_1 = manual_low_day_1 if not np.isnan(manual_low_day_1) and manual_low_day_1 > 0 else auto_tief_tag_1
+    effective_tief_tag_0 = manual_low_day_0 if not np.isnan(manual_low_day_0) and manual_low_day_0 > 0 else auto_tief_tag_0
+    tief_tag_1_value = None if np.isnan(effective_tief_tag_1) else float(effective_tief_tag_1)
+    tief_tag_0_value = None if np.isnan(effective_tief_tag_0) else float(effective_tief_tag_0)
+    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=tief_tag_1_value,tief_tag_0=tief_tag_0_value,peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
     alle = ["notbremse_verlust","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
     strategie_info = {
         "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",

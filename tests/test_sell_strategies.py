@@ -706,3 +706,44 @@ def test_groesster_einbruch_vergleicht_nur_seit_einstieg():
     sigs = strategie_groesster_einbruch(p, d, None, min_pnl_pct=10.0, min_tagesverlust_pct=3.0)
     # Heute ist der größte Einbruch seit Einstieg → Signal soll feuern
     assert any("Tagesverlust seit Beginn" in s["name"] or "hohes Volumen" in s["name"] for s in sigs)
+
+
+def test_groesster_anstieg_volumen_vergleicht_nur_seit_einstieg():
+    """Pre-Einstieg-Rallies dürfen den 'größten Anstieg seit Einstieg' nicht maskieren."""
+    from sell_strategies import strategie_groesster_anstieg_volumen
+    idx = pd.date_range("2025-01-02", periods=60, freq="B")
+    # Vor Einstieg: ein riesiger Tagesanstieg +25% bei extrem hohem Volumen
+    # (würde ohne 'seit Einstieg' den heutigen Anstieg überdecken).
+    # Nach Einstieg: flach, dann am letzten Tag +8% Anstieg + neues Volumen-Hoch seit Einstieg.
+    # Position-PnL deutlich > 15% (Einstieg 100, Endkurs 140).
+    pre = [100.0] * 30 + [125.0]            # 31 Werte (letzter pre-buy: +25%)
+    post = [129.6] * 28 + [140.0]           # 29 Werte (letzter post-buy: ~+8% ggü. Vortag)
+    closes = pre + post
+    assert len(closes) == 60
+    volumes = ([1000] * 30 + [50000]        # extremes Volumen vor Einstieg
+               + [1200] * 28 + [3000])      # heutiges Volumen ist Max seit Einstieg
+    d = pd.DataFrame({
+        "open": closes,
+        "high": [c * 1.001 for c in closes],
+        "low": [c * 0.999 for c in closes],
+        "close": closes,
+        "volume": volumes,
+    }, index=idx)
+    # Einstieg nach dem großen Pre-Einstiegs-Anstieg → +8% wäre der größte seit Einstieg.
+    p = Position("T", 100.0, idx[31], 10)
+    sigs = strategie_groesster_anstieg_volumen(p, d)
+    # Heute ist der größte Anstieg seit Einstieg → Signal soll feuern.
+    assert sigs, f"Erwartetes Signal nicht gefeuert: {sigs}"
+    namen = [s["name"] for s in sigs]
+    assert any("Größter Anstieg" in n or "Größter Tagesanstieg" in n for n in namen)
+
+
+def test_diagnose_rueckkehr_pivot_zeigt_kein_nan_bei_fehlenden_tiefs():
+    """Wenn nur Pivot gesetzt ist, soll die Diagnose Tief Tag 0/1 nicht als 'nan' ausgeben."""
+    p = Position("T", 100, "2026-01-01", 10, pivot=80, tief_tag_1=float("nan"), tief_tag_0=float("nan"))
+    d = make_df([100] * 30 + [120])
+    grund = diagnose_strategie_kein_signal(
+        "rueckkehr_pivot", p, d, d, None, None, "Bullisch", {},
+    )
+    assert "nan" not in grund.lower()
+    assert "Pivot" in grund
