@@ -55,9 +55,9 @@ from ui.tables import flow_column_config, performance_column_config, rating_over
 from ui.theme import APP_CSS, PAGE_CONFIG
 
 
-def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None) -> dict:
+def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = None, tranche_log: list[dict] | None = None, recommendation_state: dict | None = None) -> dict:
     """Delegate sell decisions to the rules module without importing optional names directly."""
-    return sell_decision_rules.evaluate_sell_decision(metrics_payload, manual_data, tranche_log)
+    return sell_decision_rules.evaluate_sell_decision(metrics_payload, manual_data, tranche_log, recommendation_state=recommendation_state)
 
 
 def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = None) -> dict:
