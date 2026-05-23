@@ -2729,219 +2729,136 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
         curve["sp500_index"] = np.nan
     return curve
 
-def _position_technical_signals(tickers: tuple[str, ...]) -> dict:
-    """Leichte technische Signale (EMA21, SMA50) + RS-Rating je Ticker.
+def _evaluate_position_engine(
+    position: dict,
+    manual_map: dict | None = None,
+    tranche_log: list[dict] | None = None,
+    cache_buster: int = 0,
+) -> dict:
+    """Run the shared sell-decision engine for one saved position.
 
-    Verwendet `_bulk_close_history_map`, um nicht pro Position eine Yahoo-Anfrage
-    zu starten. Liefert pro Ticker ein Dict mit price, ema21, sma50, rs_rating.
+    Combines `load_sell_decision_metrics` + `compute_sell_health_score` +
+    `evaluate_sell_decision` so Mein-Depot Verkaufskandidaten, Verkaufs-
+    entscheidung Portfolio-Ranking and Live-Monitor produce identical
+    Health-Score, Status and Tranche-% per position. Returns
+    `{ok, error, ticker, metrics_payload, metrics, manual, health, result}`.
     """
-    norm: tuple[str, ...] = tuple(dict.fromkeys(
-        _normalize_single_ticker(t) for t in tickers if _normalize_single_ticker(t)
-    ))
-    if not norm:
-        return {}
-    end = datetime.now()
-    start = end - timedelta(days=180)
-    try:
-        closes = _bulk_close_history_map(norm, start, end)
-    except Exception as exc:
-        logger.debug("Position technicals download failed: %s", exc)
-        closes = {}
-    try:
-        rs_map = _load_selected_rs_ratings_map().get("ratings", {}) or {}
-    except Exception:
-        rs_map = {}
-    out: dict[str, dict] = {}
-    for ticker in norm:
-        series = closes.get(ticker)
-        info = {"price": np.nan, "ema21": np.nan, "sma50": np.nan, "rs_rating": np.nan}
-        if series is not None and not series.empty:
-            info["price"] = float(series.iloc[-1])
-            if len(series) >= 21:
-                info["ema21"] = float(series.ewm(span=21, adjust=False).mean().iloc[-1])
-            if len(series) >= 50:
-                info["sma50"] = float(series.rolling(50).mean().iloc[-1])
-        rs_value = rs_map.get(ticker) if isinstance(rs_map, dict) else None
-        if rs_value is None and isinstance(rs_map, dict):
-            rs_value = rs_map.get(ticker.upper())
-        if rs_value is not None:
-            try:
-                info["rs_rating"] = float(rs_value)
-            except (TypeError, ValueError):
-                info["rs_rating"] = np.nan
-        out[ticker] = info
-    return out
-
-
-def _position_evaluation_scores(tickers: tuple[str, ...]) -> dict:
-    """Lädt die Aktienbewertungs-Teilscores (Gesamt-, Technisch-, Fundamental-,
-    Trend-, Chart-Score) für eine Liste von Tickern.
-
-    Reuse von `_compute_stock_compare_rows`; die teure Stock-Lade-Arbeit ist
-    über `load_stock_full` (15-Min-Cache) bereits gepuffert.
-    """
-    norm = [t for t in dict.fromkeys(
-        _normalize_single_ticker(x) for x in tickers if _normalize_single_ticker(x)
-    )]
-    if not norm:
-        return {}
-    try:
-        rs_source = _get_rs_rating_source_setting()
-        compare_df = _compute_stock_compare_rows(norm, rs_source)
-    except Exception as exc:
-        logger.debug("Evaluation scores unavailable: %s", exc)
-        return {}
-    if compare_df is None or compare_df.empty:
-        return {}
-    out: dict[str, dict] = {}
-    for _, row in compare_df.iterrows():
-        ticker = str(row.get("Ticker", "")).upper()
-        if not ticker:
-            continue
-        out[ticker] = {
-            "overall": _safe_float(row.get("Gesamt-Score"), np.nan),
-            "technical": _safe_float(row.get("Score Technisch"), np.nan),
-            "fundamental": _safe_float(row.get("Score Fundamental"), np.nan),
-            "ma": _safe_float(row.get("Score Gleitende Durchschnitte"), np.nan),
-            "chart": _safe_float(row.get("Score Chart"), np.nan),
-        }
-    return out
-
-
-def _compute_position_sell_score(row: dict, technicals: dict, settings: dict, summary: dict, evaluation: dict | None = None) -> dict:
-    """Aggregiert Aktienbewertungs-Kriterien zu einem Verkaufs-Score (0..100).
-
-    Einflussgrößen:
-      • Stopp-Loss erreicht oder Puffer < 2 %
-      • P&L deutlich negativ (oder Bonus für kräftige Gewinner)
-      • Trend gebrochen: Kurs unter 21-EMA / 50-SMA
-      • RS-Rating schwach (< 60) bzw. sehr stark (≥ 85, Bonus)
-      • Risikobeitrag deutlich über Zielwert
-      • ATR%-Volatilität deutlich über Markt
-      • Aktienbewertungs-Gesamtscore (Schwerpunkt): < 35 sehr schwach,
-        35–54 schwach, 55–74 neutral, ≥ 75 attraktiv (Bonus).
-    """
-    score = 0.0
-    reasons: list[str] = []
-
-    pnl = _safe_float(row.get("pnl_pct"), np.nan)
-    price = _safe_float(row.get("current_price"), np.nan)
-    stop_price = _safe_float(row.get("stop_price"), np.nan)
-    stop_dist = _safe_float(row.get("stop_distance_pct"), np.nan)
-    risk_contrib = _safe_float(row.get("risk_contribution"), np.nan)
-    atr_pct = _safe_float(row.get("atr_pct"), np.nan)
-    spx_atr = _safe_float(summary.get("spx_atr_pct"), np.nan)
-    target_rc = _safe_float(settings.get("target_risk_contribution"), 0.20)
-
-    stop_breached = bool(
-        not np.isnan(price) and not np.isnan(stop_price)
-        and stop_price > 0 and price <= stop_price
-    )
-    if stop_breached:
-        score += 40
-        reasons.append("Stopp ausgelöst")
-    elif not np.isnan(stop_dist) and stop_dist < 2:
-        score += 18
-        reasons.append(f"Nur {stop_dist:.1f}% Puffer zum Stopp")
-
-    if not np.isnan(pnl):
-        if pnl <= -7:
-            score += 25
-            reasons.append(f"P&L {pnl:.1f}% (≤ −7%)")
-        elif pnl <= -3:
-            score += 12
-            reasons.append(f"P&L {pnl:.1f}%")
-        elif pnl >= 20:
-            score -= 8
-            reasons.append("Kräftiger Gewinner (+20% +)")
-
-    tech = technicals.get(row.get("ticker", ""), {}) if isinstance(technicals, dict) else {}
-    last_close = _safe_float(tech.get("price"), np.nan)
-    if np.isnan(last_close):
-        last_close = price
-    ema21 = _safe_float(tech.get("ema21"), np.nan)
-    sma50 = _safe_float(tech.get("sma50"), np.nan)
-    if not np.isnan(ema21) and not np.isnan(last_close) and last_close < ema21:
-        score += 8
-        reasons.append("Kurs unter 21-EMA")
-    if not np.isnan(sma50) and not np.isnan(last_close) and last_close < sma50:
-        score += 12
-        reasons.append("Kurs unter 50-SMA")
-
-    rs_rating = _safe_float(tech.get("rs_rating"), np.nan)
-    if not np.isnan(rs_rating):
-        if rs_rating < 40:
-            score += 12
-            reasons.append(f"RS-Rating {rs_rating:.0f} (<40)")
-        elif rs_rating < 60:
-            score += 6
-            reasons.append(f"RS-Rating {rs_rating:.0f} (<60)")
-        elif rs_rating >= 85:
-            score -= 4
-
-    if not np.isnan(risk_contrib) and target_rc > 0 and risk_contrib > target_rc * 1.5:
-        score += 10
-        reasons.append(f"Risikobeitrag {risk_contrib:.2f} > 1,5× Ziel")
-
-    if not np.isnan(atr_pct) and not np.isnan(spx_atr) and spx_atr > 0 and atr_pct > spx_atr * 1.8:
-        score += 5
-        reasons.append(f"ATR {atr_pct:.1f}% ≥ 1,8× Markt")
-
-    eval_info = evaluation.get(row.get("ticker", ""), {}) if isinstance(evaluation, dict) else {}
-    gesamt_score = _safe_float(eval_info.get("overall"), np.nan)
-    if not np.isnan(gesamt_score):
-        if gesamt_score < 35:
-            score += 25
-            reasons.append(f"Aktienbewertung sehr schwach ({gesamt_score:.0f}/100)")
-        elif gesamt_score < 55:
-            score += 12
-            reasons.append(f"Aktienbewertung schwach ({gesamt_score:.0f}/100)")
-        elif gesamt_score >= 75:
-            score -= 12
-            reasons.append(f"Aktienbewertung attraktiv ({gesamt_score:.0f}/100, Bonus)")
-
-    score = float(max(0.0, min(100.0, score)))
-    if stop_breached or score >= 60:
-        verdict = "Verkaufen"
-    elif score >= 35:
-        verdict = "Beobachten"
-    else:
-        verdict = "Halten"
-    return {
-        "score": score, "verdict": verdict, "reasons": reasons,
-        "stop_breached": stop_breached,
-        "gesamt_score": gesamt_score,
+    base = {
+        "ok": False, "error": "", "ticker": "",
+        "metrics_payload": {}, "metrics": {}, "manual": {},
+        "health": {}, "result": {},
     }
+    ticker = _normalize_single_ticker((position or {}).get("ticker", ""))
+    base["ticker"] = ticker
+    if not ticker:
+        base["error"] = "Ticker fehlt."
+        return base
+    try:
+        buy_date = pd.Timestamp((position or {}).get("buy_date")).date()
+    except Exception:
+        base["error"] = "Kaufdatum fehlt/ungültig."
+        return base
+    buy_price = _safe_float((position or {}).get("buy_price"), np.nan)
+    if np.isnan(buy_price) or buy_price <= 0:
+        base["error"] = "Einstandspreis fehlt/ungültig."
+        return base
+    shares = _safe_float((position or {}).get("shares"), 0.0)
+    stored_currency = str((position or {}).get("currency", "EUR") or "EUR").upper()
+    try:
+        symbol_metrics = _portfolio_symbol_metrics(ticker) or {}
+        market_currency = str(symbol_metrics.get("currency", stored_currency) or stored_currency).upper()
+        metric_buy_price = _sell_monitor_buy_price_for_market(
+            ticker, buy_price, stored_currency, buy_date, market_currency,
+        )
+        pivot_tag_raw = (position or {}).get("pivot_tag")
+        pivot_tag_for_metrics = None
+        if pivot_tag_raw:
+            try:
+                pivot_tag_for_metrics = pd.Timestamp(pivot_tag_raw).date()
+            except Exception:
+                pivot_tag_for_metrics = None
+        metrics_payload = load_sell_decision_metrics(
+            ticker, buy_date, metric_buy_price, shares,
+            benchmark_ticker="SPY", currency=market_currency,
+            cache_buster=cache_buster, pivot_date=pivot_tag_for_metrics,
+        )
+        if not metrics_payload.get("ok"):
+            base["error"] = metrics_payload.get("error") or "Kennzahlen fehlen."
+            return base
+        manual = dict((manual_map or {}).get(ticker, {}) or {})
+        result = evaluate_sell_decision(metrics_payload, manual, tranche_log or [])
+        health = compute_sell_health_score(metrics_payload, manual)
+        base.update({
+            "ok": True,
+            "metrics_payload": metrics_payload,
+            "metrics": metrics_payload.get("metrics", {}) or {},
+            "manual": manual,
+            "health": health,
+            "result": result,
+        })
+    except Exception as exc:
+        logger.debug("Position engine evaluation failed for %s: %s", ticker, exc)
+        base["error"] = "Auswertung fehlgeschlagen. Prüfe Ticker, Kaufdatum und Yahoo-Verfügbarkeit."
+    return base
 
 
-def _build_sell_candidates_table(snapshot_df: pd.DataFrame, summary: dict, settings: dict) -> pd.DataFrame:
+def _build_sell_candidates_table(snapshot_df: pd.DataFrame, positions: list[dict]) -> pd.DataFrame:
+    """Depot-Verkaufskandidaten aus derselben Engine wie Verkaufsentscheidung."""
     if snapshot_df is None or snapshot_df.empty:
         return pd.DataFrame()
     invested = snapshot_df[snapshot_df.get("is_cash", False) == False].copy() if "is_cash" in snapshot_df else snapshot_df.copy()
     if invested.empty:
         return pd.DataFrame()
-    tickers_t = tuple(invested["ticker"].astype(str).tolist())
-    technicals = _position_technical_signals(tickers_t)
-    evaluation = _position_evaluation_scores(tickers_t)
+
+    pos_by_ticker = {
+        _normalize_single_ticker((pos or {}).get("ticker", "")): pos
+        for pos in (positions or [])
+        if _normalize_single_ticker((pos or {}).get("ticker", ""))
+    }
+    state = load_sell_decision_state()
+    manual_map = state.get("positions_manual", {}) if isinstance(state, dict) else {}
+    tranche_log = load_tranche_log()
+    cache_buster = int(st.session_state.get("sell_rank_cache_buster", 0) or 0)
+
     rows = []
     for _, raw in invested.iterrows():
-        eval_payload = _compute_position_sell_score(raw.to_dict(), technicals, settings, summary, evaluation)
+        ticker = _normalize_single_ticker(raw.get("ticker", ""))
+        if not ticker:
+            continue
+        position = pos_by_ticker.get(ticker, {})
+        payload = _evaluate_position_engine(position, manual_map, tranche_log, cache_buster)
+        if not payload.get("ok"):
+            rows.append({
+                "Ticker": ticker,
+                "P&L %": _safe_float(raw.get("pnl_pct"), np.nan),
+                "Health-Score": np.nan,
+                "Empf. Tranche %": 0,
+                "Status": "Fehler",
+                "Begründung": payload.get("error") or "Auswertung fehlgeschlagen.",
+                "_sort": (4, 0, 0.0),
+            })
+            continue
+        health = payload.get("health") or {}
+        result = payload.get("result") or {}
+        metrics = payload.get("metrics") or {}
+        tranche = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
+        status = str(health.get("status") or "—")
+        status_rank = {"Verkaufen": 0, "Beobachten": 1, "Halten": 2}.get(status, 3)
+        reasons = health.get("reasons") or []
         rows.append({
-            "Ticker": raw.get("ticker", ""),
-            "Bewertung": eval_payload.get("gesamt_score", np.nan),
-            "P&L %": _safe_float(raw.get("pnl_pct"), np.nan),
-            "Abstand Stop %": _safe_float(raw.get("stop_distance_pct"), np.nan),
-            "Risikobeitrag": _safe_float(raw.get("risk_contribution"), np.nan),
-            "Verkaufs-Score": eval_payload["score"],
-            "Empfehlung": eval_payload["verdict"],
-            "Begründung": " · ".join(eval_payload["reasons"]) if eval_payload["reasons"] else "Keine kritischen Signale.",
+            "Ticker": ticker,
+            "P&L %": _safe_float(metrics.get("pnl_pct"), np.nan),
+            "Health-Score": _safe_float(health.get("health_score"), np.nan),
+            "Empf. Tranche %": tranche,
+            "Status": _sell_ranking_status_badge(status),
+            "Begründung": " · ".join(reasons[:4]) if reasons else "Keine kritischen Signale.",
+            "_sort": (status_rank, -tranche, _safe_float(health.get("health_score"), 100.0)),
         })
+
+    if not rows:
+        return pd.DataFrame()
     df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-    verdict_order = {"Verkaufen": 0, "Beobachten": 1, "Halten": 2}
-    df["_o"] = df["Empfehlung"].map(verdict_order).fillna(3)
-    df = df.sort_values(["_o", "Verkaufs-Score"], ascending=[True, False]).drop(columns=["_o"]).reset_index(drop=True)
+    df = df.sort_values("_sort").drop(columns=["_sort"]).reset_index(drop=True)
     return df
 
 
@@ -3099,13 +3016,13 @@ beitragen. Beispiel: Hat eine Aktie einen Balancer-Score von 1,5, ergibt sich ei
 
     st.markdown("#### 🎯 Verkaufskandidaten · kombinierte Empfehlung")
     st.caption(
-        "Der Verkaufs-Score 0–100 verbindet die Aktienbewertungs-Kriterien mit der Depot-Sicht: "
-        "Aktienbewertung-Gesamtscore (Schwerpunkt), Stopp-Loss-Status, P&L, Trend (21-EMA / 50-SMA), "
-        "RS-Rating, Risikobeitrag und ATR-Volatilität. "
-        "**≥ 60 → Verkaufen · 35–59 → Beobachten · < 35 → Halten.**"
+        "Health-Score 0–100 und Empfohlene Tranche % kommen aus derselben Engine wie "
+        "Live-Monitor und Verkaufsentscheidung → Portfolio-Ranking. "
+        "**≥ 65 → Halten · 40–64 → Beobachten · < 40 → Verkaufen.** "
+        "Für Tranchen-Details, manuelle Overrides und Setup wechsle in den Tab „Verkaufs-Entscheidung“."
     )
-    with st.spinner("Berechne Aktienbewertung für deine Positionen …"):
-        candidates = _build_sell_candidates_table(snapshot_df, summary, settings)
+    with st.spinner("Werte deine Positionen mit der Verkaufs-Engine aus …"):
+        candidates = _build_sell_candidates_table(snapshot_df, state["positions"])
     if candidates.empty:
         st.info("Keine Positionen für die Bewertung verfügbar.")
         return
@@ -3114,18 +3031,17 @@ beitragen. Beispiel: Hat eine Aktie einen Balancer-Score von 1,5, ergibt sich ei
         width="stretch",
         hide_index=True,
         column_config={
-            "Bewertung": st.column_config.ProgressColumn(
-                "Aktienbewertung", format="%.0f", min_value=0, max_value=100,
-                help="Gesamtscore aus der Aktienbewertung (Technisch + Fundamental + MA + Chart).",
+            "Ticker": st.column_config.TextColumn("Ticker", width="small"),
+            "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f%%"),
+            "Health-Score": st.column_config.ProgressColumn(
+                "Health-Score", format="%.0f", min_value=0, max_value=100,
+                help="Engine-Health-Score 0–100 aus P&L, MA-Lage (21/50), RS-Trend, Distribution-Tage und Drawdown.",
             ),
-            "Verkaufs-Score": st.column_config.ProgressColumn(
-                "Verkaufs-Score", format="%.0f", min_value=0, max_value=100,
-                help="Aggregierter Wert aus Aktienbewertung, Stopp-Status, P&L, Trend, RS, Risikobeitrag und ATR.",
+            "Empf. Tranche %": st.column_config.NumberColumn(
+                "Empf. Tranche %", format="%d%%",
+                help="Aktuell empfohlene Verkaufsmenge laut Hub-Regeln (0 = halten).",
             ),
-            "P&L %": st.column_config.NumberColumn("P&L %", format="%.2f"),
-            "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%.2f"),
-            "Risikobeitrag": st.column_config.NumberColumn("Risikobeitrag", format="%.3f"),
-            "Empfehlung": st.column_config.TextColumn("Empfehlung"),
+            "Status": st.column_config.TextColumn("Status"),
             "Begründung": st.column_config.TextColumn("Begründung", width="large"),
         },
     )
@@ -3139,8 +3055,7 @@ def _render_depot_portfolio_regler(state: dict | None = None) -> None:
     st.markdown(
         """
 Der Portfolio-Regler legt fest, **wie das Depot gemessen und Positionsgrößen berechnet werden**.
-Die Werte fließen in den Snapshot, das Risiko-Ranking, den Stückzahl-Rechner und den
-Verkaufs-Score ein:
+Die Werte fließen in den Snapshot, das Risiko-Ranking und den Stückzahl-Rechner ein:
 
 - **Cash / freie Liquidität** — verfügbarer Cashbestand in EUR. Wird zum Depotwert addiert,
   bestimmt damit das Risikobudget und die Cashquote.
@@ -3198,7 +3113,7 @@ Verkaufs-Score ein:
             "max_depot_loss_low": float(min(max_loss_low, max_loss_high)),
             "max_depot_loss_high": float(max(max_loss_low, max_loss_high)),
         })
-        st.success("Einstellungen gespeichert. Snapshot, Rechner und Verkaufs-Score nutzen jetzt die neuen Werte.")
+        st.success("Einstellungen gespeichert. Snapshot und Rechner nutzen jetzt die neuen Werte.")
         st.rerun()
 
 
@@ -11529,61 +11444,36 @@ def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: 
         "_sort_tranche": 0,
         "_sort_health": -1,
     }
-    if not ticker:
-        base["Fehler"] = "Ticker fehlt."
+    payload = _evaluate_position_engine(position, manual_map, tranche_log, cache_buster)
+    if not payload.get("ok"):
+        base["Fehler"] = payload.get("error") or "Auswertung fehlgeschlagen."
         return base
+    metrics = payload.get("metrics") or {}
+    health = payload.get("health") or {}
+    result = payload.get("result") or {}
+    current = _safe_float(metrics.get("current_price"), np.nan)
+    sma21 = _safe_float(metrics.get("sma21"), np.nan)
+    sma50 = _safe_float(metrics.get("sma50"), np.nan)
     try:
         buy_date = pd.Timestamp((position or {}).get("buy_date")).date()
-    except Exception:
-        base["Fehler"] = "Kaufdatum fehlt/ungültig."
-        return base
-    buy_price = _safe_float((position or {}).get("buy_price"), np.nan)
-    if np.isnan(buy_price) or buy_price <= 0:
-        base["Fehler"] = "Einstandspreis fehlt/ungültig."
-        return base
-    shares = _safe_float((position or {}).get("shares"), 0.0)
-    stored_currency = str((position or {}).get("currency", "EUR") or "EUR").upper()
-    try:
-        symbol_metrics = _portfolio_symbol_metrics(ticker) or {}
-        market_currency = str(symbol_metrics.get("currency", stored_currency) or stored_currency).upper()
-        metric_buy_price = _sell_monitor_buy_price_for_market(ticker, buy_price, stored_currency, buy_date, market_currency)
-        pivot_tag_raw = (position or {}).get("pivot_tag")
-        pivot_tag_for_metrics = None
-        if pivot_tag_raw:
-            try:
-                pivot_tag_for_metrics = pd.Timestamp(pivot_tag_raw).date()
-            except Exception:
-                pivot_tag_for_metrics = None
-        metrics_payload = load_sell_decision_metrics(ticker, buy_date, metric_buy_price, shares, benchmark_ticker="SPY", currency=market_currency, cache_buster=cache_buster, pivot_date=pivot_tag_for_metrics)
-        if not metrics_payload.get("ok"):
-            base["Fehler"] = metrics_payload.get("error") or "Kennzahlen fehlen."
-            return base
-        manual = dict((manual_map or {}).get(ticker, {}) or {})
-        result = evaluate_sell_decision(metrics_payload, manual, tranche_log)
-        health = compute_sell_health_score(metrics_payload, manual)
-        metrics = metrics_payload.get("metrics", {}) or {}
-        current = _safe_float(metrics.get("current_price"), np.nan)
-        sma21 = _safe_float(metrics.get("sma21"), np.nan)
-        sma50 = _safe_float(metrics.get("sma50"), np.nan)
         held_days = max((datetime.now(timezone.utc).date() - buy_date).days, 0)
-        tranche = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
-        base.update({
-            "P&L %": _safe_float(metrics.get("pnl_pct"), np.nan),
-            "Health-Score": _safe_float(health.get("health_score"), np.nan),
-            "Empfohlene Tranche %": tranche,
-            "Status": _sell_ranking_status_badge(health.get("status")),
-            "Drawdown vom Peak %": _safe_float(metrics.get("drawdown_from_high_since_buy_pct"), np.nan),
-            "21-MA": "darüber" if not np.isnan(current) and not np.isnan(sma21) and current >= sma21 else "darunter" if not np.isnan(current) and not np.isnan(sma21) else "—",
-            "50-MA": "darüber" if not np.isnan(current) and not np.isnan(sma50) and current >= sma50 else "darunter" if not np.isnan(current) and not np.isnan(sma50) else "—",
-            "RS-Trend": health.get("rs_trend", "seitwärts"),
-            "Distribution-Tage": int(_safe_float(metrics.get("distribution_days_25"), 0) or 0),
-            "Haltedauer Tage": held_days,
-            "_sort_tranche": tranche,
-            "_sort_health": _safe_float(health.get("health_score"), -1),
-        })
-    except Exception as exc:
-        logger.debug("Sell portfolio ranking failed for %s: %s", ticker, exc)
-        base["Fehler"] = "Auswertung für diesen Ticker fehlgeschlagen. Prüfe Ticker, Kaufdatum und Yahoo-Verfügbarkeit."
+    except Exception:
+        held_days = 0
+    tranche = int(result.get("sell_now_percent", result.get("recommendation_percent", 0)) or 0)
+    base.update({
+        "P&L %": _safe_float(metrics.get("pnl_pct"), np.nan),
+        "Health-Score": _safe_float(health.get("health_score"), np.nan),
+        "Empfohlene Tranche %": tranche,
+        "Status": _sell_ranking_status_badge(health.get("status")),
+        "Drawdown vom Peak %": _safe_float(metrics.get("drawdown_from_high_since_buy_pct"), np.nan),
+        "21-MA": "darüber" if not np.isnan(current) and not np.isnan(sma21) and current >= sma21 else "darunter" if not np.isnan(current) and not np.isnan(sma21) else "—",
+        "50-MA": "darüber" if not np.isnan(current) and not np.isnan(sma50) and current >= sma50 else "darunter" if not np.isnan(current) and not np.isnan(sma50) else "—",
+        "RS-Trend": health.get("rs_trend", "seitwärts"),
+        "Distribution-Tage": int(_safe_float(metrics.get("distribution_days_25"), 0) or 0),
+        "Haltedauer Tage": held_days,
+        "_sort_tranche": tranche,
+        "_sort_health": _safe_float(health.get("health_score"), -1),
+    })
     return base
 
 
@@ -12760,29 +12650,24 @@ def _tab_verkaufsentscheidung():
 def _tab_nach_kauf():
     _init_workspace_state()
     st.markdown("### 🎯 Nach dem Kauf")
-    st.caption("Überwache bestehende Positionen ohne Vorauswahl. Du gibst den Ticker direkt ein und vorhandene Depotdaten werden erst danach übernommen.")
+    st.caption(
+        "Schneller Gesundheits-Check kurz nach dem Einstieg — nutzt dieselbe Engine "
+        "wie Live-Monitor und Verkaufsentscheidung → Portfolio-Ranking. Gib Ticker, "
+        "Kaufpreis und Kaufdatum ein; gespeicherte Positionen werden vorausgefüllt."
+    )
 
     private_ok = _is_private_unlocked()
     saved_positions = st.session_state.get("positions", []) if private_ok else []
     if not private_ok:
         st.info("Dein persönliches Depot ist gesperrt. Du kannst diesen Tab manuell nutzen oder den privaten Bereich entsperren, um gespeicherte Positionen zu laden und zu speichern.")
-    st.caption("Keine Vorauswahl mehr. Gib den Ticker direkt ein und die Felder werden nur dann mit gespeicherten Daten befüllt, wenn die Position bereits existiert.")
     ticker = _render_ticker_picker("nachkauf_ticker", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
     if not ticker:
         return
 
-    with st.spinner(f"Lade {ticker} …"):
-        df, info, *_ = load_stock_full(ticker)
-
-    if df is None or len(df) < 30:
-        st.error("Keine Kursdaten für diesen Ticker.")
-        return
-
-    raw_price = float(df["Close"].iloc[-1])
-    market_currency = str((info or {}).get("currency", "USD") or "USD").upper()
-    price_eur = raw_price if market_currency == "EUR" else _usd_to_eur(raw_price)
-    price = raw_price
     saved = next((p for p in saved_positions if p.get("ticker") == ticker), None)
+    symbol_metrics = _portfolio_symbol_metrics(ticker) or {}
+    market_currency = str(symbol_metrics.get("currency", "USD") or "USD").upper()
+    latest_price = _safe_float(symbol_metrics.get("price"), np.nan)
 
     bc1, bc2, bc3, bc4 = st.columns(4)
     with bc1:
@@ -12791,7 +12676,13 @@ def _tab_nach_kauf():
             currency_default = "USD"
         currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if currency_default == "EUR" else 1, key="nk_curr")
     with bc2:
-        fallback_price = price_eur if currency == "EUR" else raw_price
+        if not np.isnan(latest_price) and latest_price > 0:
+            if currency == "EUR" and market_currency != "EUR":
+                fallback_price = _usd_to_eur(latest_price)
+            else:
+                fallback_price = latest_price
+        else:
+            fallback_price = 100.0
         default_buy = round(float(saved.get("buy_price", fallback_price * 0.95)) if saved else float(fallback_price * 0.95), 2)
         label = "Kaufkurs (€)" if currency == "EUR" else "Kaufkurs ($)"
         buy_price_input = st.number_input(label, min_value=0.01, value=default_buy, step=0.01, key="nk_price")
@@ -12800,9 +12691,9 @@ def _tab_nach_kauf():
             try:
                 saved_date = pd.Timestamp(saved["buy_date"]).date()
             except Exception:
-                saved_date = df.index[-1].date()
+                saved_date = datetime.now(timezone.utc).date()
         else:
-            saved_date = df.index[-1].date()
+            saved_date = datetime.now(timezone.utc).date()
         buy_date = st.date_input("Kaufdatum", value=saved_date, key="nk_date")
     with bc4:
         note_default = saved.get("note", "") if saved else ""
@@ -12825,150 +12716,81 @@ def _tab_nach_kauf():
     if not (buy_price_input and buy_price_input > 0 and buy_date):
         return
 
-    buy_price = buy_price_input
-    eur_usd_rate = None
-    if currency == "EUR" and market_currency != "EUR":
+    metric_buy_price = _sell_monitor_buy_price_for_market(
+        ticker, float(buy_price_input), currency, buy_date, market_currency,
+    )
+    with st.spinner(f"Lade {ticker} und werte mit der Verkaufs-Engine aus …"):
         try:
-            fx = yf.Ticker("EURUSD=X").history(start=pd.Timestamp(buy_date) - timedelta(days=5), end=pd.Timestamp(buy_date) + timedelta(days=3))
-            if fx is not None and len(fx) > 0:
-                eur_usd_rate = float(fx["Close"].iloc[-1])
-                buy_price = buy_price_input * eur_usd_rate
-        except Exception:
-            pass
-        if eur_usd_rate is None:
-            eur_usd_rate = 1.08
-            buy_price = buy_price_input * eur_usd_rate
-
-    buy_ts = pd.Timestamp(buy_date)
-    if df.index.tz is not None:
-        buy_ts = buy_ts.tz_localize(df.index.tz)
-    mask = df.index >= buy_ts
-    if not mask.any():
-        st.warning("Kaufdatum liegt nach den verfügbaren Daten.")
+            metrics_payload = load_sell_decision_metrics(
+                ticker, buy_date, metric_buy_price, 1.0,
+                benchmark_ticker="SPY", currency=market_currency,
+                cache_buster=int(st.session_state.get("nk_cache_buster", 0) or 0),
+            )
+        except Exception as exc:
+            logger.debug("Nach-Kauf engine load failed for %s: %s", ticker, exc)
+            st.error("Yahoo-Daten konnten nicht geladen werden. Prüfe Ticker, Kaufdatum und Internetverbindung.")
+            return
+    if not metrics_payload.get("ok"):
+        st.error(_sell_decision_user_error(metrics_payload.get("error"), ticker))
         return
 
-    df_since = df.loc[mask]
-    days_held = len(df_since)
-    window = min(20, days_held)
-    df_window = df_since.tail(window)
-    pnl_pct = (price / buy_price - 1) * 100
-    eur_note = f' · €{buy_price_input:,.2f} × {eur_usd_rate:.4f} = ${buy_price:,.2f}' if currency == "EUR" and eur_usd_rate else ""
+    metrics = metrics_payload.get("metrics", {}) or {}
+    health = compute_sell_health_score(metrics_payload, {})
+    auto_strength, auto_warning, auto_reasons = _sell_monitor_auto_checkbox_data(metrics_payload)
 
-    if pnl_pct >= 3:
-        verdict_banner = ("Gesundes Verhalten", "hero-good")
-    elif pnl_pct >= -2:
-        verdict_banner = ("Gemischt, aber noch unkritisch", "hero-warn")
-    else:
-        verdict_banner = ("Schwächer als gewünscht", "hero-bad")
+    current_price = _safe_float(metrics.get("current_price"), np.nan)
+    pnl_pct = _safe_float(metrics.get("pnl_pct"), np.nan)
+    days_held = max((datetime.now(timezone.utc).date() - buy_date).days, 0)
+    money_symbol = "€" if market_currency == "EUR" else "$" if market_currency == "USD" else market_currency
+
+    status = str(health.get("status") or "—")
+    status_tone = {"Halten": "hero-good", "Beobachten": "hero-warn", "Verkaufen": "hero-bad"}.get(status, "hero-warn")
+    status_text = {
+        "Halten": "🟢 Gesundes Verhalten — halten",
+        "Beobachten": "🟡 Beobachten — gemischte Signale",
+        "Verkaufen": "🔴 Risiko — Position prüfen / Tranche erwägen",
+    }.get(status, status)
+    eur_note = ""
+    if currency == "EUR" and market_currency != "EUR" and metric_buy_price:
+        eur_note = f' · €{buy_price_input:,.2f} → {money_symbol}{metric_buy_price:,.2f}'
+    current_text = f"{money_symbol}{current_price:,.2f}" if not np.isnan(current_price) else "—"
+    pnl_text = f"{'+' if pnl_pct >= 0 else ''}{pnl_pct:.1f}%" if not np.isnan(pnl_pct) else "—"
 
     st.markdown(
-        f'<div class="summary-hero"><div class="hero-title">{ticker} seit Kauf</div><div class="hero-subtitle">Kauf: ${buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note}</div><div class="hero-action {verdict_banner[1]}">Aktuell ${price:,.2f} · {"+" if pnl_pct>=0 else ""}{pnl_pct:.1f}% · {days_held} Handelstage</div></div>',
+        f'<div class="summary-hero">'
+        f'<div class="hero-title">{html.escape(ticker)} seit Kauf</div>'
+        f'<div class="hero-subtitle">Kauf: {money_symbol}{metric_buy_price:,.2f} am {buy_date.strftime("%d.%m.%Y")}{eur_note}</div>'
+        f'<div class="hero-action {status_tone}">Aktuell {current_text} · {pnl_text} · {days_held} Tage · {status_text}</div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
-    c = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
-    pct_chg = c.pct_change()
-    vol_avg = v.rolling(50).mean()
-    ema21 = c.ewm(span=21).mean(); sma50 = c.rolling(50).mean()
-    rng_d = h - l
-    cr_series = pd.Series(np.where(rng_d > 0, (c - l) / rng_d, 0.5), index=df.index)
-
-    w_pct = pct_chg.loc[df_window.index]
-    w_vol = v.loc[df_window.index]
-    w_cr = cr_series.loc[df_window.index]
-    w_vol_avg = vol_avg.loc[df_window.index]
-
-    pos_signs = []; neg_signs = []
-    if pnl_pct > 0:
-        pos_signs.append(("Unmittelbare Stärke nach Kauf", f"+{pnl_pct:.1f}% Gewinn seit Einstieg ({days_held}T)"))
-    elif pnl_pct < -3:
-        neg_signs.append(("Kein Gewinn nach Kauf", f"{pnl_pct:.1f}% Verlust seit Einstieg ({days_held}T)"))
-
-    avg_cr = w_cr.mean()
-    if avg_cr > 0.6:
-        pos_signs.append(("Schlüsse im oberen Bereich", f"Ø CR: {avg_cr:.0%} ({window}T)"))
-    elif avg_cr < 0.35:
-        neg_signs.append(("Schlüsse nahe Tagestief", f"Ø CR: {avg_cr:.0%} ({window}T)"))
-
-    green_days = int((w_pct > 0).sum()); red_days = int((w_pct < 0).sum())
-    green_ratio = green_days / window if window > 0 else 0
-    if green_ratio >= 0.7:
-        pos_signs.append(("Überwiegend grüne Tage", f"{green_days}/{window} im Plus ({green_ratio:.0%})"))
-    elif green_ratio <= 0.4:
-        neg_signs.append(("Überwiegend rote Tage", f"{red_days}/{window} im Minus ({1-green_ratio:.0%})"))
-
-    if price > buy_price * 0.97:
-        pos_signs.append(("Kurs über Kaufniveau", f"${price:,.2f} > ${buy_price:,.2f}"))
-    else:
-        neg_signs.append(("Schlusskurs unter Kaufniveau", f"${price:,.2f} < ${buy_price:,.2f}"))
-
-    e21_val = ema21.iloc[-1]; s50_val = sma50.iloc[-1]
-    if not np.isnan(e21_val) and price > e21_val:
-        pos_signs.append(("Kurs über 21-EMA", f"${price:,.2f} > ${e21_val:,.2f}"))
-    elif not np.isnan(e21_val):
-        neg_signs.append(("Bruch der 21-EMA", f"${price:,.2f} < ${e21_val:,.2f}"))
-    if not np.isnan(s50_val) and price > s50_val:
-        pos_signs.append(("Kurs über 50-SMA", f"${price:,.2f} > ${s50_val:,.2f}"))
-    elif not np.isnan(s50_val):
-        neg_signs.append(("Bruch der 50-SMA", f"${price:,.2f} < ${s50_val:,.2f}"))
-
-    if len(df_since) >= 3:
-        rs_buy = c.loc[df_since.index[0]]
-        rs_change = (price / rs_buy - 1) * 100 if rs_buy > 0 else 0
-        if rs_change > 2:
-            pos_signs.append(("Steigende Stärke seit Kauf", f"+{rs_change:.1f}% seit Kaufdatum"))
-        elif rs_change < -3:
-            neg_signs.append(("Schwäche seit Kauf", f"{rs_change:.1f}% seit Kaufdatum"))
-
-    up_vol_w = v.loc[df_window.index].where(pct_chg.loc[df_window.index] > 0).mean()
-    dn_vol_w = v.loc[df_window.index].where(pct_chg.loc[df_window.index] < 0).mean()
-    if up_vol_w and dn_vol_w and not np.isnan(up_vol_w) and not np.isnan(dn_vol_w) and dn_vol_w > 0:
-        ratio = up_vol_w / dn_vol_w
-        if ratio > 1.2:
-            pos_signs.append(("Akkumulationsmuster", f"Up/Down-Vol: {ratio:.2f} ({window}T)"))
-        elif ratio < 0.8:
-            neg_signs.append(("Verschlechterung Up/Down-Volume", f"Ratio: {ratio:.2f} ({window}T)"))
-
-    stall_w = ((w_pct >= 0) & (w_pct < 0.005) & (w_vol > w_vol_avg * 0.95)).sum() if len(w_vol_avg.dropna()) > 0 else 0
-    if stall_w >= 2:
-        neg_signs.append(("Stau-Tage nahe Ausbruchspunkt", f"{stall_w} in {window}T"))
-
-    c_window = c.loc[df_window.index]
-    recent_high = c_window.iloc[-1] >= c_window.max() * 0.998
-    weak_vol = w_vol.mean() < vol_avg.iloc[-1] * 0.8 if not np.isnan(vol_avg.iloc[-1]) else False
-    if recent_high and weak_vol:
-        neg_signs.append(("Neue Hochs bei magerem Volumen", "Nachlassende Kaufbereitschaft"))
-
-    dist_w = int(((w_pct < 0) & (w_vol > v.shift(1).loc[df_window.index])).sum())
-    if dist_w >= 3:
-        neg_signs.append(("Häufung von Verkaufstagen", f"{dist_w} Dist.-Tage in {window}T"))
-
-    if len(w_pct.dropna()) >= 3:
-        worst_day = w_pct.min()
-        if worst_day < -0.02:
-            worst_idx = w_pct.idxmin()
-            days_since_w = len(c.loc[worst_idx:]) - 1
-            recovery = (c.iloc[-1] / c.loc[worst_idx] - 1) * 100
-            if days_since_w >= 3 and recovery < abs(worst_day * 100) * 0.5:
-                neg_signs.append(("Schwache Erholungsversuche", f"Schlimmster Tag: {worst_day*100:.1f}% · Erholung nach {days_since_w}T: {recovery:+.1f}%"))
-
-    if pnl_pct < -7:
-        neg_signs.append(("⚠ Stop-Loss: >7% Verlust", f"{pnl_pct:.1f}% — Sofort verkaufen"))
-
-    summary_cards = [
-        {"title": "P&L", "value": f"{pnl_pct:+.1f}%", "detail": f"{days_held} Handelstage seit Kauf"},
-        {"title": "21-EMA", "value": "darüber" if not np.isnan(e21_val) and price > e21_val else "darunter", "detail": f"${e21_val:,.2f}" if not np.isnan(e21_val) else "—"},
-        {"title": "50-SMA", "value": "darüber" if not np.isnan(s50_val) and price > s50_val else "darunter", "detail": f"${s50_val:,.2f}" if not np.isnan(s50_val) else "—"},
-        {"title": "Warnzeichen", "value": str(len(neg_signs)), "detail": "Je mehr Warnzeichen, desto kleiner der Handlungsspielraum"},
+    kpi_cards = [
+        {"title": "P&L", "value": _fmt_pct(metrics.get("pnl_pct")), "detail": f"{days_held} Tage seit Kauf"},
+        {"title": "Drawdown", "value": _fmt_pct(metrics.get("drawdown_from_high_since_buy_pct")), "detail": "vom Hoch nach Kauf"},
+        {"title": "Distanz 21-MA", "value": _fmt_pct(_sell_monitor_distance(current_price, metrics.get("sma21"))), "detail": _sell_monitor_fmt_money(metrics.get("sma21"), market_currency)},
+        {"title": "Distanz 50-MA", "value": _fmt_pct(_sell_monitor_distance(current_price, metrics.get("sma50"))), "detail": _sell_monitor_fmt_money(metrics.get("sma50"), market_currency)},
     ]
-    _render_change_cards(summary_cards)
+    _render_change_cards(kpi_cards)
+
+    pos_signs: list[tuple[str, str]] = []
+    for key, label in SELL_MONITOR_STRENGTH_SIGNALS:
+        if bool(auto_strength.get(key, False)):
+            pos_signs.append((label, str(auto_reasons.get(key, "")).strip()))
+    neg_signs: list[tuple[str, str]] = []
+    if not np.isnan(pnl_pct) and pnl_pct < -7:
+        neg_signs.append(("⚠ Stop-Loss erreicht (>7% Verlust)", f"P&L {pnl_pct:+.1f}% — sofort prüfen"))
+    for key, label in SELL_MONITOR_WARNING_SIGNALS:
+        if bool(auto_warning.get(key, False)):
+            neg_signs.append((label, str(auto_reasons.get(key, "")).strip()))
 
     pc1, pc2 = st.columns(2)
     with pc1:
         st.markdown('<div class="info-card" style="border-color:#22c55e30;"><div class="card-label" style="color:#22c55e;">Positive Zeichen</div>', unsafe_allow_html=True)
         if pos_signs:
             for nm, dt in pos_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:#22c55e;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                detail_html = f'<div style="font-size:.72rem;color:#64748b;">{html.escape(dt)}</div>' if dt else ""
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:#22c55e;">{html.escape(nm)}</div>{detail_html}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine positiven Zeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -12977,24 +12799,24 @@ def _tab_nach_kauf():
         st.markdown('<div class="info-card" style="border-color:#ef444430;"><div class="card-label" style="color:#ef4444;">Warnzeichen</div>', unsafe_allow_html=True)
         if neg_signs:
             for nm, dt in neg_signs:
-                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:#ef4444;">{nm}</div><div style="font-size:.72rem;color:#64748b;">{dt}</div></div>', unsafe_allow_html=True)
+                detail_html = f'<div style="font-size:.72rem;color:#64748b;">{html.escape(dt)}</div>' if dt else ""
+                st.markdown(f'<div style="padding:4px 0;border-bottom:1px solid #e3e8f0;"><div style="font-size:.84rem;color:#ef4444;">{html.escape(nm)}</div>{detail_html}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#4a5568;font-size:.85rem;">Keine Warnzeichen</div>', unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    np2 = len(pos_signs); nn2 = len(neg_signs); score2 = np2 - nn2
-    if nn2 == 0 and np2 >= 3:
-        verdict2, vc2 = "Gesundes Verhalten — Position halten", "#22c55e"
-    elif score2 >= 2:
-        verdict2, vc2 = "Überwiegend positiv — beobachten", "#22c55e"
-    elif score2 >= 0:
-        verdict2, vc2 = "Gemischt — erhöhte Aufmerksamkeit", "#f59e0b"
-    elif pnl_pct < -7:
-        verdict2, vc2 = "Stop-Loss erreicht — Position schließen", "#ef4444"
-    else:
-        verdict2, vc2 = "Überwiegend negativ — Position überprüfen", "#ef4444"
-
-    st.markdown(f'<div class="info-card"><div class="card-label">Nach-Kauf-Bewertung</div><div style="font-size:1rem;font-weight:700;color:{vc2};">{verdict2}</div><div class="mini-help">{np2} Positiv · {nn2} Negativ · Score {score2:+d}</div></div>', unsafe_allow_html=True)
+    score = _safe_float(health.get("health_score"), np.nan)
+    rs_trend = str(health.get("rs_trend") or "—")
+    verdict_color = {"Halten": "#22c55e", "Beobachten": "#f59e0b", "Verkaufen": "#ef4444"}.get(status, "#64748b")
+    score_text = f"{score:.0f}/100" if not np.isnan(score) else "—"
+    st.markdown(
+        f'<div class="info-card"><div class="card-label">Nach-Kauf-Bewertung (Engine-Health-Score)</div>'
+        f'<div style="font-size:1rem;font-weight:700;color:{verdict_color};">{html.escape(status_text)}</div>'
+        f'<div class="mini-help">Health-Score {score_text} · RS-Trend {html.escape(rs_trend)} · {len(pos_signs)} positive · {len(neg_signs)} warnende Signale</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Für Tranchen-Empfehlung, manuelle Overrides und Setup wechsle in „Verkaufs-Entscheidung → Live-Monitor“.")
 
 
 def _tab_sektoranalyse():
@@ -13591,7 +13413,7 @@ def _tab_mein_depot():
     st.markdown("### 💼 Mein Depot")
     st.caption(
         "Nach Kapitel 7.2 · Korridor 8–12 Aktien · Positionsgröße über max. Verlust · "
-        "Verkaufs-Score kombiniert Aktienbewertung mit Depot-Risiko."
+        "Verkaufskandidaten, Nach-Kauf-Check und Verkaufsentscheidung nutzen dieselbe Engine."
     )
     tabs = st.tabs([
         "📋 Übersicht",
