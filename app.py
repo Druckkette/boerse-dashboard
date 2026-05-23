@@ -9656,16 +9656,20 @@ def build_stock_assessment(
     rs_ctx: dict | None = None,
     cmf_val: float | None = None,
 ) -> dict:
+    """Erzeugt Treiber-/Warnsignal-Listen, Status, Summary und data_basis für die Aktienbewertung.
+
+    Liefert KEINE numerischen Sub-Scores mehr (quality/growth/trend/risk/total) – diese
+    liefen parallel zu den sichtbaren KPI-Karten (Technisch / Fundamental / Gleitende
+    Durchschnitte / Chartverhalten) und waren im UI tote Felder. Der Verdict im Tab
+    nutzt für den Normalfall den dort berechneten overall_score; nur die drei
+    Sonderstatus 'Nicht bewertbar', 'Überdehnt' und 'Nicht kaufen' propagieren aus
+    dieser Funktion ins UI.
+    """
     if df is None or df.empty:
         return {
-            "total_score": 0,
             "status": "Nicht bewertbar",
             "status_tone": "neutral",
             "summary": "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar.",
-            "quality_score": 0,
-            "growth_score": 0,
-            "trend_score": 0,
-            "risk_score": 0,
             "drivers": [],
             "warnings": ["Keine Kursdaten verfügbar."],
             "data_basis": "none",
@@ -9681,102 +9685,47 @@ def build_stock_assessment(
     atr_val = atr_s.iloc[-1] if len(atr_s) else np.nan
     atr_pct = (atr_val / price * 100) if pd.notna(atr_val) and pd.notna(price) and price else np.nan
     drawdown_52w = (price / close.rolling(252).max().iloc[-1] - 1) * 100 if len(close) >= 252 else np.nan
+
+    above_50 = bool(pd.notna(sma50.iloc[-1]) and pd.notna(price) and price > sma50.iloc[-1])
+    above_200 = bool(pd.notna(sma200.iloc[-1]) and pd.notna(price) and price > sma200.iloc[-1])
+    dist_21 = (price / ema21.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(ema21.iloc[-1]) and ema21.iloc[-1] else np.nan
+    dist_50 = (price / sma50.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma50.iloc[-1]) and sma50.iloc[-1] else np.nan
+    dist_200 = (price / sma200.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma200.iloc[-1]) and sma200.iloc[-1] else np.nan
+
     rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
     rs_rating = float(rs_rating) if rs_rating is not None and pd.notna(rs_rating) else np.nan
 
-    quality_metrics = []
-    growth_metrics = []
-    trend_metrics = []
-    risk_metrics = []
-    drivers: list[str] = []
-    warnings: list[str] = []
-
-    def _add_metric(bucket: list[float], value, good=None, mid=None, invert=False):
-        if value is None or pd.isna(value):
-            return
-        val = float(value)
-        if good is not None:
-            if invert:
-                score = 100 if val <= good else 60 if mid is not None and val <= mid else 25
-            else:
-                score = 100 if val >= good else 60 if mid is not None and val >= mid else 25
-        else:
-            score = np.clip(val, 0, 100)
-        bucket.append(float(score))
-
-    # Qualität (Buch Kap. 3.4: ROE ≥17% als zentrale Qualitätskennzahl)
-    # Hinweis: Bruttomarge, Operative Marge und Debt/Equity wurden bewusst entfernt,
-    # da sie nicht in der Buch-Checkliste 3.4 stehen.
     roe = info.get("returnOnEquity")
-    _add_metric(quality_metrics, roe * 100 if roe is not None else np.nan, good=17, mid=10)
-    if pd.notna(roe) and roe >= 0.17:
-        drivers.append("Hohe Eigenkapitalrendite (ROE) stützt die Qualitätsbewertung.")
-
-    # Wachstum (Buch Kap. 3.4: EPS- und Umsatzwachstum ≥20% YoY in Quartal und Jahr)
-    # Schwellen entsprechen der Checkliste 3.4: 100 Pkt ab 20%, 60 Pkt ab 13% (Beschleunigungs-Floor)
-    revenue_growth = info.get("revenueGrowth")
     earnings_growth = info.get("earningsGrowth")
-    q_rev_growth = info.get("quarterlyRevenueGrowth")
-    q_eps_growth = info.get("quarterlyEarningsGrowth")
-    _add_metric(growth_metrics, revenue_growth * 100 if revenue_growth is not None else np.nan, good=20, mid=10)
-    _add_metric(growth_metrics, earnings_growth * 100 if earnings_growth is not None else np.nan, good=20, mid=10)
-    _add_metric(growth_metrics, q_rev_growth * 100 if q_rev_growth is not None else np.nan, good=20, mid=13)
-    _add_metric(growth_metrics, q_eps_growth * 100 if q_eps_growth is not None else np.nan, good=20, mid=13)
-    if pd.notna(earnings_growth) and earnings_growth >= 0.20:
-        drivers.append("Gewinnwachstum erreicht die Buch-Schwelle von 20%.")
+    beta = info.get("beta")
 
-    # CMF (Buch Kap. 3.5, Tabelle 13): A=stark, B=moderat, C=neutral, D=moderat dist, E=stark dist
-    # CMF misst Kapitalfluss / Akkumulation und gehört thematisch zur Nachfrageseite -> Wachstum.
+    cmf_letter = None
     if cmf_val is not None and pd.notna(cmf_val):
         try:
             cmf_letter, _, _ = _cmf_rating(float(cmf_val))
         except Exception:
             cmf_letter = None
-        if cmf_letter == "A":
-            growth_metrics.append(100.0)
-            drivers.append("Starke Akkumulation laut Chaikin Money Flow (Rating A).")
-        elif cmf_letter == "B":
-            growth_metrics.append(80.0)
-        elif cmf_letter == "C":
-            growth_metrics.append(50.0)
-        elif cmf_letter == "D":
-            growth_metrics.append(25.0)
-            warnings.append("Moderate Distribution laut Chaikin Money Flow (Rating D).")
-        elif cmf_letter == "E":
-            growth_metrics.append(10.0)
-            warnings.append("Deutliche Distribution laut Chaikin Money Flow (Rating E).")
 
-    # Trend
-    above_ema21 = bool(pd.notna(ema21.iloc[-1]) and pd.notna(price) and price > ema21.iloc[-1])
-    above_50 = bool(pd.notna(sma50.iloc[-1]) and pd.notna(price) and price > sma50.iloc[-1])
-    above_200 = bool(pd.notna(sma200.iloc[-1]) and pd.notna(price) and price > sma200.iloc[-1])
-    _add_metric(trend_metrics, 100 if above_ema21 else 25, good=None)
-    _add_metric(trend_metrics, 100 if above_50 else 20, good=None)
-    _add_metric(trend_metrics, 100 if above_200 else 15, good=None)
-    _add_metric(trend_metrics, rs_rating, good=80, mid=65)
-    if isinstance(rs_ctx, dict):
-        if rs_ctx.get("trend_5w") is True:
-            trend_metrics.append(80.0)
-        elif rs_ctx.get("trend_5w") is False:
-            trend_metrics.append(30.0)
+    drivers: list[str] = []
+    warnings: list[str] = []
+
+    # Treiber (Buch-Schwellen aus Kap. 3.4 / 3.5 / 4.x)
+    if pd.notna(roe) and roe >= 0.17:
+        drivers.append("Hohe Eigenkapitalrendite (ROE) stützt die Qualitätsbewertung.")
+    if pd.notna(earnings_growth) and earnings_growth >= 0.20:
+        drivers.append("Gewinnwachstum erreicht die Buch-Schwelle von 20%.")
+    if cmf_letter == "A":
+        drivers.append("Starke Akkumulation laut Chaikin Money Flow (Rating A).")
     if above_50 and above_200:
         drivers.append("Der Kurs notiert über 50- und 200-Tage-Linie.")
     if pd.notna(rs_rating) and rs_rating >= 80:
         drivers.append("Die Aktie zeigt relative Stärke gegenüber dem Vergleichsuniversum.")
 
-    # Risiko (Buch Kap. 4.5: Abstand zur 50-SMA ist Warnsignal ab ~25%)
-    # Hinweis: ATR und Beta werden bewusst NICHT mehr in den Risiko-Score eingerechnet,
-    # sondern nur als Info-Kennzahlen ausgewiesen. Begründung Buch Kap. 3.6:
-    # Sie beschreiben das Temperament einer Aktie, nicht ihre Kaufqualität.
-    beta = info.get("beta")
-    dist_21 = (price / ema21.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(ema21.iloc[-1]) and ema21.iloc[-1] else np.nan
-    dist_50 = (price / sma50.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma50.iloc[-1]) and sma50.iloc[-1] else np.nan
-    dist_200 = (price / sma200.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma200.iloc[-1]) and sma200.iloc[-1] else np.nan
-    _add_metric(risk_metrics, abs(drawdown_52w) if pd.notna(drawdown_52w) else np.nan, good=12, mid=25, invert=True)
-    _add_metric(risk_metrics, abs(dist_50) if pd.notna(dist_50) else np.nan, good=10, mid=25, invert=True)
-
-    # Warnings bleiben informativ – ATR/Beta werden hier weiterhin sichtbar gemacht,
-    # ohne den Score zu beeinflussen.
+    # Warnsignale
+    if cmf_letter == "D":
+        warnings.append("Moderate Distribution laut Chaikin Money Flow (Rating D).")
+    elif cmf_letter == "E":
+        warnings.append("Deutliche Distribution laut Chaikin Money Flow (Rating E).")
     if pd.notna(atr_pct) and atr_pct >= 6:
         warnings.append("Hohe Volatilität (ATR) erhöht das kurzfristige Risiko.")
     if pd.notna(dist_50) and dist_50 >= 25:
@@ -9785,88 +9734,6 @@ def build_stock_assessment(
         warnings.append("Überdurchschnittliches Beta signalisiert erhöhte Marktsensitivität.")
     if pd.notna(drawdown_52w) and drawdown_52w <= -20:
         warnings.append("Drawdown vom 52-Wochen-Hoch erreicht Bärenmarkt-Niveau (Buch Kap. 2.2: ≤ −20%).")
-
-    signs_pos = len((chart_signs or {}).get("positiv", []))
-    signs_neg = len((chart_signs or {}).get("negativ", []))
-    if signs_pos > signs_neg + 2:
-        trend_metrics.append(75.0)
-    elif signs_neg > signs_pos + 2:
-        risk_metrics.append(30.0)
-
-    quality_score = round(float(np.mean(quality_metrics))) if quality_metrics else np.nan
-    growth_score = round(float(np.mean(growth_metrics))) if growth_metrics else np.nan
-    trend_score = round(float(np.mean(trend_metrics))) if trend_metrics else np.nan
-    risk_score = round(float(np.mean(risk_metrics))) if risk_metrics else np.nan
-
-    available_groups = sum(pd.notna(x) for x in [quality_score, growth_score, trend_score, risk_score])
-    has_fundamentals = bool(quality_metrics or growth_metrics)
-    data_basis = "full" if has_fundamentals else "chart_only"
-
-    def _safe_score(value, fallback=50.0):
-        return float(value) if pd.notna(value) else float(fallback)
-
-    total_score = round(
-        _safe_score(quality_score) * 0.25
-        + _safe_score(growth_score) * 0.20
-        + _safe_score(trend_score) * 0.35
-        + _safe_score(risk_score) * 0.20
-    )
-
-    if available_groups <= 1 or len(df) < 120:
-        status = "Nicht bewertbar"
-        tone = "neutral"
-    elif pd.notna(price) and price < 15:
-        # Buch Kap. 3.5: Mindestpreis 15 USD – darunter Hard-Disqualifikation.
-        status = "Nicht bewertbar"
-        tone = "neutral"
-        warnings.append("Kurs unter 15 USD – Buch-Mindestpreis (Kap. 3.5) nicht erfüllt.")
-    elif _dollar_volume_below_threshold(df, price, threshold_mio=30):
-        # Buch Kap. 3.5: durchschnittliches Dollar-Volumen ≥ 30 Mio. USD pro Tag.
-        status = "Nicht bewertbar"
-        tone = "neutral"
-        warnings.append("Dollar-Volumen unter 30 Mio. USD/Tag – Liquiditätsschwelle (Kap. 3.5) nicht erfüllt.")
-    elif trend_score >= 75 and (
-        (pd.notna(dist_50) and dist_50 >= 25)
-        or (pd.notna(dist_21) and dist_21 >= 14)
-        or (pd.notna(dist_200) and dist_200 >= 70)
-    ):
-        status = "Überdehnt"
-        tone = "warn"
-    elif not above_200:
-        # Buch Kap. 4.3: "Du kaufst grundsätzlich keine Titel, die unter ihrer 200-Tage-Linie handeln."
-        # Hard-Cap unabhängig vom Gesamtscore: eigener Status "Nicht kaufen" mit roter Tönung.
-        status = "Nicht kaufen"
-        tone = "bad"
-        warnings.append("Kurs unter 200-SMA – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab.")
-    elif total_score >= 80 and _safe_score(risk_score) >= 45:
-        status = "Attraktiv"
-        tone = "good"
-    elif total_score >= 60:
-        status = "Beobachten"
-        tone = "warn"
-    else:
-        status = "Zu schwach"
-        tone = "bad"
-
-    if data_basis == "chart_only":
-        warnings.append("Fundamentaldaten fehlen – Einordnung ist chartbasiert.")
-
-    if available_groups <= 1:
-        summary = "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar."
-    elif status == "Nicht kaufen":
-        summary = "Kurs unter der 200-Tage-Linie – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab, unabhängig vom Score."
-    elif status == "Überdehnt":
-        summary = "Die Aktie zeigt relative Stärke, ist jedoch deutlich von ihren gleitenden Durchschnitten entfernt."
-    elif _safe_score(quality_score) >= 65 and _safe_score(trend_score) >= 65 and _safe_score(risk_score) < 50:
-        summary = "Qualität und Trend sind konstruktiv, das Risiko ist aber erhöht."
-    elif data_basis == "chart_only":
-        summary = "Chartbasierte Einordnung: Trend ist sichtbar, Fundamentaldaten sind derzeit nicht vollständig."
-    elif status == "Attraktiv":
-        summary = "Mehrere Teilbereiche wirken stabil und liefern ein konstruktives Gesamtbild."
-    elif status == "Beobachten":
-        summary = "Das Bild ist gemischt und sollte mit Blick auf Trend und Risiko weiter beobachtet werden."
-    else:
-        summary = "Die regelbasierte Gesamtlage bleibt derzeit zu schwach für eine belastbare positive Einordnung."
 
     if fundamentals_checks:
         failed_fund = [_check_label(check) for check in fundamentals_checks if not _check_ok(check)]
@@ -9877,15 +9744,63 @@ def build_stock_assessment(
         if len(failed_tech) >= 8:
             warnings.append("Mehrere technische Prüfpunkte sind aktuell nicht erfüllt.")
 
+    has_fundamentals = bool(
+        info
+        and (
+            info.get("returnOnEquity") is not None
+            or info.get("earningsGrowth") is not None
+            or info.get("revenueGrowth") is not None
+            or info.get("quarterlyEarningsGrowth") is not None
+            or info.get("quarterlyRevenueGrowth") is not None
+        )
+    )
+    data_basis = "full" if has_fundamentals else "chart_only"
+    if data_basis == "chart_only":
+        warnings.append("Fundamentaldaten fehlen – Einordnung ist chartbasiert.")
+
+    # Status-Kaskade: nur die drei Sonderfälle, die ins Verdict propagieren.
+    # Für den Normalfall bleibt status leer – der Verdict im Tab entscheidet dann
+    # ausschließlich anhand des sichtbaren overall_score.
+    status = ""
+    tone = "neutral"
+    summary = ""
+
+    if len(df) < 120:
+        status = "Nicht bewertbar"
+        tone = "neutral"
+        summary = "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar."
+    elif pd.notna(price) and price < 15:
+        status = "Nicht bewertbar"
+        tone = "neutral"
+        summary = "Kurs unter 15 USD – Buch-Mindestpreis (Kap. 3.5) nicht erfüllt."
+        warnings.append("Kurs unter 15 USD – Buch-Mindestpreis (Kap. 3.5) nicht erfüllt.")
+    elif _dollar_volume_below_threshold(df, price, threshold_mio=30):
+        status = "Nicht bewertbar"
+        tone = "neutral"
+        summary = "Dollar-Volumen unter 30 Mio. USD/Tag – Liquiditätsschwelle (Kap. 3.5) nicht erfüllt."
+        warnings.append("Dollar-Volumen unter 30 Mio. USD/Tag – Liquiditätsschwelle (Kap. 3.5) nicht erfüllt.")
+    elif (
+        (pd.notna(dist_50) and dist_50 >= 25)
+        or (pd.notna(dist_21) and dist_21 >= 14)
+        or (pd.notna(dist_200) and dist_200 >= 70)
+    ):
+        # Buch Kap. 4.5: Überdehnt sobald eine der Buch-Schwellen (21-EMA 14%,
+        # 50-SMA 25%, 200-SMA 70%) gerissen ist – ohne Trend-Vorbedingung,
+        # weil die Distanz selbst das Signal ist.
+        status = "Überdehnt"
+        tone = "warn"
+        summary = "Die Aktie ist deutlich von ihren gleitenden Durchschnitten entfernt."
+    elif not above_200:
+        # Buch Kap. 4.3: "Du kaufst grundsätzlich keine Titel, die unter ihrer 200-Tage-Linie handeln."
+        status = "Nicht kaufen"
+        tone = "bad"
+        summary = "Kurs unter der 200-Tage-Linie – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab, unabhängig vom Score."
+        warnings.append("Kurs unter 200-SMA – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab.")
+
     return {
-        "total_score": int(np.clip(total_score, 0, 100)),
         "status": status,
         "status_tone": tone,
         "summary": summary,
-        "quality_score": int(np.clip(_safe_score(quality_score), 0, 100)),
-        "growth_score": int(np.clip(_safe_score(growth_score), 0, 100)),
-        "trend_score": int(np.clip(_safe_score(trend_score), 0, 100)),
-        "risk_score": int(np.clip(_safe_score(risk_score), 0, 100)),
         "drivers": list(dict.fromkeys(drivers))[:5],
         "warnings": list(dict.fromkeys(warnings))[:5],
         "data_basis": data_basis,
