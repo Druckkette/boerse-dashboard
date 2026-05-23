@@ -9656,14 +9656,21 @@ def build_stock_assessment(
     rs_ctx: dict | None = None,
     cmf_val: float | None = None,
 ) -> dict:
-    """Erzeugt Treiber-/Warnsignal-Listen, Status, Summary und data_basis für die Aktienbewertung.
+    """Erzeugt Status, Summary, Drivers und Warnings für die Aktienbewertung.
 
-    Liefert KEINE numerischen Sub-Scores mehr (quality/growth/trend/risk/total) – diese
-    liefen parallel zu den sichtbaren KPI-Karten (Technisch / Fundamental / Gleitende
-    Durchschnitte / Chartverhalten) und waren im UI tote Felder. Der Verdict im Tab
-    nutzt für den Normalfall den dort berechneten overall_score; nur die drei
-    Sonderstatus 'Nicht bewertbar', 'Überdehnt' und 'Nicht kaufen' propagieren aus
-    dieser Funktion ins UI.
+    drivers/warnings spiegeln 1:1 die Regeln, die in die 4 sichtbaren KPI-Scores
+    einfließen (Technisch, Fundamental, Gleitende Durchschnitte, Chartverhalten),
+    plus die Buch-Risikoschwellen (ATR, Beta, Drawdown, Distanzen). Pro KPI-Regel
+    genau ein Treiber-Text (wenn erfüllt) ODER ein Warn-Text (wenn nicht erfüllt).
+    Die Listen sind nach Wichtigkeit sortiert; das [:5]-Limit zeigt die jeweils
+    schärfsten Signale zuerst.
+
+    status / summary tragen nur die 5 strukturellen Sonderfälle, die kein
+    KPI-Score abbildet: 'Nicht bewertbar' (zu wenig Daten), 'Mindestpreis nicht
+    erreicht' (Kurs < 15 USD), 'Volumen nicht erreicht' (Ø Dollar-Vol < 30 Mio.),
+    'Überdehnt' (Distanz zu MAs sprengt Buch-Schwellen), 'Unter 200 Tage' (Buch-
+    Hard-Cap Kap. 4.3). Im Normalfall sind beide leer – der Tab entscheidet dann
+    via overall_score.
     """
     if df is None or df.empty:
         return {
@@ -9672,12 +9679,12 @@ def build_stock_assessment(
             "summary": "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar.",
             "drivers": [],
             "warnings": ["Keine Kursdaten verfügbar."],
-            "data_basis": "none",
         }
 
     info = info or {}
     close = pd.to_numeric(df["Close"], errors="coerce")
     price = float(close.iloc[-1]) if len(close) else np.nan
+    sma10 = close.rolling(10).mean()
     ema21 = close.ewm(span=21).mean()
     sma50 = close.rolling(50).mean()
     sma200 = close.rolling(200).mean()
@@ -9686,17 +9693,20 @@ def build_stock_assessment(
     atr_pct = (atr_val / price * 100) if pd.notna(atr_val) and pd.notna(price) and price else np.nan
     drawdown_52w = (price / close.rolling(252).max().iloc[-1] - 1) * 100 if len(close) >= 252 else np.nan
 
+    above_10 = bool(pd.notna(sma10.iloc[-1]) and pd.notna(price) and price > sma10.iloc[-1])
+    above_21 = bool(pd.notna(ema21.iloc[-1]) and pd.notna(price) and price > ema21.iloc[-1])
     above_50 = bool(pd.notna(sma50.iloc[-1]) and pd.notna(price) and price > sma50.iloc[-1])
     above_200 = bool(pd.notna(sma200.iloc[-1]) and pd.notna(price) and price > sma200.iloc[-1])
+    ma_order = bool(
+        pd.notna(ema21.iloc[-1]) and pd.notna(sma50.iloc[-1]) and pd.notna(sma200.iloc[-1])
+        and ema21.iloc[-1] > sma50.iloc[-1] > sma200.iloc[-1]
+    )
     dist_21 = (price / ema21.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(ema21.iloc[-1]) and ema21.iloc[-1] else np.nan
     dist_50 = (price / sma50.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma50.iloc[-1]) and sma50.iloc[-1] else np.nan
     dist_200 = (price / sma200.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma200.iloc[-1]) and sma200.iloc[-1] else np.nan
 
     rs_rating = rs_ctx.get("rating") if isinstance(rs_ctx, dict) else np.nan
     rs_rating = float(rs_rating) if rs_rating is not None and pd.notna(rs_rating) else np.nan
-
-    roe = info.get("returnOnEquity")
-    earnings_growth = info.get("earningsGrowth")
     beta = info.get("beta")
 
     cmf_letter = None
@@ -9706,37 +9716,132 @@ def build_stock_assessment(
         except Exception:
             cmf_letter = None
 
+    tech_map = {label: bool(ok) for label, ok, _ in (technical_checks or [])}
+    fund_map = {_check_label(c): _check_ok(c) for c in (fundamentals_checks or [])}
+
+    def _fund_state(*prefixes):
+        for label, ok in fund_map.items():
+            if any(label.startswith(p) for p in prefixes):
+                return bool(ok)
+        return None  # Check nicht vorhanden
+
+    signs_pos = len((chart_signs or {}).get("positiv", []))
+    signs_neg = len((chart_signs or {}).get("negativ", []))
+
     drivers: list[str] = []
     warnings: list[str] = []
 
-    # Treiber (Buch-Schwellen aus Kap. 3.4 / 3.5 / 4.x)
-    if pd.notna(roe) and roe >= 0.17:
-        drivers.append("Hohe Eigenkapitalrendite (ROE) stützt die Qualitätsbewertung.")
-    if pd.notna(earnings_growth) and earnings_growth >= 0.20:
-        drivers.append("Gewinnwachstum erreicht die Buch-Schwelle von 20%.")
+    # === DRIVERS — Spiegel zu den 4 KPI-Scores, sortiert nach Wichtigkeit ===
+    # KPI „Gleitende Durchschnitte" (Buch Kap. 4.3)
+    if above_50 and above_200:
+        drivers.append("Kurs über 50- und 200-Tage-Linie – Trendstruktur intakt.")
+    if ma_order:
+        drivers.append("MA-Ordnung 21>50>200 sauber gestaffelt.")
+    if above_21:
+        drivers.append("Kurs über 21-EMA – kurzfristiger Trend intakt.")
+    if above_10:
+        drivers.append("Kurs über 10-SMA – sehr kurzfristiger Trend bestätigt.")
+
+    # KPI „Technisch" – RS und Volumen (Buch Kap. 3.5)
+    if pd.notna(rs_rating) and rs_rating >= 80:
+        drivers.append(f"RS-Rating {int(rs_rating)} ≥ 80 – relative Stärke gegenüber dem Markt.")
+    if tech_map.get("RS-Linie steigt über 13 Wochen"):
+        drivers.append("RS-Linie steigt seit 13 Wochen – nachhaltige Outperformance.")
+    if tech_map.get("RS-Linie steigt über 5 Wochen"):
+        drivers.append("RS-Linie steigt seit 5 Wochen – frische Outperformance.")
+    if tech_map.get("RS-Linie über 50-SMA"):
+        drivers.append("RS-Linie über 50-SMA – mittelfristige RS-Stärke.")
+    if tech_map.get("RS-Linie über 21-EMA"):
+        drivers.append("RS-Linie über 21-EMA – kurzfristige RS-Stärke.")
+    if tech_map.get("RS-Linie nahe 52W-Hoch"):
+        drivers.append("RS-Linie nahe 52-Wochen-Hoch.")
+    if tech_map.get("Nahe am 52W-Hoch"):
+        drivers.append("Kurs nahe 52-Wochen-Hoch.")
+    if tech_map.get("Up/Down Vol. Ratio ≥1.0"):
+        drivers.append("Up/Down-Volume-Ratio ≥ 1 – Akkumulation überwiegt.")
     if cmf_letter == "A":
         drivers.append("Starke Akkumulation laut Chaikin Money Flow (Rating A).")
-    if above_50 and above_200:
-        drivers.append("Der Kurs notiert über 50- und 200-Tage-Linie.")
-    if pd.notna(rs_rating) and rs_rating >= 80:
-        drivers.append("Die Aktie zeigt relative Stärke gegenüber dem Vergleichsuniversum.")
+    elif cmf_letter == "B":
+        drivers.append("Moderate Akkumulation laut Chaikin Money Flow (Rating B).")
 
-    # Warnsignale
-    if cmf_letter == "D":
-        warnings.append("Moderate Distribution laut Chaikin Money Flow (Rating D).")
-    elif cmf_letter == "E":
-        warnings.append("Deutliche Distribution laut Chaikin Money Flow (Rating E).")
-    if pd.notna(atr_pct) and atr_pct >= 6:
-        warnings.append("Hohe Volatilität (ATR) erhöht das kurzfristige Risiko.")
-    if pd.notna(dist_50) and dist_50 >= 25:
-        warnings.append("Der Abstand zur 50-SMA überschreitet die Buch-Schwelle von 25% – Aktie überdehnt.")
-    if pd.notna(beta) and beta > 1.6:
-        warnings.append("Überdurchschnittliches Beta signalisiert erhöhte Marktsensitivität.")
+    # KPI „Fundamental" – 9er-Checkliste (Buch Kap. 3.4)
+    if _fund_state("ROE ≥17%") is True:
+        drivers.append("ROE ≥ 17% – hohe Eigenkapitalrendite (Buch Kap. 3.4).")
+    if _fund_state("Jährl. EPS ≥20%", "Jährl. EPS-Wachstum") is True:
+        drivers.append("Jährliches EPS-Wachstum ≥ 20% – Buch-Schwelle erfüllt.")
+    if _fund_state("EPS ≥20% YoY") is True:
+        drivers.append("Quartals-EPS ≥ 20% YoY – Wachstumstempo intakt.")
+    if _fund_state("EPS-Beschleunigung") is True:
+        drivers.append("EPS-Wachstum beschleunigt sich.")
+    if _fund_state("Jährl. Umsatz ≥20%", "Jährl. Umsatzwachstum") is True:
+        drivers.append("Jährliches Umsatzwachstum ≥ 20%.")
+    if _fund_state("Umsatz ≥20% YoY") is True:
+        drivers.append("Quartals-Umsatzwachstum ≥ 20% YoY.")
+    if _fund_state("Umsatz-Beschleunigung") is True:
+        drivers.append("Umsatzwachstum beschleunigt sich.")
+    if _fund_state("Gewinnmarge positiv") is True:
+        drivers.append("Gewinnmarge positiv.")
+    if _fund_state("Summe letzte 4 Quartals-EPS > 0", "Trailing EPS > 0") is True:
+        drivers.append("Summe der letzten 4 Quartals-EPS positiv.")
+
+    # KPI „Chartverhalten" – Saldo der Chartsignale
+    if signs_pos >= signs_neg + 3:
+        drivers.append(f"Chartverhalten konstruktiv – {signs_pos} positive vs. {signs_neg} negative Signale.")
+
+    # === WARNINGS — Spiegel + Buch-Risikoschwellen, sortiert nach Schärfe ===
+    # Risiko / Volatilität (Buch Kap. 2.2 / 4.5 / 3.6)
     if pd.notna(drawdown_52w) and drawdown_52w <= -20:
-        warnings.append("Drawdown vom 52-Wochen-Hoch erreicht Bärenmarkt-Niveau (Buch Kap. 2.2: ≤ −20%).")
+        warnings.append("Drawdown ≤ −20% vom 52-Wochen-Hoch – Bärenmarkt-Niveau (Buch Kap. 2.2).")
+    if pd.notna(atr_pct) and atr_pct >= 6:
+        warnings.append("ATR ≥ 6% – hohe Volatilität, erhöhtes kurzfristiges Risiko.")
+    if pd.notna(beta) and beta > 1.6:
+        warnings.append("Beta > 1.6 – überdurchschnittliche Marktsensitivität.")
 
+    # MA-Struktur (Buch Kap. 4.3) – sub-200 ist Sonderstatus, hier nur die übrigen
+    if above_200 and not above_50:
+        warnings.append("Kurs unter 50-SMA – mittelfristiger Trend gestört.")
+    if above_200 and not above_21:
+        warnings.append("Kurs unter 21-EMA – kurzfristiger Trend gestört.")
+    if above_200 and not ma_order:
+        warnings.append("MA-Ordnung 21>50>200 nicht erfüllt – Trendstruktur unsauber.")
+
+    # Kapitalfluss
+    if cmf_letter == "E":
+        warnings.append("Deutliche Distribution laut Chaikin Money Flow (Rating E).")
+    elif cmf_letter == "D":
+        warnings.append("Moderate Distribution laut Chaikin Money Flow (Rating D).")
+
+    # Relative Schwäche (Spiegel zu RS-Drivern)
+    if pd.notna(rs_rating) and rs_rating < 80:
+        warnings.append(f"RS-Rating {int(rs_rating)} < 80 – keine relative Stärke.")
+    if tech_map.get("RS-Linie steigt über 13 Wochen") is False:
+        warnings.append("RS-Linie fällt im 13-Wochen-Trend.")
+    if tech_map.get("RS-Linie steigt über 5 Wochen") is False:
+        warnings.append("RS-Linie fällt im 5-Wochen-Trend.")
+    if tech_map.get("RS-Linie über 50-SMA") is False:
+        warnings.append("RS-Linie unter 50-SMA – mittelfristige RS-Schwäche.")
+    if tech_map.get("RS-Linie über 21-EMA") is False:
+        warnings.append("RS-Linie unter 21-EMA – kurzfristige RS-Schwäche.")
+    if tech_map.get("Up/Down Vol. Ratio ≥1.0") is False:
+        warnings.append("Up/Down-Volume-Ratio < 1 – Distribution überwiegt.")
+
+    # Fundamentals (Spiegel zu Drivern)
+    if _fund_state("ROE ≥17%") is False:
+        warnings.append("ROE < 17% – Buch-Qualitätsschwelle nicht erfüllt.")
+    if _fund_state("Jährl. EPS ≥20%", "Jährl. EPS-Wachstum") is False:
+        warnings.append("Jährliches EPS-Wachstum < 20%.")
+    if _fund_state("Jährl. Umsatz ≥20%", "Jährl. Umsatzwachstum") is False:
+        warnings.append("Jährliches Umsatzwachstum < 20%.")
+    if _fund_state("Gewinnmarge positiv") is False:
+        warnings.append("Gewinnmarge nicht positiv.")
+
+    # Chartverhalten (Spiegel zum Chart-Driver)
+    if signs_neg >= signs_pos + 3:
+        warnings.append(f"Chartverhalten schwach – {signs_neg} negative vs. {signs_pos} positive Signale.")
+
+    # Aggregat-Hinweise + Datenbasis
     if fundamentals_checks:
-        failed_fund = [_check_label(check) for check in fundamentals_checks if not _check_ok(check)]
+        failed_fund = [_check_label(c) for c in fundamentals_checks if not _check_ok(c)]
         if len(failed_fund) >= 8:
             warnings.append("Viele fundamentale Prüfpunkte sind aktuell nicht erfüllt oder nicht verfügbar.")
     if technical_checks:
@@ -9754,13 +9859,10 @@ def build_stock_assessment(
             or info.get("quarterlyRevenueGrowth") is not None
         )
     )
-    data_basis = "full" if has_fundamentals else "chart_only"
-    if data_basis == "chart_only":
+    if not has_fundamentals:
         warnings.append("Fundamentaldaten fehlen – Einordnung ist chartbasiert.")
 
-    # Status-Kaskade: nur die drei Sonderfälle, die ins Verdict propagieren.
-    # Für den Normalfall bleibt status leer – der Verdict im Tab entscheidet dann
-    # ausschließlich anhand des sichtbaren overall_score.
+    # === Status-Kaskade: 5 strukturelle Sonderfälle ===
     status = ""
     tone = "neutral"
     summary = ""
@@ -9770,32 +9872,29 @@ def build_stock_assessment(
         tone = "neutral"
         summary = "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar."
     elif pd.notna(price) and price < 15:
-        status = "Nicht bewertbar"
+        # Buch Kap. 3.5: Mindestpreis 15 USD
+        status = "Mindestpreis nicht erreicht"
         tone = "neutral"
         summary = "Kurs unter 15 USD – Buch-Mindestpreis (Kap. 3.5) nicht erfüllt."
-        warnings.append("Kurs unter 15 USD – Buch-Mindestpreis (Kap. 3.5) nicht erfüllt.")
     elif _dollar_volume_below_threshold(df, price, threshold_mio=30):
-        status = "Nicht bewertbar"
+        # Buch Kap. 3.5: Ø Dollar-Volumen ≥ 30 Mio. USD/Tag
+        status = "Volumen nicht erreicht"
         tone = "neutral"
         summary = "Dollar-Volumen unter 30 Mio. USD/Tag – Liquiditätsschwelle (Kap. 3.5) nicht erfüllt."
-        warnings.append("Dollar-Volumen unter 30 Mio. USD/Tag – Liquiditätsschwelle (Kap. 3.5) nicht erfüllt.")
     elif (
         (pd.notna(dist_50) and dist_50 >= 25)
         or (pd.notna(dist_21) and dist_21 >= 14)
         or (pd.notna(dist_200) and dist_200 >= 70)
     ):
-        # Buch Kap. 4.5: Überdehnt sobald eine der Buch-Schwellen (21-EMA 14%,
-        # 50-SMA 25%, 200-SMA 70%) gerissen ist – ohne Trend-Vorbedingung,
-        # weil die Distanz selbst das Signal ist.
+        # Buch Kap. 4.5: Überdehnt sobald 21-EMA 14%, 50-SMA 25% oder 200-SMA 70% gerissen
         status = "Überdehnt"
         tone = "warn"
         summary = "Die Aktie ist deutlich von ihren gleitenden Durchschnitten entfernt."
     elif not above_200:
-        # Buch Kap. 4.3: "Du kaufst grundsätzlich keine Titel, die unter ihrer 200-Tage-Linie handeln."
-        status = "Nicht kaufen"
+        # Buch Kap. 4.3: "Du kaufst grundsätzlich keine Titel unter ihrer 200-Tage-Linie."
+        status = "Unter 200 Tage"
         tone = "bad"
         summary = "Kurs unter der 200-Tage-Linie – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab, unabhängig vom Score."
-        warnings.append("Kurs unter 200-SMA – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab.")
 
     return {
         "status": status,
@@ -9803,7 +9902,6 @@ def build_stock_assessment(
         "summary": summary,
         "drivers": list(dict.fromkeys(drivers))[:5],
         "warnings": list(dict.fromkeys(warnings))[:5],
-        "data_basis": data_basis,
     }
 
 # ===== From tabs.py =====
@@ -10350,7 +10448,13 @@ def _tab_aktienbewertung():
     chart_score_100_i = _round_half_up_int(chart_score_100)
 
     # Verdict basiert auf dem neuen Gesamtscore; Sonderfälle aus dem Assessment bleiben erhalten
-    if assessment["status"] in ("Nicht bewertbar", "Überdehnt", "Nicht kaufen"):
+    if assessment["status"] in (
+        "Nicht bewertbar",
+        "Mindestpreis nicht erreicht",
+        "Volumen nicht erreicht",
+        "Überdehnt",
+        "Unter 200 Tage",
+    ):
         verdict_label = assessment["status"]
         verdict_cls = f"status-{assessment['status_tone']}"
         verdict_text = assessment["summary"]
@@ -10380,8 +10484,7 @@ def _tab_aktienbewertung():
         f'<div style="width:52px;height:52px;border-radius:50%;border:2px solid rgba(59,130,246,0.35);display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(59,130,246,0.08);">'
         f'<div style="font-size:.58rem;color:#64748b;line-height:1;">RS</div><div style="font-size:1rem;font-weight:700;color:#1d4ed8;line-height:1.05;">{rs_quick}</div></div>'
         f'<span class="status-chip {verdict_cls}">{verdict_label}</span></div></div>'
-        f'<div class="mini-help">{verdict_text}</div>'
-        f'<div class="mini-help">Bewertungsbasis: {"Chartbasierte Einordnung" if assessment.get("data_basis") == "chart_only" else "Fundamental + Chart"}</div></div>',
+        f'<div class="mini-help">{verdict_text}</div></div>',
         unsafe_allow_html=True,
     )
 
