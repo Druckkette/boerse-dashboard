@@ -3226,19 +3226,23 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                 "stop_distance_pct": "Abstand Stop %", "atr_pct": "ATR %",
                 "beta": "Beta", "risk_contribution": "Risikobeitrag",
                 "max_position_value": "Max. Wert", "pivot_tag": "Pivot-Tag",
-            }).sort_values("Wert EUR", ascending=False)
-            overview["Pivot-Tag"] = overview["Pivot-Tag"].apply(
-                lambda v: pd.Timestamp(v).strftime("%d.%m.%Y") if v not in (None, "", pd.NaT) and pd.notna(pd.to_datetime(v, errors="coerce")) else "—"
-            )
+            }).sort_values("Wert EUR", ascending=False).reset_index(drop=True)
+            overview["Pivot-Tag"] = pd.to_datetime(overview["Pivot-Tag"], errors="coerce").dt.date
             depot_names = _ticker_display_names(tuple(overview["Ticker"].tolist()))
             overview["Name"] = overview.apply(
                 lambda row: row["Name"] if str(row.get("Name", "") or "").strip() and str(row.get("Name", "")).upper() != str(row["Ticker"]).upper()
                 else depot_names.get(str(row["Ticker"]), str(row["Ticker"])),
                 axis=1,
             )
-            st.dataframe(
-                overview.round(2), width="stretch", hide_index=True,
+            overview.insert(0, "Auswählen", False)
+            overview_rounded = overview.round(2)
+            edited_overview = st.data_editor(
+                overview_rounded,
+                width="stretch",
+                hide_index=True,
+                key="pf_overview_editor",
                 column_config={
+                    "Auswählen": st.column_config.CheckboxColumn("Auswählen", help="Markiere Positionen für das Sammel-Löschen."),
                     "Ticker": st.column_config.TextColumn("Ticker", width="small"),
                     "Name": st.column_config.TextColumn("Name", width="medium"),
                     "Stück": st.column_config.NumberColumn("Stück", format="%.0f"),
@@ -3246,238 +3250,283 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                     "Aktuell": st.column_config.NumberColumn("Aktuell", format="%.2f €"),
                     "Wert EUR": st.column_config.NumberColumn("Wert EUR", format="%.0f €"),
                     "P&L %": st.column_config.NumberColumn("P&L %", format="%+.2f"),
-                    "Stopp %": st.column_config.NumberColumn("Stopp %", format="%.1f"),
+                    "Stopp %": st.column_config.NumberColumn(
+                        "Stopp %", format="%.1f", min_value=0.1, max_value=50.0, step=0.1,
+                        help="Klicke in die Zelle, um den Stoppabstand direkt zu bearbeiten. Der Stoppkurs wird beim Speichern automatisch neu berechnet.",
+                    ),
                     "Stoppkurs": st.column_config.NumberColumn("Stoppkurs", format="%.2f €"),
                     "Abstand Stop %": st.column_config.NumberColumn("Abstand Stop %", format="%+.2f"),
                     "ATR %": st.column_config.NumberColumn("ATR %", format="%.2f"),
                     "Beta": st.column_config.NumberColumn("Beta", format="%.2f"),
                     "Risikobeitrag": st.column_config.NumberColumn("Risikobeitrag", format="%.3f"),
                     "Max. Wert": st.column_config.NumberColumn("Max. Wert", format="%.0f €"),
-                    "Pivot-Tag": st.column_config.TextColumn("Pivot-Tag", help="Tag 1 des Ausbruchs. Wird in den Verkaufs-Strategien als Referenz für Tag 1 und Tag 0 verwendet. Fallback: Kauftag."),
+                    "Pivot-Tag": st.column_config.DateColumn(
+                        "Pivot-Tag", format="DD.MM.YYYY",
+                        help="Klicke in die Zelle, um den Pivot-Tag direkt zu bearbeiten. Tag 1 des Ausbruchs. Fallback: Kauftag.",
+                    ),
                 },
+                disabled=[
+                    "Ticker", "Name", "Stück", "Einstand", "Aktuell", "Wert EUR", "P&L %",
+                    "Stoppkurs", "Abstand Stop %", "ATR %", "Beta", "Risikobeitrag", "Max. Wert",
+                ],
             )
-            st.caption("Mehrfach-Löschen: Positionen auswählen und gesammelt entfernen. Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden.")
-            selection_df = overview[["Ticker", "Name"]].copy()
-            selection_df.insert(0, "Auswählen", False)
-            selected_table = st.data_editor(
-                selection_df,
-                width="stretch",
-                hide_index=True,
-                key="pf_bulk_delete_table",
-                column_config={
-                    "Auswählen": st.column_config.CheckboxColumn("Auswählen", help="Markiere Positionen für das Sammel-Löschen."),
-                    "Ticker": st.column_config.TextColumn("Ticker", width="small"),
-                    "Name": st.column_config.TextColumn("Name", width="medium"),
-                },
-                disabled=["Ticker", "Name"],
+            st.caption(
+                "Tipp: Klicke in die Spalten „Stopp %“ oder „Pivot-Tag“, um Werte direkt zu bearbeiten — "
+                "anschließend „Änderungen speichern“. Markiere die Checkboxen, um Positionen auszuwählen und gemeinsam zu löschen. "
+                "Für einen Verkauf mit Erlös bitte „Verkauf buchen“ verwenden."
             )
-            action_col_1, action_col_2 = st.columns(2)
+            action_col_1, action_col_2, action_col_3 = st.columns(3)
             with action_col_1:
-                if st.button("☑️ Alle auswählen", key="pf_select_all_positions", width="stretch"):
-                    st.session_state["pf_bulk_delete_table"] = [
-                        {"Auswählen": True, "Ticker": row["Ticker"], "Name": row["Name"]}
-                        for _, row in selection_df.iterrows()
-                    ]
-                    st.rerun()
-            with action_col_2:
-                if st.button("🗑️ Alle ausgewählten löschen", key="pf_delete_selected_positions", width="stretch", type="primary"):
-                    checked_rows = selected_table[selected_table["Auswählen"] == True] if not selected_table.empty else selected_table
-                    selected_tickers = checked_rows["Ticker"].astype(str).tolist() if not checked_rows.empty else []
-                    removed_count = _remove_positions_bulk(selected_tickers)
-                    if removed_count > 0:
-                        st.success(f"{removed_count} ausgewählte Position(en) gelöscht.")
+                if st.button("💾 Änderungen speichern", key="pf_overview_save_edits", width="stretch", type="primary"):
+                    changes = 0
+                    for _, row in edited_overview.iterrows():
+                        ticker_raw = str(row.get("Ticker", "")).strip()
+                        if not ticker_raw:
+                            continue
+                        existing = next(
+                            (p for p in all_positions if str(p.get("ticker", "")).strip().upper() == ticker_raw.upper()),
+                            None,
+                        )
+                        if not existing:
+                            continue
+                        update = {"ticker": existing["ticker"]}
+                        changed = False
+                        new_stop_pct_raw = row.get("Stopp %")
+                        if new_stop_pct_raw is not None and pd.notna(new_stop_pct_raw):
+                            new_stop_pct = float(new_stop_pct_raw)
+                            current_stop_pct = float(_safe_float(existing.get("stop_pct"), 0.0) or 0.0)
+                            if abs(new_stop_pct - current_stop_pct) > 1e-6:
+                                update["stop_pct"] = new_stop_pct
+                                buy_price_existing = float(_safe_float(existing.get("buy_price"), 0.0) or 0.0)
+                                if buy_price_existing > 0:
+                                    update["stop_price"] = buy_price_existing * (1 - new_stop_pct / 100)
+                                changed = True
+                        new_pivot_raw = row.get("Pivot-Tag")
+                        if new_pivot_raw is not None and pd.notna(new_pivot_raw):
+                            new_pivot_ts = pd.to_datetime(new_pivot_raw, errors="coerce")
+                            if pd.notna(new_pivot_ts):
+                                new_pivot_str = new_pivot_ts.strftime("%Y-%m-%d")
+                                existing_pivot_raw = existing.get("pivot_tag", "") or ""
+                                existing_pivot_ts = pd.to_datetime(existing_pivot_raw, errors="coerce") if existing_pivot_raw else None
+                                existing_pivot_str = existing_pivot_ts.strftime("%Y-%m-%d") if existing_pivot_ts is not None and pd.notna(existing_pivot_ts) else ""
+                                if new_pivot_str != existing_pivot_str:
+                                    update["pivot_tag"] = new_pivot_str
+                                    changed = True
+                        if changed:
+                            _upsert_position(update)
+                            changes += 1
+                    if changes:
+                        st.success(f"{changes} Position(en) aktualisiert.")
                         st.rerun()
-                    st.warning("Keine Positionen ausgewählt.")
-            if st.button("🧹 Gesamtes Depot löschen", key="pf_delete_all_positions", width="stretch"):
-                removed_total = _remove_all_positions()
-                if removed_total > 0:
-                    st.success(f"Gesamtes Depot gelöscht ({removed_total} Positionen).")
+                    else:
+                        st.info("Keine Änderungen erkannt.")
+            with action_col_2:
+                if st.button("🗑️ Ausgewählte löschen", key="pf_overview_delete_selected", width="stretch"):
+                    checked_rows = edited_overview[edited_overview["Auswählen"] == True] if not edited_overview.empty else edited_overview
+                    selected_tickers = checked_rows["Ticker"].astype(str).tolist() if not checked_rows.empty else []
+                    if not selected_tickers:
+                        st.warning("Keine Positionen ausgewählt.")
+                    else:
+                        removed_count = _remove_positions_bulk(selected_tickers)
+                        if removed_count > 0:
+                            st.success(f"{removed_count} ausgewählte Position(en) gelöscht.")
+                            st.rerun()
+            with action_col_3:
+                if st.button("🧹 Alles löschen", key="pf_overview_delete_all", width="stretch"):
+                    removed_total = _remove_all_positions()
+                    if removed_total > 0:
+                        st.success(f"Gesamtes Depot gelöscht ({removed_total} Positionen).")
+                        st.rerun()
+                    st.info("Depot ist bereits leer.")
+
+    st.markdown("---")
+    with st.expander("➕ Manuelle Erfassung von Positionen", expanded=False):
+        manual_tabs = st.tabs(["➕ Neue Position", "💸 Verkauf buchen", "📥 CSV-Import"])
+        with manual_tabs[0]:
+            st.markdown("##### Neue Position erfassen oder bestehende aktualisieren")
+            pos_ticker = _render_ticker_picker("portfolio_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
+            selected_pos = next((p for p in all_positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
+            entry_default = float((selected_pos or {}).get("buy_price", 1.0) or 1.0)
+            shares_default = float((selected_pos or {}).get("shares", 0.0) or 0.0)
+            stop_pct_default = float((selected_pos or {}).get("stop_pct", 7.0) or 7.0)
+
+            if selected_pos:
+                st.info(f"Bestehende Position {pos_ticker} wird befüllt — Speichern überschreibt die Daten.")
+
+            price_col, shares_col, stop_col = st.columns(3)
+            with price_col:
+                buy_price = st.number_input("Einstand", min_value=0.01, value=entry_default, step=0.01, key="pf_buy_price")
+            with shares_col:
+                shares = st.number_input("Stückzahl", min_value=0.0, value=shares_default, step=1.0, key="pf_shares",
+                                         help="Tipp: Stückzahl im Tab „Rechner“ vorab kalkulieren.")
+            with stop_col:
+                stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=stop_pct_default, step=0.1, key="pf_stop_pct")
+            date_col, pivot_col, curr_col, note_col = st.columns([1, 1, 0.8, 1.2])
+            with date_col:
+                try:
+                    default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.now(timezone.utc).date()
+                except Exception:
+                    default_date = datetime.now(timezone.utc).date()
+                buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
+            with pivot_col:
+                try:
+                    pivot_tag_default = pd.Timestamp((selected_pos or {}).get("pivot_tag")).date() if (selected_pos or {}).get("pivot_tag") else buy_date
+                except Exception:
+                    pivot_tag_default = buy_date
+                pivot_tag = st.date_input(
+                    "Pivot-Tag",
+                    value=pivot_tag_default,
+                    key="pf_pivot_tag",
+                    help="Ausbruchstag (Tag 1). Wird im Live-Monitor als Referenz für Tag 1 und Tag 0 (Vortag) genutzt. Bleibt der Wert leer/identisch zum Kauftag, wird der Kauftag als Fallback verwendet.",
+                )
+            with curr_col:
+                curr_default = (selected_pos or {}).get("currency", "EUR")
+                currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if curr_default != "USD" else 1, key="pf_currency")
+            with note_col:
+                note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="pf_note")
+
+            stop_price_preview = float(buy_price) * (1 - float(stop_pct) / 100)
+            st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
+
+            save_col, _spacer = st.columns([1, 3])
+            with save_col:
+                if st.button("💾 Speichern", width="stretch", key="pf_save_position", type="primary", disabled=not bool(pos_ticker)):
+                    buy_price_eur, eur_rate = _price_to_eur(float(buy_price), currency, buy_date)
+                    previous_shares = _safe_float((selected_pos or {}).get("shares"), 0.0) if selected_pos else 0.0
+                    delta_shares = max(float(shares) - previous_shares, 0.0)
+                    buy_delta_value = delta_shares * float(buy_price_eur)
+                    _upsert_position({
+                        "ticker": pos_ticker,
+                        "buy_price": float(buy_price),
+                        "buy_price_eur": float(buy_price_eur),
+                        "buy_date": str(buy_date),
+                        "pivot_tag": str(pivot_tag),
+                        "currency": currency,
+                        "shares": float(shares),
+                        "stop_pct": float(stop_pct),
+                        "stop_price": float(stop_price_preview),
+                        "note": note,
+                    })
+                    if buy_delta_value > 0:
+                        new_cash = _adjust_cash_balance(-buy_delta_value)
+                        if buy_delta_value > float(settings.get("cash_balance", 0.0)):
+                            st.warning(f"Kaufvolumen ({buy_delta_value:,.2f} €) überstieg den verfügbaren Cashbestand. Cash wurde auf {new_cash:,.2f} € begrenzt.")
+                    st.success(f"{pos_ticker} gespeichert.")
                     st.rerun()
-                st.info("Depot ist bereits leer.")
 
-    st.markdown("---")
-    _render_transaction_importer()
-    st.markdown("---")
-    st.markdown("#### ➕ Neue Position erfassen oder bestehende aktualisieren")
-    pos_ticker = _render_ticker_picker("portfolio_depot", "Ticker oder Firmenname suchen", "NVDA oder Nvidia", show_quick=False)
-    selected_pos = next((p for p in all_positions if p.get("ticker") == pos_ticker), None) if pos_ticker else None
-    entry_default = float((selected_pos or {}).get("buy_price", 1.0) or 1.0)
-    shares_default = float((selected_pos or {}).get("shares", 0.0) or 0.0)
-    stop_pct_default = float((selected_pos or {}).get("stop_pct", 7.0) or 7.0)
-
-    if selected_pos:
-        st.info(f"Bestehende Position {pos_ticker} wird befüllt — Speichern überschreibt die Daten.")
-
-    price_col, shares_col, stop_col = st.columns(3)
-    with price_col:
-        buy_price = st.number_input("Einstand", min_value=0.01, value=entry_default, step=0.01, key="pf_buy_price")
-    with shares_col:
-        shares = st.number_input("Stückzahl", min_value=0.0, value=shares_default, step=1.0, key="pf_shares",
-                                 help="Tipp: Stückzahl im Tab „Rechner“ vorab kalkulieren.")
-    with stop_col:
-        stop_pct = st.number_input("Stoppabstand %", min_value=0.1, max_value=50.0, value=stop_pct_default, step=0.1, key="pf_stop_pct")
-    date_col, pivot_col, curr_col, note_col = st.columns([1, 1, 0.8, 1.2])
-    with date_col:
-        try:
-            default_date = pd.Timestamp((selected_pos or {}).get("buy_date")).date() if (selected_pos or {}).get("buy_date") else datetime.now(timezone.utc).date()
-        except Exception:
-            default_date = datetime.now(timezone.utc).date()
-        buy_date = st.date_input("Kaufdatum", value=default_date, key="pf_buy_date")
-    with pivot_col:
-        try:
-            pivot_tag_default = pd.Timestamp((selected_pos or {}).get("pivot_tag")).date() if (selected_pos or {}).get("pivot_tag") else buy_date
-        except Exception:
-            pivot_tag_default = buy_date
-        pivot_tag = st.date_input(
-            "Pivot-Tag",
-            value=pivot_tag_default,
-            key="pf_pivot_tag",
-            help="Ausbruchstag (Tag 1). Wird im Live-Monitor als Referenz für Tag 1 und Tag 0 (Vortag) genutzt. Bleibt der Wert leer/identisch zum Kauftag, wird der Kauftag als Fallback verwendet.",
-        )
-    with curr_col:
-        curr_default = (selected_pos or {}).get("currency", "EUR")
-        currency = st.selectbox("Währung", ["EUR", "USD"], index=0 if curr_default != "USD" else 1, key="pf_currency")
-    with note_col:
-        note = st.text_input("Notiz", value=(selected_pos or {}).get("note", ""), key="pf_note")
-
-    stop_price_preview = float(buy_price) * (1 - float(stop_pct) / 100)
-    st.caption(f"Abgeleiteter Stoppkurs: {stop_price_preview:,.2f}")
-
-    save_col, _spacer = st.columns([1, 3])
-    with save_col:
-        if st.button("💾 Speichern", width="stretch", key="pf_save_position", type="primary", disabled=not bool(pos_ticker)):
-            buy_price_eur, eur_rate = _price_to_eur(float(buy_price), currency, buy_date)
-            previous_shares = _safe_float((selected_pos or {}).get("shares"), 0.0) if selected_pos else 0.0
-            delta_shares = max(float(shares) - previous_shares, 0.0)
-            buy_delta_value = delta_shares * float(buy_price_eur)
-            _upsert_position({
-                "ticker": pos_ticker,
-                "buy_price": float(buy_price),
-                "buy_price_eur": float(buy_price_eur),
-                "buy_date": str(buy_date),
-                "pivot_tag": str(pivot_tag),
-                "currency": currency,
-                "shares": float(shares),
-                "stop_pct": float(stop_pct),
-                "stop_price": float(stop_price_preview),
-                "note": note,
-            })
-            if buy_delta_value > 0:
-                new_cash = _adjust_cash_balance(-buy_delta_value)
-                if buy_delta_value > float(settings.get("cash_balance", 0.0)):
-                    st.warning(f"Kaufvolumen ({buy_delta_value:,.2f} €) überstieg den verfügbaren Cashbestand. Cash wurde auf {new_cash:,.2f} € begrenzt.")
-            st.success(f"{pos_ticker} gespeichert.")
-            st.rerun()
-
-    with st.expander("💸 Verkauf buchen (mit Cash-Gutschrift)", expanded=False):
-        sell_options = [p.get("ticker", "") for p in tracked_positions if p.get("ticker")]
-        sell_ticker = st.selectbox("Position verkaufen", options=[""] + sell_options, key="pf_sell_ticker")
-        selected_sell = next((p for p in tracked_positions if p.get("ticker") == sell_ticker), None) if sell_ticker else None
-        max_sell_shares = float(_safe_float((selected_sell or {}).get("shares"), 0.0))
-        sell_c1, sell_c2 = st.columns(2)
-        with sell_c1:
-            sell_shares = st.number_input("Zu verkaufende Stück", min_value=0.0, max_value=max_sell_shares if max_sell_shares > 0 else 0.0, value=max_sell_shares if max_sell_shares > 0 else 0.0, step=1.0, key="pf_sell_shares")
-        with sell_c2:
-            sell_price = st.number_input("Verkaufspreis", min_value=0.0, value=float(_safe_float((selected_sell or {}).get("current_price"), 0.0)), step=0.01, key="pf_sell_price")
-        sell_c3, sell_c4 = st.columns(2)
-        with sell_c3:
-            sell_currency = st.selectbox("Währung Verkauf", ["EUR", "USD"], index=0, key="pf_sell_currency")
-        with sell_c4:
-            sell_date = st.date_input("Verkaufsdatum", value=datetime.now(timezone.utc).date(), key="pf_sell_date")
-        if st.button("Verkauf buchen", width="stretch", key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
-            if not selected_sell:
-                st.warning("Bitte zuerst eine Position wählen.")
-            elif sell_shares > max_sell_shares:
-                st.error("Die Verkaufsmenge ist größer als die vorhandene Stückzahl.")
-            else:
-                sell_price_eur, _ = _price_to_eur(float(sell_price), sell_currency, sell_date)
-                proceeds = float(sell_shares) * float(sell_price_eur)
-                sell_ticker_norm = _normalize_single_ticker(selected_sell.get("ticker", ""))
-                manual_sell_data = get_position_manual_sell_data(sell_ticker_norm) if sell_ticker_norm else {}
-                buy_price_native = _safe_optional_float(selected_sell.get("buy_price"))
-                sell_price_native = float(sell_price)
-                realized_pct = (sell_price_native / buy_price_native - 1) * 100 if buy_price_native and buy_price_native > 0 else None
-                append_closed_trade({
-                    "source": "depot_sell_booking",
-                    "booked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                    "ticker": sell_ticker_norm,
-                    "buy_date": selected_sell.get("buy_date"),
-                    "buy_price": buy_price_native,
-                    "buy_currency": selected_sell.get("currency"),
-                    "sell_date": str(sell_date),
-                    "sell_price": sell_price_native,
-                    "sell_currency": sell_currency,
-                    "shares": float(sell_shares),
-                    "pivot": manual_sell_data.get("pivot"),
-                    "planned_stop": selected_sell.get("stop_price"),
-                    "realized_pnl_percent": realized_pct,
-                    "notes": "Teilverkauf" if float(sell_shares) < max_sell_shares else "Vollverkauf",
-                })
-                remaining = max(max_sell_shares - float(sell_shares), 0.0)
-                if remaining <= 0:
-                    _remove_position(selected_sell.get("ticker", ""))
+        with manual_tabs[1]:
+            st.markdown("##### Verkauf buchen (mit Cash-Gutschrift)")
+            sell_options = [p.get("ticker", "") for p in tracked_positions if p.get("ticker")]
+            sell_ticker = st.selectbox("Position verkaufen", options=[""] + sell_options, key="pf_sell_ticker")
+            selected_sell = next((p for p in tracked_positions if p.get("ticker") == sell_ticker), None) if sell_ticker else None
+            max_sell_shares = float(_safe_float((selected_sell or {}).get("shares"), 0.0))
+            sell_c1, sell_c2 = st.columns(2)
+            with sell_c1:
+                sell_shares = st.number_input("Zu verkaufende Stück", min_value=0.0, max_value=max_sell_shares if max_sell_shares > 0 else 0.0, value=max_sell_shares if max_sell_shares > 0 else 0.0, step=1.0, key="pf_sell_shares")
+            with sell_c2:
+                sell_price = st.number_input("Verkaufspreis", min_value=0.0, value=float(_safe_float((selected_sell or {}).get("current_price"), 0.0)), step=0.01, key="pf_sell_price")
+            sell_c3, sell_c4 = st.columns(2)
+            with sell_c3:
+                sell_currency = st.selectbox("Währung Verkauf", ["EUR", "USD"], index=0, key="pf_sell_currency")
+            with sell_c4:
+                sell_date = st.date_input("Verkaufsdatum", value=datetime.now(timezone.utc).date(), key="pf_sell_date")
+            if st.button("Verkauf buchen", width="stretch", key="pf_sell_book", disabled=not bool(selected_sell) or sell_shares <= 0 or sell_price <= 0):
+                if not selected_sell:
+                    st.warning("Bitte zuerst eine Position wählen.")
+                elif sell_shares > max_sell_shares:
+                    st.error("Die Verkaufsmenge ist größer als die vorhandene Stückzahl.")
                 else:
-                    updated = dict(selected_sell)
-                    updated["shares"] = remaining
-                    _upsert_position(updated)
-                _adjust_cash_balance(proceeds)
-                st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €. Der Trade wurde für das Post-Mortem vorgemerkt.")
-                st.rerun()
+                    sell_price_eur, _ = _price_to_eur(float(sell_price), sell_currency, sell_date)
+                    proceeds = float(sell_shares) * float(sell_price_eur)
+                    sell_ticker_norm = _normalize_single_ticker(selected_sell.get("ticker", ""))
+                    manual_sell_data = get_position_manual_sell_data(sell_ticker_norm) if sell_ticker_norm else {}
+                    buy_price_native = _safe_optional_float(selected_sell.get("buy_price"))
+                    sell_price_native = float(sell_price)
+                    realized_pct = (sell_price_native / buy_price_native - 1) * 100 if buy_price_native and buy_price_native > 0 else None
+                    append_closed_trade({
+                        "source": "depot_sell_booking",
+                        "booked_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                        "ticker": sell_ticker_norm,
+                        "buy_date": selected_sell.get("buy_date"),
+                        "buy_price": buy_price_native,
+                        "buy_currency": selected_sell.get("currency"),
+                        "sell_date": str(sell_date),
+                        "sell_price": sell_price_native,
+                        "sell_currency": sell_currency,
+                        "shares": float(sell_shares),
+                        "pivot": manual_sell_data.get("pivot"),
+                        "planned_stop": selected_sell.get("stop_price"),
+                        "realized_pnl_percent": realized_pct,
+                        "notes": "Teilverkauf" if float(sell_shares) < max_sell_shares else "Vollverkauf",
+                    })
+                    remaining = max(max_sell_shares - float(sell_shares), 0.0)
+                    if remaining <= 0:
+                        _remove_position(selected_sell.get("ticker", ""))
+                    else:
+                        updated = dict(selected_sell)
+                        updated["shares"] = remaining
+                        _upsert_position(updated)
+                    _adjust_cash_balance(proceeds)
+                    st.success(f"Verkauf gebucht. Cash erhöht um {proceeds:,.2f} €. Der Trade wurde für das Post-Mortem vorgemerkt.")
+                    st.rerun()
 
-    st.markdown("#### 💵 Cash-Flows")
-    st.caption("Ein- und Auszahlungen wirken zeitgewichtet auf den Depotindex.")
-    flow_form_col, flow_log_col = st.columns([1.1, 1.2])
-    with flow_form_col:
-        flow_date = st.date_input("Cash-Flow Datum", value=datetime.now(timezone.utc).date(), key="pf_flow_date")
-        flow_amount = st.number_input("Cash-Flow Betrag (EUR)", min_value=0.0, value=0.0, step=100.0, key="pf_flow_amount")
-        flow_note = st.text_input("Cash-Flow Notiz", value="", key="pf_flow_note")
-        flow_act1, flow_act2 = st.columns(2)
-        with flow_act1:
-            if st.button("Einzahlung buchen", width="stretch", key="pf_flow_deposit", disabled=flow_amount <= 0):
-                _append_cash_flow_entry(flow_date, "deposit", flow_amount, flow_note)
-                _adjust_cash_balance(float(flow_amount))
-                st.success("Einzahlung erfasst.")
-                st.rerun()
-        with flow_act2:
-            if st.button("Auszahlung buchen", width="stretch", key="pf_flow_withdrawal", disabled=flow_amount <= 0):
-                _append_cash_flow_entry(flow_date, "withdrawal", flow_amount, flow_note)
-                _adjust_cash_balance(-float(flow_amount))
-                st.success("Auszahlung erfasst.")
-                st.rerun()
+        with manual_tabs[2]:
+            _render_transaction_importer()
 
-    with flow_log_col:
-        cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
-        if cash_flows:
-            flow_df = pd.DataFrame(cash_flows).copy()
-            flow_df["__idx"] = flow_df.index
-            flow_df["date"] = pd.to_datetime(flow_df["date"], errors="coerce")
-            flow_df = flow_df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
-            flow_df["Typ"] = flow_df["type"].map({"deposit": "Einzahlung", "withdrawal": "Auszahlung"}).fillna("—")
-            flow_df["Datum"] = flow_df["date"].dt.date
-            flow_df["Betrag"] = pd.to_numeric(flow_df.get("amount", 0), errors="coerce").fillna(0.0)
-            flow_df["Notiz"] = flow_df.get("note", "").astype(str)
-            st.markdown("##### Letzte Bewegungen")
-            st.dataframe(
-                flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2),
-                width="stretch", hide_index=True, column_config=flow_column_config(),
-            )
-            delete_idx = st.selectbox(
-                "Cash-Flow löschen",
-                options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f} €" for i, row in flow_df.iterrows()],
-                key="pf_flow_delete_sel",
-            )
-            if delete_idx and st.button("Cash-Flow löschen", width="stretch", key="pf_flow_delete_btn"):
-                idx = int(str(delete_idx).split(":", 1)[0])
-                row = flow_df.iloc[idx]
-                if str(row.get("Typ")) == "Einzahlung":
-                    _adjust_cash_balance(-float(row.get("Betrag", 0.0)))
-                elif str(row.get("Typ")) == "Auszahlung":
-                    _adjust_cash_balance(float(row.get("Betrag", 0.0)))
-                _remove_cash_flow_entry(int(row.get("__idx", -1)))
-                st.success("Cash-Flow gelöscht.")
-                st.rerun()
-        else:
-            st.info("Noch keine Cash-Flows erfasst.")
+    with st.expander("💵 Cash-Flows", expanded=False):
+        st.caption("Ein- und Auszahlungen wirken zeitgewichtet auf den Depotindex.")
+        flow_form_col, flow_log_col = st.columns([1.1, 1.2])
+        with flow_form_col:
+            flow_date = st.date_input("Cash-Flow Datum", value=datetime.now(timezone.utc).date(), key="pf_flow_date")
+            flow_amount = st.number_input("Cash-Flow Betrag (EUR)", min_value=0.0, value=0.0, step=100.0, key="pf_flow_amount")
+            flow_note = st.text_input("Cash-Flow Notiz", value="", key="pf_flow_note")
+            flow_act1, flow_act2 = st.columns(2)
+            with flow_act1:
+                if st.button("Einzahlung buchen", width="stretch", key="pf_flow_deposit", disabled=flow_amount <= 0):
+                    _append_cash_flow_entry(flow_date, "deposit", flow_amount, flow_note)
+                    _adjust_cash_balance(float(flow_amount))
+                    st.success("Einzahlung erfasst.")
+                    st.rerun()
+            with flow_act2:
+                if st.button("Auszahlung buchen", width="stretch", key="pf_flow_withdrawal", disabled=flow_amount <= 0):
+                    _append_cash_flow_entry(flow_date, "withdrawal", flow_amount, flow_note)
+                    _adjust_cash_balance(-float(flow_amount))
+                    st.success("Auszahlung erfasst.")
+                    st.rerun()
+
+        with flow_log_col:
+            cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
+            if cash_flows:
+                flow_df = pd.DataFrame(cash_flows).copy()
+                flow_df["__idx"] = flow_df.index
+                flow_df["date"] = pd.to_datetime(flow_df["date"], errors="coerce")
+                flow_df = flow_df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
+                flow_df["Typ"] = flow_df["type"].map({"deposit": "Einzahlung", "withdrawal": "Auszahlung"}).fillna("—")
+                flow_df["Datum"] = flow_df["date"].dt.date
+                flow_df["Betrag"] = pd.to_numeric(flow_df.get("amount", 0), errors="coerce").fillna(0.0)
+                flow_df["Notiz"] = flow_df.get("note", "").astype(str)
+                st.markdown("##### Letzte Bewegungen")
+                st.dataframe(
+                    flow_df[["Datum", "Typ", "Betrag", "Notiz"]].round(2),
+                    width="stretch", hide_index=True, column_config=flow_column_config(),
+                )
+                delete_idx = st.selectbox(
+                    "Cash-Flow löschen",
+                    options=[""] + [f"{i}: {row['Datum']} · {row['Typ']} · {row['Betrag']:,.2f} €" for i, row in flow_df.iterrows()],
+                    key="pf_flow_delete_sel",
+                )
+                if delete_idx and st.button("Cash-Flow löschen", width="stretch", key="pf_flow_delete_btn"):
+                    idx = int(str(delete_idx).split(":", 1)[0])
+                    row = flow_df.iloc[idx]
+                    if str(row.get("Typ")) == "Einzahlung":
+                        _adjust_cash_balance(-float(row.get("Betrag", 0.0)))
+                    elif str(row.get("Typ")) == "Auszahlung":
+                        _adjust_cash_balance(float(row.get("Betrag", 0.0)))
+                    _remove_cash_flow_entry(int(row.get("__idx", -1)))
+                    st.success("Cash-Flow gelöscht.")
+                    st.rerun()
+            else:
+                st.info("Noch keine Cash-Flows erfasst.")
 
 
 def _render_depot_curve_only(state: dict | None = None) -> None:
