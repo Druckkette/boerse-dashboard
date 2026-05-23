@@ -9615,9 +9615,9 @@ def evaluate_chart_signs(df, rs_ctx=None):
 def _chart_behavior_score_100(positive_count: int, negative_count: int) -> int:
     """Skaliert Chartverhalten auf 0–100 anhand Maximalsignalen und Pos/Neg-Verhältnis.
     Stand Buch Kap. 4.8: 19 positive Merkmale (inkl. Downside Reversal m. starkem Folgetag,
-    Shake-out) und 17 negative Merkmale (inkl. beschleunigte Verluste)."""
+    Shake-out) und 18 negative Merkmale (inkl. beschleunigte Verluste)."""
     max_positive = 19
-    max_negative = 17
+    max_negative = 18
     total_max_signals = max_positive + max_negative
     total_active = positive_count + negative_count
 
@@ -9783,8 +9783,8 @@ def build_stock_assessment(
         warnings.append("Der Abstand zur 50-SMA überschreitet die Buch-Schwelle von 25% – Aktie überdehnt.")
     if pd.notna(beta) and beta > 1.6:
         warnings.append("Überdurchschnittliches Beta signalisiert erhöhte Marktsensitivität.")
-    if pd.notna(drawdown_52w) and drawdown_52w <= -30:
-        warnings.append("Der Abstand zum 52-Wochen-Hoch bleibt deutlich negativ.")
+    if pd.notna(drawdown_52w) and drawdown_52w <= -20:
+        warnings.append("Drawdown vom 52-Wochen-Hoch erreicht Bärenmarkt-Niveau (Buch Kap. 2.2: ≤ −20%).")
 
     signs_pos = len((chart_signs or {}).get("positiv", []))
     signs_neg = len((chart_signs or {}).get("negativ", []))
@@ -9834,9 +9834,9 @@ def build_stock_assessment(
         tone = "warn"
     elif not above_200:
         # Buch Kap. 4.3: "Du kaufst grundsätzlich keine Titel, die unter ihrer 200-Tage-Linie handeln."
-        # Status wird maximal auf "Beobachten" gedeckelt, unabhängig vom Gesamtscore.
-        status = "Beobachten"
-        tone = "warn"
+        # Hard-Cap unabhängig vom Gesamtscore: eigener Status "Nicht kaufen" mit roter Tönung.
+        status = "Nicht kaufen"
+        tone = "bad"
         warnings.append("Kurs unter 200-SMA – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab.")
     elif total_score >= 80 and _safe_score(risk_score) >= 45:
         status = "Attraktiv"
@@ -9853,6 +9853,8 @@ def build_stock_assessment(
 
     if available_groups <= 1:
         summary = "Die Datenlage ist unvollständig, daher nur eingeschränkt bewertbar."
+    elif status == "Nicht kaufen":
+        summary = "Kurs unter der 200-Tage-Linie – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab, unabhängig vom Score."
     elif status == "Überdehnt":
         summary = "Die Aktie zeigt relative Stärke, ist jedoch deutlich von ihren gleitenden Durchschnitten entfernt."
     elif _safe_score(quality_score) >= 65 and _safe_score(trend_score) >= 65 and _safe_score(risk_score) < 50:
@@ -10433,7 +10435,7 @@ def _tab_aktienbewertung():
     chart_score_100_i = _round_half_up_int(chart_score_100)
 
     # Verdict basiert auf dem neuen Gesamtscore; Sonderfälle aus dem Assessment bleiben erhalten
-    if assessment["status"] in ("Nicht bewertbar", "Überdehnt"):
+    if assessment["status"] in ("Nicht bewertbar", "Überdehnt", "Nicht kaufen"):
         verdict_label = assessment["status"]
         verdict_cls = f"status-{assessment['status_tone']}"
         verdict_text = assessment["summary"]
@@ -10605,7 +10607,7 @@ def _tab_aktienbewertung():
             compact=True,
         )
     with extra_row_2[1]:
-        atr_tone = "neutral" if pd.isna(atr_pct) else "good" if atr_pct <= 2.5 else "warn" if atr_pct <= 4.5 else "bad"
+        atr_tone = "neutral" if pd.isna(atr_pct) else "good" if atr_pct <= 2.5 else "warn" if atr_pct <= 6.0 else "bad"
         render_kpi_card(
             label="ATR / Volatilität",
             value=f"{atr_pct:.1f}%" if pd.notna(atr_pct) else "n/a",
