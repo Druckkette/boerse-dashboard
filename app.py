@@ -9516,12 +9516,107 @@ def evaluate_chart_signs(df, rs_ctx=None):
     if r5 < 3: signs["neutral"].append(("Enge Konsolidierung", f"5T-Range: {r5:.1f}%"))
     if not np.isnan(e21) and abs(l.iloc[-1] - e21) / e21 < 0.005: signs["neutral"].append(("Test der 21-EMA", ""))
     if not np.isnan(s50) and abs(l.iloc[-1] - s50) / s50 < 0.005: signs["neutral"].append(("Test der 50-SMA", ""))
+
+    # ─── Buch Kap. 4.8 ergänzende Chart-Signs ───
+
+    # POSITIV: Downside Reversal mit starkem Folgetag (Buch Kap. 4.8 positiv #9)
+    # Sucht in den letzten 15 Tagen ein Downside Reversal (Open>Close des Vortags,
+    # Close<Open, Schluss im unteren Drittel), gefolgt von einem starken Folgetag
+    # (Schluss >+1.5% UND Schlusskurs in oberer Tageshälfte).
+    try:
+        look_dr = min(15, len(df) - 2)
+        for i in range(2, look_dr + 1):
+            idx_dr = -i
+            idx_next = -i + 1
+            o_dr, c_dr = o.iloc[idx_dr], c.iloc[idx_dr]
+            o_prev, c_prev = o.iloc[idx_dr - 1], c.iloc[idx_dr - 1]
+            h_dr, l_dr = h.iloc[idx_dr], l.iloc[idx_dr]
+            rng_dr = h_dr - l_dr
+            if rng_dr <= 0:
+                continue
+            cr_dr = (c_dr - l_dr) / rng_dr
+            is_downside_rev = (o_dr > c_prev) and (c_dr < o_dr) and (cr_dr < 0.3)
+            if not is_downside_rev:
+                continue
+            c_next, o_next, h_next, l_next = c.iloc[idx_next], o.iloc[idx_next], h.iloc[idx_next], l.iloc[idx_next]
+            rng_next = h_next - l_next
+            cr_next = (c_next - l_next) / rng_next if rng_next > 0 else 0.5
+            ret_next = (c_next / c_dr - 1) * 100
+            if ret_next >= 1.5 and cr_next >= 0.5:
+                signs["positiv"].append(("Downside Reversal mit starkem Folgetag", f"Tag -{i}: {ret_next:+.1f}%"))
+                break
+    except Exception:
+        pass
+
+    # POSITIV: Shake-out (Buch Kap. 4.8 positiv #17)
+    # Definition: Intraday-Tief unterbietet ein lokales Tief der letzten 20 Tage,
+    # aber Schlusskurs liegt wieder ÜBER diesem Tief, Schluss in oberer Tageshälfte,
+    # und Volumen erhöht (>= Durchschnitt).
+    try:
+        if len(df) >= 21:
+            last_h = h.iloc[-1]
+            last_l = l.iloc[-1]
+            last_c = c.iloc[-1]
+            last_v = v.iloc[-1]
+            rng_last = last_h - last_l
+            cr_last = (last_c - last_l) / rng_last if rng_last > 0 else 0.5
+            prior_low = l.iloc[-21:-1].min()
+            vol_avg_20 = v.iloc[-21:-1].mean()
+            if (
+                pd.notna(prior_low) and pd.notna(vol_avg_20) and vol_avg_20 > 0
+                and last_l < prior_low
+                and last_c > prior_low
+                and cr_last >= 0.5
+                and last_v >= vol_avg_20
+            ):
+                signs["positiv"].append(("Shake-out", f"Tief unter Vor-20T-Tief, Schluss wieder darüber"))
+    except Exception:
+        pass
+
+    # NEGATIV: Beschleunigte Verluste (Buch Kap. 4.5)
+    # Drei aufeinanderfolgende Verlusttage mit zunehmenden Verlusten,
+    # mindestens der letzte ≤ -2%.
+    try:
+        if len(pct) >= 3:
+            r1, r2, r3 = pct.iloc[-3] * 100, pct.iloc[-2] * 100, pct.iloc[-1] * 100
+            if r1 < 0 and r2 < 0 and r3 < 0 and r3 < r2 < r1 and r3 <= -2.0:
+                signs["negativ"].append(("Beschleunigte Verluste", f"{r1:+.1f}% → {r2:+.1f}% → {r3:+.1f}%"))
+    except Exception:
+        pass
+
+    # NEUTRAL: Natürliche Reaktion (Buch Kap. 4.7)
+    # Rücksetzer von 8-12% vom 20T-Hoch, intakter Trend (Kurs noch > 50-SMA).
+    try:
+        if len(c) >= 20 and not np.isnan(s50):
+            high_20 = h.tail(20).max()
+            drawdown_from_high = (c.iloc[-1] / high_20 - 1) * 100
+            if -12.0 <= drawdown_from_high <= -8.0 and c.iloc[-1] > s50:
+                signs["neutral"].append(("Natürliche Reaktion", f"{drawdown_from_high:+.1f}% vom 20T-Hoch"))
+    except Exception:
+        pass
+
+    # NEUTRAL: 2,5-Tage-Korrektur (Buch Kap. 4.7)
+    # Zwei rote Tage in Folge, gefolgt von einem Tag mit Schluss in oberer Tageshälfte
+    # (auch bei leicht negativem Tagesergebnis).
+    try:
+        if len(c) >= 3:
+            r_m2 = c.iloc[-3] - o.iloc[-3]
+            r_m1 = c.iloc[-2] - o.iloc[-2]
+            rng_last = h.iloc[-1] - l.iloc[-1]
+            cr_last = (c.iloc[-1] - l.iloc[-1]) / rng_last if rng_last > 0 else 0.5
+            if r_m2 < 0 and r_m1 < 0 and cr_last >= 0.5:
+                signs["neutral"].append(("2,5-Tage-Korrektur", "2 rote Tage, Tag 3 Schluss obere Hälfte"))
+    except Exception:
+        pass
+
     return signs
 
 
 def _chart_behavior_score_100(positive_count: int, negative_count: int) -> int:
-    """Skaliert Chartverhalten auf 0–100 anhand Maximalsignalen und Pos/Neg-Verhältnis."""
-    max_positive = 17
+    """Skaliert Chartverhalten auf 0–100 anhand Maximalsignalen und Pos/Neg-Verhältnis.
+    Stand Buch Kap. 4.8: 19 positive Merkmale (inkl. Downside Reversal m. starkem Folgetag,
+    Shake-out) und 17 negative Merkmale (inkl. beschleunigte Verluste)."""
+    max_positive = 19
     max_negative = 17
     total_max_signals = max_positive + max_negative
     total_active = positive_count + negative_count
@@ -9537,6 +9632,21 @@ def _chart_behavior_score_100(positive_count: int, negative_count: int) -> int:
     return max(0, min(100, score))
 
 
+def _dollar_volume_below_threshold(df: pd.DataFrame, price: float, threshold_mio: float = 30.0) -> bool:
+    """Prüft, ob das durchschnittliche 20-Tage Dollar-Volumen unter der Schwelle liegt.
+    Buch Kap. 3.5: Mindestliquidität 30 Mio. USD/Tag."""
+    try:
+        if df is None or df.empty or "Volume" not in df.columns:
+            return False
+        avg_v = pd.to_numeric(df["Volume"], errors="coerce").tail(20).mean()
+        if pd.isna(avg_v) or pd.isna(price):
+            return False
+        dol_v_mio = (avg_v * float(price)) / 1e6
+        return dol_v_mio < threshold_mio
+    except Exception:
+        return False
+
+
 def build_stock_assessment(
     df: pd.DataFrame,
     info: dict | None,
@@ -9544,6 +9654,7 @@ def build_stock_assessment(
     technical_checks: list[tuple[str, bool, str]] | None,
     chart_signs: dict | None,
     rs_ctx: dict | None = None,
+    cmf_val: float | None = None,
 ) -> dict:
     if df is None or df.empty:
         return {
@@ -9593,29 +9704,47 @@ def build_stock_assessment(
             score = np.clip(val, 0, 100)
         bucket.append(float(score))
 
-    # Qualität
+    # Qualität (Buch Kap. 3.4: ROE ≥17% als zentrale Qualitätskennzahl)
+    # Hinweis: Bruttomarge, Operative Marge und Debt/Equity wurden bewusst entfernt,
+    # da sie nicht in der Buch-Checkliste 3.4 stehen.
     roe = info.get("returnOnEquity")
-    gross_margin = info.get("grossMargins")
-    op_margin = info.get("operatingMargins")
-    debt_to_equity = info.get("debtToEquity")
     _add_metric(quality_metrics, roe * 100 if roe is not None else np.nan, good=17, mid=10)
-    _add_metric(quality_metrics, gross_margin * 100 if gross_margin is not None else np.nan, good=45, mid=30)
-    _add_metric(quality_metrics, op_margin * 100 if op_margin is not None else np.nan, good=18, mid=10)
-    _add_metric(quality_metrics, debt_to_equity, good=80, mid=160, invert=True)
     if pd.notna(roe) and roe >= 0.17:
         drivers.append("Hohe Eigenkapitalrendite (ROE) stützt die Qualitätsbewertung.")
 
-    # Wachstum
+    # Wachstum (Buch Kap. 3.4: EPS- und Umsatzwachstum ≥20% YoY in Quartal und Jahr)
+    # Schwellen entsprechen der Checkliste 3.4: 100 Pkt ab 20%, 60 Pkt ab 13% (Beschleunigungs-Floor)
     revenue_growth = info.get("revenueGrowth")
     earnings_growth = info.get("earningsGrowth")
     q_rev_growth = info.get("quarterlyRevenueGrowth")
     q_eps_growth = info.get("quarterlyEarningsGrowth")
-    _add_metric(growth_metrics, revenue_growth * 100 if revenue_growth is not None else np.nan, good=15, mid=5)
-    _add_metric(growth_metrics, earnings_growth * 100 if earnings_growth is not None else np.nan, good=15, mid=5)
-    _add_metric(growth_metrics, q_rev_growth * 100 if q_rev_growth is not None else np.nan, good=10, mid=3)
-    _add_metric(growth_metrics, q_eps_growth * 100 if q_eps_growth is not None else np.nan, good=10, mid=3)
-    if pd.notna(earnings_growth) and earnings_growth >= 0.15:
-        drivers.append("Gewinnwachstum liegt über dem Basisschwellenwert.")
+    _add_metric(growth_metrics, revenue_growth * 100 if revenue_growth is not None else np.nan, good=20, mid=10)
+    _add_metric(growth_metrics, earnings_growth * 100 if earnings_growth is not None else np.nan, good=20, mid=10)
+    _add_metric(growth_metrics, q_rev_growth * 100 if q_rev_growth is not None else np.nan, good=20, mid=13)
+    _add_metric(growth_metrics, q_eps_growth * 100 if q_eps_growth is not None else np.nan, good=20, mid=13)
+    if pd.notna(earnings_growth) and earnings_growth >= 0.20:
+        drivers.append("Gewinnwachstum erreicht die Buch-Schwelle von 20%.")
+
+    # CMF (Buch Kap. 3.5, Tabelle 13): A=stark, B=moderat, C=neutral, D=moderat dist, E=stark dist
+    # CMF misst Kapitalfluss / Akkumulation und gehört thematisch zur Nachfrageseite -> Wachstum.
+    if cmf_val is not None and pd.notna(cmf_val):
+        try:
+            cmf_letter, _, _ = _cmf_rating(float(cmf_val))
+        except Exception:
+            cmf_letter = None
+        if cmf_letter == "A":
+            growth_metrics.append(100.0)
+            drivers.append("Starke Akkumulation laut Chaikin Money Flow (Rating A).")
+        elif cmf_letter == "B":
+            growth_metrics.append(80.0)
+        elif cmf_letter == "C":
+            growth_metrics.append(50.0)
+        elif cmf_letter == "D":
+            growth_metrics.append(25.0)
+            warnings.append("Moderate Distribution laut Chaikin Money Flow (Rating D).")
+        elif cmf_letter == "E":
+            growth_metrics.append(10.0)
+            warnings.append("Deutliche Distribution laut Chaikin Money Flow (Rating E).")
 
     # Trend
     above_ema21 = bool(pd.notna(ema21.iloc[-1]) and pd.notna(price) and price > ema21.iloc[-1])
@@ -9635,20 +9764,23 @@ def build_stock_assessment(
     if pd.notna(rs_rating) and rs_rating >= 80:
         drivers.append("Die Aktie zeigt relative Stärke gegenüber dem Vergleichsuniversum.")
 
-    # Risiko
+    # Risiko (Buch Kap. 4.5: Abstand zur 50-SMA ist Warnsignal ab ~25%)
+    # Hinweis: ATR und Beta werden bewusst NICHT mehr in den Risiko-Score eingerechnet,
+    # sondern nur als Info-Kennzahlen ausgewiesen. Begründung Buch Kap. 3.6:
+    # Sie beschreiben das Temperament einer Aktie, nicht ihre Kaufqualität.
     beta = info.get("beta")
     dist_21 = (price / ema21.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(ema21.iloc[-1]) and ema21.iloc[-1] else np.nan
     dist_50 = (price / sma50.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma50.iloc[-1]) and sma50.iloc[-1] else np.nan
     dist_200 = (price / sma200.iloc[-1] - 1) * 100 if pd.notna(price) and pd.notna(sma200.iloc[-1]) and sma200.iloc[-1] else np.nan
-    _add_metric(risk_metrics, atr_pct, good=2.5, mid=4.5, invert=True)
-    _add_metric(risk_metrics, beta, good=1.0, mid=1.6, invert=True)
     _add_metric(risk_metrics, abs(drawdown_52w) if pd.notna(drawdown_52w) else np.nan, good=12, mid=25, invert=True)
-    _add_metric(risk_metrics, abs(dist_50) if pd.notna(dist_50) else np.nan, good=6, mid=14, invert=True)
+    _add_metric(risk_metrics, abs(dist_50) if pd.notna(dist_50) else np.nan, good=10, mid=25, invert=True)
 
+    # Warnings bleiben informativ – ATR/Beta werden hier weiterhin sichtbar gemacht,
+    # ohne den Score zu beeinflussen.
     if pd.notna(atr_pct) and atr_pct >= 6:
         warnings.append("Hohe Volatilität (ATR) erhöht das kurzfristige Risiko.")
-    if pd.notna(dist_50) and dist_50 >= 18:
-        warnings.append("Der Abstand zur 50-SMA ist groß; die Aktie wirkt überdehnt.")
+    if pd.notna(dist_50) and dist_50 >= 25:
+        warnings.append("Der Abstand zur 50-SMA überschreitet die Buch-Schwelle von 25% – Aktie überdehnt.")
     if pd.notna(beta) and beta > 1.6:
         warnings.append("Überdurchschnittliches Beta signalisiert erhöhte Marktsensitivität.")
     if pd.notna(drawdown_52w) and drawdown_52w <= -30:
@@ -9683,6 +9815,16 @@ def build_stock_assessment(
     if available_groups <= 1 or len(df) < 120:
         status = "Nicht bewertbar"
         tone = "neutral"
+    elif pd.notna(price) and price < 15:
+        # Buch Kap. 3.5: Mindestpreis 15 USD – darunter Hard-Disqualifikation.
+        status = "Nicht bewertbar"
+        tone = "neutral"
+        warnings.append("Kurs unter 15 USD – Buch-Mindestpreis (Kap. 3.5) nicht erfüllt.")
+    elif _dollar_volume_below_threshold(df, price, threshold_mio=30):
+        # Buch Kap. 3.5: durchschnittliches Dollar-Volumen ≥ 30 Mio. USD pro Tag.
+        status = "Nicht bewertbar"
+        tone = "neutral"
+        warnings.append("Dollar-Volumen unter 30 Mio. USD/Tag – Liquiditätsschwelle (Kap. 3.5) nicht erfüllt.")
     elif trend_score >= 75 and (
         (pd.notna(dist_50) and dist_50 >= 25)
         or (pd.notna(dist_21) and dist_21 >= 14)
@@ -9690,6 +9832,12 @@ def build_stock_assessment(
     ):
         status = "Überdehnt"
         tone = "warn"
+    elif not above_200:
+        # Buch Kap. 4.3: "Du kaufst grundsätzlich keine Titel, die unter ihrer 200-Tage-Linie handeln."
+        # Status wird maximal auf "Beobachten" gedeckelt, unabhängig vom Gesamtscore.
+        status = "Beobachten"
+        tone = "warn"
+        warnings.append("Kurs unter 200-SMA – das Buch (Kap. 4.3) rät grundsätzlich vom Kauf ab.")
     elif total_score >= 80 and _safe_score(risk_score) >= 45:
         status = "Attraktiv"
         tone = "good"
@@ -10031,6 +10179,46 @@ def _render_stock_compare_section() -> None:
     _render_stock_ranking_tables(compare_df, key_prefix="compare")
 
 
+def _next_earnings_info(ed, ref_now=None) -> dict | None:
+    """Sucht in earnings_dates (Yahoo) das nächste zukünftige Earnings-Datum.
+    Gibt {'date': pd.Timestamp, 'calendar_days': int, 'trading_days': int} zurück
+    oder None, wenn nichts gefunden wurde. Buch Kap. 5.1: Kein Einstieg kurz vor
+    Quartalszahlen."""
+    if ed is None or (hasattr(ed, "empty") and ed.empty):
+        return None
+    try:
+        if ref_now is None:
+            ref_now = pd.Timestamp.now(tz="UTC")
+        else:
+            ref_now = pd.Timestamp(ref_now)
+            if ref_now.tzinfo is None:
+                ref_now = ref_now.tz_localize("UTC")
+        idx = ed.index
+        try:
+            if idx.tz is None:
+                idx = idx.tz_localize("UTC")
+            else:
+                idx = idx.tz_convert("UTC")
+        except Exception:
+            return None
+        future = idx[idx > ref_now]
+        if len(future) == 0:
+            return None
+        next_dt = future.min()
+        calendar_days = int((next_dt.normalize() - ref_now.normalize()).days)
+        # Handelstage approximieren (Mo-Fr, ohne Feiertage)
+        try:
+            trading_days = int(
+                len(pd.bdate_range(ref_now.tz_convert(None).normalize(), next_dt.tz_convert(None).normalize())) - 1
+            )
+            trading_days = max(0, trading_days)
+        except Exception:
+            trading_days = calendar_days
+        return {"date": next_dt, "calendar_days": calendar_days, "trading_days": trading_days}
+    except Exception:
+        return None
+
+
 def _tab_aktienbewertung():
     _init_workspace_state()
     st.markdown(
@@ -10109,6 +10297,30 @@ def _tab_aktienbewertung():
         if not private_ok:
             st.caption("Watchlist-Speicherung ist gesperrt, bis du den privaten Bereich entsperrst.")
 
+    # ─── Earnings-Vorwarnung (Buch Kap. 5.1) ───
+    # "Prüfe immer den Terminkalender hinsichtlich nahender Quartalszahlen.
+    #  Ein Einstieg kurz vor den Zahlen erhöht dein Risiko deutlich."
+    next_earn = _next_earnings_info(ed)
+    if next_earn is not None:
+        td = next_earn["trading_days"]
+        cd = next_earn["calendar_days"]
+        try:
+            date_str = next_earn["date"].strftime("%d.%m.%Y")
+        except Exception:
+            date_str = str(next_earn["date"])
+        if td <= 5:
+            st.error(
+                f"⚠️ Nächste Quartalszahlen am {date_str} (in {td} Handelstagen / {cd} Kalendertagen). "
+                f"Buch Kap. 5.1: Kein Einstieg kurz vor Quartalszahlen ohne Gewinnpolster."
+            )
+        elif td <= 14:
+            st.warning(
+                f"📅 Nächste Quartalszahlen am {date_str} (in {td} Handelstagen / {cd} Kalendertagen). "
+                f"Buch Kap. 5.1: Risiko beim Einstieg vor Quartalszahlen erhöht."
+            )
+        else:
+            st.info(f"📅 Nächste Quartalszahlen am {date_str} (in {td} Handelstagen / {cd} Kalendertagen).")
+
     atr_s = _atr(df, 21)
     atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
     atr_pct = (atr_val / price * 100) if not np.isnan(atr_val) else np.nan
@@ -10167,6 +10379,7 @@ def _tab_aktienbewertung():
         technical_checks=technical_checks,
         chart_signs=signs,
         rs_ctx=rs_ctx,
+        cmf_val=cmf_val,
     )
 
     def _pct_or_na(value):
