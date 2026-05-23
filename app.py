@@ -9016,7 +9016,9 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
 def _technical_points_score(technical_checks, rs_rating, cmf_value):
     check_map = {label: bool(ok) for label, ok, _ in technical_checks}
     score = 0.0
-    max_score = 100.0
+    # Summe aller maximal erreichbaren Einzelpunkte: 5+5+5+10+15+10+10+5+10+5+15 = 95.
+    # Mit dieser Bezugsgröße kann ein perfektes Setup tatsächlich 100/100 erreichen.
+    max_score = 95.0
 
     score += 5 if check_map.get("Preis ≥ $15", False) else 0
     score += 5 if check_map.get("Nahe am 52W-Hoch", False) else 0
@@ -9024,11 +9026,9 @@ def _technical_points_score(technical_checks, rs_rating, cmf_value):
     score += 10 if check_map.get("Up/Down Vol. Ratio ≥1.0", False) else 0
 
     rs_val = _safe_float(rs_rating, np.nan)
-    if pd.notna(rs_val):
-        if 80 <= rs_val < 90:
-            score += float(np.clip(np.floor(rs_val) - 79, 1, 5))
-        elif rs_val >= 90:
-            score += float(np.clip(10 + (np.floor(rs_val) - 90), 10, 15))
+    if pd.notna(rs_val) and rs_val >= 80:
+        # Kontinuierliche, monotone Staffel: RS 80 → 1 Pkt, RS 90 → 8 Pkt, RS 100 → 15 Pkt.
+        score += float(np.clip((rs_val - 80) * 0.7 + 1.0, 1.0, 15.0))
 
     score += 10 if check_map.get("RS-Linie über 21-EMA", False) else 0
     score += 10 if check_map.get("RS-Linie über 50-SMA", False) else 0
@@ -9037,10 +9037,11 @@ def _technical_points_score(technical_checks, rs_rating, cmf_value):
     score += 5 if check_map.get("RS-Linie nahe 52W-Hoch", False) else 0
 
     rat, _, _ = _cmf_rating(cmf_value)
+    # A = Starke Akkumulation (bestes Rating), B = Moderate Akkumulation.
     if rat == "A":
-        score += 10
-    elif rat == "B":
         score += 15
+    elif rat == "B":
+        score += 10
 
     return round(float(np.clip(score / max_score * 100.0, 0, 100)), 1)
 
@@ -9054,19 +9055,30 @@ def _fundamental_checklist_score_100(
     roe,
     profit_margin,
 ):
-    criteria_labels = [
-        "EPS ≥20% YoY (3Q)",
-        "EPS-Beschleunigung",
-        "Jährl. EPS ≥20% (3 Jahre)",
-        "Summe letzte 4 Quartals-EPS > 0",
-        "Umsatz ≥20% YoY (3Q)",
-        "Umsatz-Beschleunigung (Bonus)",
-        "Jährl. Umsatz ≥20% (3J)",
-        "ROE ≥17%",
-        "Gewinnmarge positiv",
+    # Jedes Kern-Kriterium wird über Präfix-Matches gegen das tatsächlich von
+    # evaluate_fundamentals erzeugte Label abgeglichen. evaluate_fundamentals
+    # hängt je nach Datenlage Suffixe wie "(2Q)", "(3 Jahre)", "(letztes Q)"
+    # an oder benutzt Fallback-Labels (z.B. "Trailing EPS > 0 …").
+    criteria_specs = [
+        ("EPS ≥20% YoY",                ("EPS ≥20% YoY",)),
+        ("EPS-Beschleunigung",          ("EPS-Beschleunigung",)),
+        ("Jährl. EPS-Wachstum ≥20%",    ("Jährl. EPS ≥20%", "Jährl. EPS-Wachstum")),
+        ("Summe 4Q EPS > 0",            ("Summe letzte 4 Quartals-EPS > 0", "Trailing EPS > 0")),
+        ("Umsatz ≥20% YoY",             ("Umsatz ≥20% YoY",)),
+        ("Umsatz-Beschleunigung",       ("Umsatz-Beschleunigung",)),
+        ("Jährl. Umsatzwachstum ≥20%", ("Jährl. Umsatz ≥20%", "Jährl. Umsatzwachstum")),
+        ("ROE ≥17%",                    ("ROE ≥17%",)),
+        ("Gewinnmarge positiv",         ("Gewinnmarge positiv",)),
     ]
-    check_map = {_check_label(check): _check_ok(check) for check in (fundamentals_checks or [])}
-    unit = 100.0 / len(criteria_labels)
+    check_pairs = [(_check_label(check), _check_ok(check)) for check in (fundamentals_checks or [])]
+
+    def _criterion_met(prefixes):
+        for label, ok in check_pairs:
+            if any(label.startswith(prefix) for prefix in prefixes):
+                return bool(ok)
+        return False
+
+    unit = 100.0 / len(criteria_specs)
 
     def _tiered_growth_points(value, minimum=0.20, stretch=0.60):
         v = _safe_float(value, np.nan)
@@ -9075,18 +9087,18 @@ def _fundamental_checklist_score_100(
         return unit * min((v - minimum) / max(stretch - minimum, 1e-9), 1.0)
 
     score = 0.0
-    # 1) EPS YoY (3Q): mehr Wachstum = mehr Punkte
+    # 1) EPS YoY (Q): mehr Wachstum = mehr Punkte
     score += _tiered_growth_points(q_earnings_growth, minimum=0.20, stretch=0.80)
     # 2) EPS-Beschleunigung
-    score += unit if check_map.get("EPS-Beschleunigung", False) else 0.0
+    score += unit if _criterion_met(criteria_specs[1][1]) else 0.0
     # 3) Jährl. EPS-Wachstum
     score += _tiered_growth_points(earnings_growth, minimum=0.20, stretch=0.60)
-    # 4) Summe 4Q EPS > 0
-    score += unit if check_map.get("Summe letzte 4 Quartals-EPS > 0", False) else 0.0
-    # 5) Umsatz YoY (3Q)
+    # 4) Summe 4Q EPS > 0 (oder Trailing-EPS-Fallback)
+    score += unit if _criterion_met(criteria_specs[3][1]) else 0.0
+    # 5) Umsatz YoY (Q)
     score += _tiered_growth_points(q_revenue_growth, minimum=0.20, stretch=0.60)
     # 6) Umsatz-Beschleunigung
-    score += unit if check_map.get("Umsatz-Beschleunigung (Bonus)", False) else 0.0
+    score += unit if _criterion_met(criteria_specs[5][1]) else 0.0
     # 7) Jährl. Umsatz-Wachstum
     score += _tiered_growth_points(revenue_growth, minimum=0.20, stretch=0.50)
     # 8) ROE
@@ -9094,8 +9106,8 @@ def _fundamental_checklist_score_100(
     # 9) Gewinnmarge
     score += _tiered_growth_points(profit_margin, minimum=0.00, stretch=0.25) if _safe_float(profit_margin, np.nan) > 0 else 0.0
 
-    met = sum(1 for label in criteria_labels if check_map.get(label, False))
-    return round(float(np.clip(score, 0, 100)), 1), met, len(criteria_labels)
+    met = sum(1 for _, prefixes in criteria_specs if _criterion_met(prefixes))
+    return round(float(np.clip(score, 0, 100)), 1), met, len(criteria_specs)
 
 
 def _weekly_ohlc(df):
@@ -10467,11 +10479,17 @@ def _tab_aktienbewertung():
 
     with st.expander("Fundamentale Checkliste", expanded=False):
         st.markdown('<div class="info-card">', unsafe_allow_html=True)
-        fok = sum(1 for check in fundamentals_checks if _check_ok(check))
         for check in fundamentals_checks:
             render_check(_check_label(check), _check_ok(check), _check_detail(check), warn=_check_warn(check))
-        sc = "#22c55e" if fok >= 7 else "#f59e0b" if fok >= 4 else "#ef4444"
-        st.markdown(f'<div style="text-align:center;padding:8px;color:{sc};">{fok}/{len(fundamentals_checks)} Kriterien erfüllt</div>', unsafe_allow_html=True)
+        extras = max(0, len(fundamentals_checks) - fundamental_total)
+        sc = "#22c55e" if fundamental_met >= 7 else "#f59e0b" if fundamental_met >= 4 else "#ef4444"
+        extras_note = f" · {extras} Zusatzinfos (Datenquellen, Institutionelle)" if extras > 0 else ""
+        st.markdown(
+            f'<div style="text-align:center;padding:8px;color:{sc};">'
+            f'{fundamental_met}/{fundamental_total} Score-Kriterien erfüllt{extras_note}'
+            '</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Technische Checkliste", expanded=False):
