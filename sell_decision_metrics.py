@@ -302,12 +302,12 @@ def build_sell_decision_metrics_payload(
     if joined.empty:
         return _error(f"Keine überlappenden Kursdaten für {clean_ticker} und {clean_benchmark}.", clean_ticker, clean_benchmark)
     rs_line = joined["asset"] / joined["benchmark"]
-    rs_ema21 = _ema(rs_line, 21)
+    rs_ma21 = _sma(rs_line, 21)
     rs_ma50 = _sma(rs_line, 50)
     weekly_rs = rs_line.resample("W-FRI").last().dropna()
     weekly_rs_ma10 = _sma(weekly_rs, 10)
     weekly_rs_ma25 = _sma(weekly_rs, 25)
-    days_under_rs_ema21 = _trailing_true_count(rs_line < rs_ema21)
+    days_under_rs_ma21 = _trailing_true_count(rs_line < rs_ma21)
     days_under_rs_ma50 = _trailing_true_count(rs_line < rs_ma50)
 
     after_buy = df[df.index >= buy_ts]
@@ -349,7 +349,7 @@ def build_sell_decision_metrics_payload(
     high_since_buy_date = _index_date_of_max(pd.to_numeric(after_buy.get("High", pd.Series(dtype=float)), errors="coerce")) if not after_buy.empty else ""
     under_ema21_start_date = _trailing_true_start_date(close < ema21)
     under_sma50_start_date = _trailing_true_start_date(close < sma50)
-    under_rs_ema21_start_date = _trailing_true_start_date(rs_line < rs_ema21)
+    under_rs_ma21_start_date = _trailing_true_start_date(rs_line < rs_ma21)
     under_rs_ma50_start_date = _trailing_true_start_date(rs_line < rs_ma50)
     close_since_buy = close[close.index >= buy_ts]
     high_since_buy_series = high[high.index >= buy_ts]
@@ -427,7 +427,7 @@ def build_sell_decision_metrics_payload(
     asset_return_20 = (close.iloc[-1] / close.iloc[-21] - 1) if len(close.dropna()) >= 21 else None
     benchmark_return_20 = (bench_close.iloc[-1] / bench_close.iloc[-21] - 1) if len(bench_close.dropna()) >= 21 else None
     rs_latest = _last_float(rs_line)
-    rs21_latest = _last_float(rs_ema21)
+    rs21_latest = _last_float(rs_ma21)
     rs50_latest = _last_float(rs_ma50)
     rs_line_rising_5 = bool(len(rs_line.dropna()) >= 6 and rs_line.dropna().iloc[-1] > rs_line.dropna().iloc[-6])
     negative_market_divergence = bool(
@@ -489,13 +489,13 @@ def build_sell_decision_metrics_payload(
         "green_days_70": f"{(first_green_ratio or 0) * 100:.0f}% grüne Tage in den ersten {len(first_sessions)} Sessions seit Kauf" if first_green_ratio is not None else "Zu wenige Sessions seit Kauf",
         "positive_volume": f"Up-/Down-Volumenfaktor 20T {positive_volume_ratio_20:.2f}" if positive_volume_ratio_20 is not None else f"Up-/Down-Volumenfaktor 50T {_safe_float(up_down_volume_ratio_50, 0.0):.2f}",
         "pullback_rebound": "Rebound an 21-EMA/50-SMA in den letzten 8 Sessions" if pullback_rebound_recent else "Kein frischer Rebound an 21-EMA/50-SMA",
-        "rs_line_strong": "RS-Linie steigt und liegt über 21-EMA und 50-Tage-Durchschnitt" if auto_strength_checkboxes["rs_line_strong"] else "RS-Linie steigt nicht über beiden Durchschnitten",
+        "rs_line_strong": "RS-Linie steigt und liegt über 21- und 50-Tage-Durchschnitt" if auto_strength_checkboxes["rs_line_strong"] else "RS-Linie steigt nicht über beiden Durchschnitten",
         "failed_breakout_high_volume": f"Kurs unter Tief Tag 1 bei Volumenfaktor {vol_ratio:.2f}" if failed_breakout_high_volume and vol_ratio is not None else "Nicht unter Tief Tag 1 mit erhöhtem Volumen",
         "lower_lows_no_rebound": f"{lower_low_days} tiefere Tagestiefs in Folge; stärkster Rebound {(_safe_float(lower_low_max_rebound_pct, 0.0)):.1f}%" if lower_lows_no_rebound else f"{lower_low_days} tiefere Tagestiefs in Folge; Rebound noch nicht schwach genug",
         "stall_days_near_breakout": f"{int(stall_mask.sum())} Stau-Tage nahe Pivot in den letzten 10 Sessions",
         "low_closes": f"{low_close_count_5}/5 bzw. {low_close_count_10}/10 Schlusskurse im unteren Kerzenviertel",
         "distribution_cluster": f"{distribution_days_25} Distribution-Tage in 25 Sessions",
-        "negative_market_divergence": "10/20T-Rendite klar schwächer als Benchmark und RS unter 21-EMA" if negative_market_divergence else "Keine klare negative Divergenz gegen Benchmark",
+        "negative_market_divergence": "10/20T-Rendite klar schwächer als Benchmark und RS unter 21-MA" if negative_market_divergence else "Keine klare negative Divergenz gegen Benchmark",
         "weak_rebounds": f"Stärkster Rebound 10T {(_safe_float(max_rebound_10, 0.0)):.1f}% bei technischer Schwäche" if weak_recent_rebound else "Rebounds aktuell nicht schwach genug",
         "worst_day_high_volume": f"Größter Tagesverlust seit Kauf am {worst_day_date} mit erhöhtem Volumen" if worst_day_high_volume else "Größter Tagesverlust nicht mit erhöhtem Volumen",
         "downside_reversal_near_high": "Downside Reversal nahe Hoch in den letzten 5 Sessions" if downside_reversal_near_high else "Kein Downside Reversal nahe Hoch",
@@ -527,11 +527,11 @@ def build_sell_decision_metrics_payload(
         "distribution_days_25": distribution_days_25,
         "up_down_volume_ratio_50": up_down_volume_ratio_50,
         "rs_line": _last_float(rs_line),
-        "rs_ema21": _last_float(rs_ema21),
+        "rs_ma21": _last_float(rs_ma21),
         "rs_ma50": _last_float(rs_ma50),
         "weekly_rs_ma10": _last_float(weekly_rs_ma10),
         "weekly_rs_ma25": _last_float(weekly_rs_ma25),
-        "days_under_rs_ema21": days_under_rs_ema21,
+        "days_under_rs_ma21": days_under_rs_ma21,
         "days_under_rs_ma50": days_under_rs_ma50,
         "consecutive_loss_weeks_rising_volume": consecutive_loss_weeks_rising_volume,
         "three_loss_weeks_rising_volume": consecutive_loss_weeks_rising_volume >= 3,
@@ -548,7 +548,7 @@ def build_sell_decision_metrics_payload(
         "low_day_0_date": low_day_0_date,
         "under_ema21_start_date": under_ema21_start_date,
         "under_sma50_start_date": under_sma50_start_date,
-        "under_rs_ema21_start_date": under_rs_ema21_start_date,
+        "under_rs_ma21_start_date": under_rs_ma21_start_date,
         "under_rs_ma50_start_date": under_rs_ma50_start_date,
         "first_10_pct_gain_date": first_10_pct_gain_date,
         "first_20_pct_gain_date": first_20_pct_gain_date,
