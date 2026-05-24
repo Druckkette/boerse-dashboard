@@ -84,7 +84,7 @@ def _compute_sell_health_score_fallback(metrics_payload: dict, manual_data: dict
     reasons = []
     pnl = _fallback_float(metrics.get("pnl_pct"), 0.0)
     drawdown = abs(_fallback_float(metrics.get("drawdown_from_high_pct"), 0.0))
-    days_under_21 = _fallback_float(metrics.get("days_under_sma21"), 0.0)
+    days_under_21 = _fallback_float(metrics.get("days_under_ema21"), 0.0)
     rs_slope = _fallback_float(metrics.get("rs_slope_21"), 0.0)
     if pnl >= 20:
         score += 12
@@ -103,10 +103,10 @@ def _compute_sell_health_score_fallback(metrics_payload: dict, manual_data: dict
         reasons.append("Drawdown vom Hoch erhöht")
     if days_under_21 >= 3:
         score -= 14
-        reasons.append("Mehrere Tage unter 21-Tage-Linie")
+        reasons.append("Mehrere Tage unter 21-EMA")
     elif days_under_21 >= 1:
         score -= 6
-        reasons.append("Kurz unter 21-Tage-Linie")
+        reasons.append("Kurz unter 21-EMA")
     if rs_slope > 0:
         score += 8
         rs_trend = "steigend"
@@ -10944,7 +10944,7 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
                     default_variant = str(_val("ma21_variante", "gestaffelt"))
                     if default_variant not in variants:
                         default_variant = "gestaffelt"
-                    active["ma21_variante"] = st.selectbox("Variante 21-MA-Bruch", variants, index=variants.index(default_variant), key=f"lm_setup_ma21_var_{ticker}", help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-MA behandelt.")
+                    active["ma21_variante"] = st.selectbox("Variante 21-EMA-Bruch", variants, index=variants.index(default_variant), key=f"lm_setup_ma21_var_{ticker}", help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-EMA behandelt.")
 
                 elif key == "drawdown_vom_peak":
                     c1, c2, c3 = st.columns(3)
@@ -10960,14 +10960,14 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
                 elif key == "ma_abstand":
                     c1, c2, c3 = st.columns(3)
                     active["ma_abstand_schwelle_ma10_pct"] = c1.number_input("Schwelle 10-MA (%)", min_value=1.0, max_value=50.0, value=float(_val("ma_abstand_schwelle_ma10_pct", 10.0)), step=0.5, key=f"lm_setup_dist10_{ticker}")
-                    active["ma_abstand_schwelle_ma21_pct"] = c2.number_input("Schwelle 21-MA (%)", min_value=1.0, max_value=80.0, value=float(_val("ma_abstand_schwelle_ma21_pct", 15.0)), step=0.5, key=f"lm_setup_dist21_{ticker}")
+                    active["ma_abstand_schwelle_ma21_pct"] = c2.number_input("Schwelle 21-EMA (%)", min_value=1.0, max_value=80.0, value=float(_val("ma_abstand_schwelle_ma21_pct", 15.0)), step=0.5, key=f"lm_setup_dist21_{ticker}")
                     active["ma_abstand_schwelle_ma50_pct"] = c3.number_input("Schwelle 50-MA (%)", min_value=1.0, max_value=120.0, value=float(_val("ma_abstand_schwelle_ma50_pct", 25.0)), step=0.5, key=f"lm_setup_dist50_{ticker}")
                     c4, c5 = st.columns(2)
                     active["ma_abstand_schwelle_ma200_pct"] = c4.number_input("Klimax 200-MA (%)", min_value=10.0, max_value=200.0, value=float(_val("ma_abstand_schwelle_ma200_pct", 70.0)), step=1.0, key=f"lm_setup_dist200_{ticker}")
                     active["ma_abstand_klimax_ma200_vollausstieg_pct"] = c5.number_input("Vollausstieg ab 200-MA (%)", min_value=20.0, max_value=300.0, value=float(_val("ma_abstand_klimax_ma200_vollausstieg_pct", 100.0)), step=1.0, key=f"lm_setup_dist200_full_{ticker}")
                     c6, c7, c8, c9 = st.columns(4)
                     active["ma_abstand_tranche_ma10_pct"] = c6.number_input("Tranche 10-MA (%)", min_value=1.0, max_value=100.0, value=float(_val("ma_abstand_tranche_ma10_pct", 25.0)), step=1.0, key=f"lm_setup_dist10_tr_{ticker}")
-                    active["ma_abstand_tranche_ma21_pct"] = c7.number_input("Tranche 21-MA (%)", min_value=1.0, max_value=100.0, value=float(_val("ma_abstand_tranche_ma21_pct", 33.0)), step=1.0, key=f"lm_setup_dist21_tr_{ticker}")
+                    active["ma_abstand_tranche_ma21_pct"] = c7.number_input("Tranche 21-EMA (%)", min_value=1.0, max_value=100.0, value=float(_val("ma_abstand_tranche_ma21_pct", 33.0)), step=1.0, key=f"lm_setup_dist21_tr_{ticker}")
                     active["ma_abstand_tranche_ma50_pct"] = c8.number_input("Tranche 50-MA (%)", min_value=1.0, max_value=100.0, value=float(_val("ma_abstand_tranche_ma50_pct", 33.0)), step=1.0, key=f"lm_setup_dist50_tr_{ticker}")
                     active["ma_abstand_tranche_ma200_basis_pct"] = c9.number_input("Tranche 200-MA Basis (%)", min_value=1.0, max_value=100.0, value=float(_val("ma_abstand_tranche_ma200_basis_pct", 50.0)), step=1.0, key=f"lm_setup_dist200_tr_{ticker}")
 
@@ -11470,8 +11470,8 @@ def _render_sell_monitor_diagnostics(ticker: str, metrics_payload: dict, manual_
         close = pd.to_numeric(df["Close"], errors="coerce")
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index, y=close, mode="lines", name="Kurs"))
-        for window, name, color in [(21, "21-MA", "#2563eb"), (50, "50-MA", "#d97706"), (200, "200-MA", "#64748b")]:
-            ma = close.rolling(window, min_periods=window).mean()
+        for window, name, color, kind in [(21, "21-EMA", "#2563eb", "ema"), (50, "50-MA", "#d97706", "sma"), (200, "200-MA", "#64748b", "sma")]:
+            ma = close.ewm(span=window, adjust=False, min_periods=window).mean() if kind == "ema" else close.rolling(window, min_periods=window).mean()
             if ma.notna().any():
                 fig.add_trace(go.Scatter(x=df.index, y=ma, mode="lines", name=f"{name} (gleitend)", line=dict(width=1.4, color=color)))
         for key, name, color in [("pivot", "Pivot", "#7c3aed"), ("low_day_1", "Tag-1-Tief", "#dc2626")]:
@@ -11608,18 +11608,18 @@ def _render_sell_decision_live_monitor() -> None:
     current = _safe_float(metrics.get("current_price"), np.nan)
     rs_status = "—"
     rs_line = _safe_float(metrics.get("rs_line"), np.nan)
-    rs21 = _safe_float(metrics.get("rs_ma21"), np.nan)
+    rs21 = _safe_float(metrics.get("rs_ema21"), np.nan)
     rs50 = _safe_float(metrics.get("rs_ma50"), np.nan)
     if not np.isnan(rs_line) and not np.isnan(rs21) and not np.isnan(rs50):
         rs_status = "Stark" if rs_line > rs21 > rs50 else "Schwach" if rs_line < rs21 or rs_line < rs50 else "Neutral"
     kpis = [
         {"title": "P&L", "value": _fmt_pct(metrics.get("pnl_pct")), "detail": "seit Einstieg"},
         {"title": "Drawdown", "value": _fmt_pct(metrics.get("drawdown_from_high_since_buy_pct")), "detail": "vom Hoch nach Kauf"},
-        {"title": "Distanz 21-MA", "value": _fmt_pct(_sell_monitor_distance(current, metrics.get("sma21"))), "detail": _sell_monitor_fmt_money(metrics.get("sma21"), market_currency)},
+        {"title": "Distanz 21-EMA", "value": _fmt_pct(_sell_monitor_distance(current, metrics.get("ema21"))), "detail": _sell_monitor_fmt_money(metrics.get("ema21"), market_currency)},
         {"title": "Distanz 50-MA", "value": _fmt_pct(_sell_monitor_distance(current, metrics.get("sma50"))), "detail": _sell_monitor_fmt_money(metrics.get("sma50"), market_currency)},
     ]
     _render_change_cards(kpis)
-    st.markdown(f'<div class="info-card"><div class="card-label">RS-Linien-Status</div><div style="font-size:1.1rem;font-weight:800;">{html.escape(rs_status)}</div><div class="mini-help">RS {rs_line:.4f} · 21-MA {_fmt_num(rs21)} · 50-MA {_fmt_num(rs50)}</div></div>' if not np.isnan(rs_line) else '<div class="info-card"><div class="card-label">RS-Linien-Status</div>—</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="info-card"><div class="card-label">RS-Linien-Status</div><div style="font-size:1.1rem;font-weight:800;">{html.escape(rs_status)}</div><div class="mini-help">RS {rs_line:.4f} · 21-EMA {_fmt_num(rs21)} · 50-MA {_fmt_num(rs50)}</div></div>' if not np.isnan(rs_line) else '<div class="info-card"><div class="card-label">RS-Linien-Status</div>—</div>', unsafe_allow_html=True)
 
     # C. Aktive Signale
     st.markdown("#### Aktive Signale")
@@ -11716,7 +11716,7 @@ def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: 
         "Empfohlene Tranche %": 0,
         "Status": "Fehler",
         "Drawdown vom Peak %": np.nan,
-        "21-MA": "—",
+        "21-EMA": "—",
         "50-MA": "—",
         "RS-Trend": "—",
         "Distribution-Tage": np.nan,
@@ -11733,7 +11733,7 @@ def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: 
     health = payload.get("health") or {}
     result = payload.get("result") or {}
     current = _safe_float(metrics.get("current_price"), np.nan)
-    sma21 = _safe_float(metrics.get("sma21"), np.nan)
+    ema21 = _safe_float(metrics.get("ema21"), np.nan)
     sma50 = _safe_float(metrics.get("sma50"), np.nan)
     try:
         buy_date = pd.Timestamp((position or {}).get("buy_date")).date()
@@ -11747,7 +11747,7 @@ def _evaluate_sell_ranking_position(position: dict, name_map: dict, manual_map: 
         "Empfohlene Tranche %": tranche,
         "Status": _sell_ranking_status_badge(health.get("status")),
         "Drawdown vom Peak %": _safe_float(metrics.get("drawdown_from_high_since_buy_pct"), np.nan),
-        "21-MA": "darüber" if not np.isnan(current) and not np.isnan(sma21) and current >= sma21 else "darunter" if not np.isnan(current) and not np.isnan(sma21) else "—",
+        "21-EMA": "darüber" if not np.isnan(current) and not np.isnan(ema21) and current >= ema21 else "darunter" if not np.isnan(current) and not np.isnan(ema21) else "—",
         "50-MA": "darüber" if not np.isnan(current) and not np.isnan(sma50) and current >= sma50 else "darunter" if not np.isnan(current) and not np.isnan(sma50) else "—",
         "RS-Trend": health.get("rs_trend", "seitwärts"),
         "Distribution-Tage": int(_safe_float(metrics.get("distribution_days_25"), 0) or 0),
@@ -11813,9 +11813,9 @@ def _render_sell_decision_portfolio_ranking() -> None:
         return
 
     df = pd.DataFrame(rows).sort_values(["_sort_tranche", "_sort_health"], ascending=[False, True]).drop(columns=["_sort_tranche", "_sort_health"], errors="ignore")
-    display_cols = ["Ticker", "Firma", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "Drawdown vom Peak %", "21-MA", "50-MA", "RS-Trend", "Distribution-Tage", "Haltedauer Tage"]
+    display_cols = ["Ticker", "Firma", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "Drawdown vom Peak %", "21-EMA", "50-MA", "RS-Trend", "Distribution-Tage", "Haltedauer Tage"]
     if _is_mobile_client():
-        display_cols = ["Ticker", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "21-MA", "50-MA"]
+        display_cols = ["Ticker", "P&L %", "Health-Score", "Empfohlene Tranche %", "Status", "21-EMA", "50-MA"]
     st.dataframe(
         df[display_cols],
         width="stretch",
@@ -12196,9 +12196,9 @@ def _render_sell_strategy_hub() -> None:
     strategie_info = {
         "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
         "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
-        "ma21_bruch": "Verkaufssignale bei Bruch der 21-Tage-Linie (aggressiv/gestaffelt/geduldig).",
+        "ma21_bruch": "Verkaufssignale bei Bruch der 21-EMA (aggressiv/gestaffelt/geduldig).",
         "drawdown_vom_peak": "Reduktion nach Rückgang vom Zwischenhoch, abgestuft nach Drawdown-Tiefe.",
-        "ma_abstand": "Überdehnungen relativ zu 10/21/50/200-MA als Gewinnmitnahme-Signal.",
+        "ma_abstand": "Überdehnungen relativ zu 10-MA / 21-EMA / 50-MA / 200-MA als Gewinnmitnahme-Signal.",
         "verlusttage_haeufung": "Strategie 7 (Kap. 6.2): Erkennt Distribution über eine Häufung schwacher Tage. Signal 1: drei tiefere Schlusskurse in Folge mit erhöhter 3-Tage-Volumenquote gegen den Referenz-Lookback. Signal 2: im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen deutlich (Mindestdifferenz). Beide Trigger erzeugen standardmäßig eine 25%-Tranche mit Stop-/Marker-Logik auf lokale Tiefs.",
         "groesster_anstieg_volumen": "Klimax-/Spätphasen-Signal: größter Tagesanstieg mit extremem Volumen.",
         "split_anstieg": "Strategie 10 (Kap. 6.2): Warnt vor möglichem Gipfel, wenn die Aktie innerhalb der ersten 1-2 Wochen nach Aktiensplit stark steigt. Trigger nur, wenn ein Split-Datum bekannt ist. Ab +25% seit Split wird ein aktives Signal erzeugt (33% Tranche), ab +50% erhöht auf 50%. Referenz-/Stoppmarke ist der Schlusskurs am Split-Tag. Split-Datum wird bevorzugt automatisch via Yahoo Finance gesucht; falls dort kein verwertbarer Split in den letzten 14 Tagen gefunden wird, kann das Datum manuell gesetzt werden.",
@@ -12662,7 +12662,7 @@ def _render_sell_strategy_hub() -> None:
 - **Punkt 1:** Teilverkauf in der Gewinnzone (Standard: 20–25%).
 - **Punkt 2:** Zusatz-Tranche bei Überdehnung über 10-MA (Standard: +10%).
 - **Punkt 3:** Verkauf bei Schluss unter 10-MA; bei **Pendelverhalten** um die 10-MA höhere Tranche.
-- **Punkt 4:** Weitere Reduktion bei Schluss unter 21-MA.
+- **Punkt 4:** Weitere Reduktion bei Schluss unter 21-EMA.
 - **Punkt 5 (final):** Vollausstieg bei klarem Bruch der 50-MA.
                         """
                     )
@@ -12680,7 +12680,7 @@ def _render_sell_strategy_hub() -> None:
                     with c3:
                         ma_seq_ueber_ma10_tranche_pct = st.number_input("Tranche Punkt 2 (%)", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key=f"strat_hub_ma_seq_over10_tranche_{t}", help="Verkaufsgröße bei Überdehnung über 10-MA.")
                         ma_seq_pendel_tranche_pct = st.number_input("Tranche Punkt 3 pendelnd (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_pendel_tranche_{t}", help="Erhöhte Tranche, wenn Punkt 3 pendelnd erkannt wird.")
-                        ma_seq_unter_ma21_tranche_pct = st.number_input("Tranche Punkt 4 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_under21_tranche_{t}", help="Verkaufsgröße bei Schluss unter 21-MA.")
+                        ma_seq_unter_ma21_tranche_pct = st.number_input("Tranche Punkt 4 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_seq_under21_tranche_{t}", help="Verkaufsgröße bei Schluss unter 21-EMA.")
                         ma_seq_klarer_ma50_bruch_pct = st.number_input("Klarer 50-MA-Bruch (%)", min_value=0.5, max_value=20.0, value=2.0, step=0.5, key=f"strat_hub_ma_seq_under50_clear_{t}", help="Mindestabstand unter 50-MA für Punkt 5.")
                     ma_seq_unter_ma21_mindestgewinn_pct = st.number_input("Min. P&L für Punkt 4 (%)", min_value=-50.0, max_value=200.0, value=5.0, step=0.5, key=f"strat_hub_ma_seq_under21_minpnl_{t}", help="Punkt 4 erst ab diesem Mindestgewinn.")
                 elif key == "rs_linie":
@@ -12713,21 +12713,21 @@ def _render_sell_strategy_hub() -> None:
                 elif key == "ma21_bruch":
                     st.markdown(
                         """
-**Strategie 4 – 21-MA-Bruch (Kap. 6.2):**
-- **Aggressiv:** klarer Bruch (mind. 2% unter 21-MA) mit erhöhtem Volumen (≥1.2) triggert 33%.
-      Zusatzregel: am zweiten Tag unter 21-MA und Tagesverlust ≤ -7% wird sofort 50% reduziert.
+**Strategie 4 – 21-EMA-Bruch (Kap. 6.2):**
+- **Aggressiv:** klarer Bruch (mind. 2% unter 21-EMA) mit erhöhtem Volumen (≥1.2) triggert 33%.
+      Zusatzregel: am zweiten Tag unter 21-EMA und Tagesverlust ≤ -7% wird sofort 50% reduziert.
 - **Gestaffelt:** 3-stufiges Vorgehen (Tag 1/2/3 jeweils 25% nach Regelwerk).
-- **Geduldig:** erst nach bestätigtem Bruch (mind. 3 Tage unter 21-MA) 33%.
+- **Geduldig:** erst nach bestätigtem Bruch (mind. 3 Tage unter 21-EMA) 33%.
 
 Die Variante wird **einmalig pro Position** gespeichert und beim nächsten Öffnen des Strategien-Hubs wiederverwendet.
                         """
                     )
                     st.selectbox(
-                        "Variante 21-MA-Bruch",
+                        "Variante 21-EMA-Bruch",
                         ["gestaffelt", "aggressiv", "geduldig"],
                         index=["gestaffelt", "aggressiv", "geduldig"].index(ma21_variante),
                         key=f"strat_hub_ma21_variante_{t}",
-                        help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-MA behandelt.",
+                        help="Einmalig festlegen, wie offensiv Strategie 4 den Bruch der 21-EMA behandelt.",
                     )
                 elif key == "groesster_einbruch":
                     st.markdown(
@@ -12817,10 +12817,10 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                         """
 **Strategie 6 – Abstand zu gleitenden Durchschnitten (Kap. 6.2):**
 - Nur aktiv, wenn die Position im Gewinn ist (**P&L > 0**).
-- Es werden vier Überdehnungen gemessen: Abstand zum **10/21/50/200-MA** in Prozent.
+- Es werden vier Überdehnungen gemessen: Abstand zum **10-MA / 21-EMA / 50-MA / 200-MA** in Prozent.
 - Signalstufen (Standard):
       - **10-MA ab 10%** → kurzfristig überhitzt, **25%** Tranche
-      - **21-MA ab 15%** → klare Überdehnung, **33%** Tranche
+      - **21-EMA ab 15%** → klare Überdehnung, **33%** Tranche
       - **50-MA ab 25%** → Spätphasen-Signal, **33%** Tranche
       - **200-MA ab 70%** → Klimaxzone, **50%** Tranche
       - **200-MA ab 100%** → Extrem-Klimax, **100%** Tranche
@@ -12830,14 +12830,14 @@ Die Strategie versucht späte Trendphasen zu schützen, wenn erstmals ungewöhnl
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         ma_abstand_schwelle_ma10_pct = st.number_input("Schwelle 10-MA (%)", min_value=1.0, max_value=50.0, value=10.0, step=0.5, key=f"strat_hub_ma_dist_th10_{t}")
-                        ma_abstand_schwelle_ma21_pct = st.number_input("Schwelle 21-MA (%)", min_value=1.0, max_value=80.0, value=15.0, step=0.5, key=f"strat_hub_ma_dist_th21_{t}")
+                        ma_abstand_schwelle_ma21_pct = st.number_input("Schwelle 21-EMA (%)", min_value=1.0, max_value=80.0, value=15.0, step=0.5, key=f"strat_hub_ma_dist_th21_{t}")
                         ma_abstand_schwelle_ma50_pct = st.number_input("Schwelle 50-MA (%)", min_value=1.0, max_value=120.0, value=25.0, step=0.5, key=f"strat_hub_ma_dist_th50_{t}")
                     with c2:
                         ma_abstand_schwelle_ma200_pct = st.number_input("Klimax-Schwelle 200-MA (%)", min_value=10.0, max_value=200.0, value=70.0, step=1.0, key=f"strat_hub_ma_dist_th200_{t}")
                         ma_abstand_klimax_ma200_vollausstieg_pct = st.number_input("Vollausstieg ab 200-MA (%)", min_value=20.0, max_value=300.0, value=100.0, step=1.0, key=f"strat_hub_ma_dist_th200_full_{t}")
                     with c3:
                         ma_abstand_tranche_ma10_pct = st.number_input("Tranche 10-MA (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_ma_dist_tr10_{t}")
-                        ma_abstand_tranche_ma21_pct = st.number_input("Tranche 21-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr21_{t}")
+                        ma_abstand_tranche_ma21_pct = st.number_input("Tranche 21-EMA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr21_{t}")
                         ma_abstand_tranche_ma50_pct = st.number_input("Tranche 50-MA (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_ma_dist_tr50_{t}")
                         ma_abstand_tranche_ma200_basis_pct = st.number_input("Tranche 200-MA Basis (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0, key=f"strat_hub_ma_dist_tr200_{t}")
                 elif key == "downside_reversal":
@@ -13049,7 +13049,7 @@ def _tab_nach_kauf():
     kpi_cards = [
         {"title": "P&L", "value": _fmt_pct(metrics.get("pnl_pct")), "detail": f"{days_held} Tage seit Kauf"},
         {"title": "Drawdown", "value": _fmt_pct(metrics.get("drawdown_from_high_since_buy_pct")), "detail": "vom Hoch nach Kauf"},
-        {"title": "Distanz 21-MA", "value": _fmt_pct(_sell_monitor_distance(current_price, metrics.get("sma21"))), "detail": _sell_monitor_fmt_money(metrics.get("sma21"), market_currency)},
+        {"title": "Distanz 21-EMA", "value": _fmt_pct(_sell_monitor_distance(current_price, metrics.get("ema21"))), "detail": _sell_monitor_fmt_money(metrics.get("ema21"), market_currency)},
         {"title": "Distanz 50-MA", "value": _fmt_pct(_sell_monitor_distance(current_price, metrics.get("sma50"))), "detail": _sell_monitor_fmt_money(metrics.get("sma50"), market_currency)},
     ]
     _render_change_cards(kpi_cards)

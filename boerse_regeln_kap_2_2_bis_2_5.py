@@ -204,10 +204,10 @@ def distance_to_ma_in_atr(
     ATR-Einheiten. Positive Werte bedeuten Schluss über dem Durchschnitt.
 
     Buchbezug Abschnitt 2.2:
-        Du drückst den Abstand zur 21-Tage-Linie in ATR-Einheiten aus.
+        Du drückst den Abstand zur 21-EMA in ATR-Einheiten aus.
         Ab etwa drei ATR ist der Index kurzfristig oft überdehnt.
     """
-    ma = sma(df["close"], ma_window)
+    ma = ema(df["close"], ma_window) if ma_window == 21 else sma(df["close"], ma_window)
     atr = average_true_range(df, atr_window)
     return (df["close"] - ma) / atr
 
@@ -220,7 +220,7 @@ def is_overextended_atr(
 ) -> pd.Series:
     """
     True, wenn der Schluss mehr als threshold_atr Tagesspannen über
-    der 21-Tage-Linie liegt. Default 3 ATR (Buchregel).
+    der 21-EMA liegt. Default 3 ATR (Buchregel).
     """
     return distance_to_ma_in_atr(df, ma_window, atr_window) >= threshold_atr
 
@@ -256,14 +256,22 @@ def is_overextended_pct_nasdaq(close: pd.Series, threshold_pct: float = 7.0) -> 
 # ---------------------------------------------------------------------
 
 def below_ma(close: pd.Series, window: int) -> pd.Series:
-    """True, wenn der Schluss unter dem gleitenden Durchschnitt notiert."""
+    """True, wenn der Schluss unter dem gleitenden Durchschnitt notiert.
+
+    Für ``window == 21`` wird die 21-EMA verwendet, für alle anderen
+    Fenster (50, 200, …) der SMA. So bleibt die Aussage der Buchregel
+    konsistent: die kurzfristige Linie ist die 21-EMA, die mittel- und
+    langfristigen Linien sind SMA.
+    """
+    if window == 21:
+        return close < ema(close, window)
     return close < sma(close, window)
 
 
 def trend_warning_levels(close: pd.Series) -> pd.DataFrame:
     """
     Buchregel Abschnitt 2.2:
-        - Schluss unter 21-Tage-Linie: erste Trendwarnung
+        - Schluss unter 21-EMA: erste Trendwarnung
         - Schluss unter 50-Tage-Linie: deutliche Trendwarnung
         - Schluss unter 200-Tage-Linie: langfristiger Trend gilt als gebrochen,
           Aktienquote deutlich reduzieren oder komplett aussteigen.
@@ -412,7 +420,7 @@ def vix_panic_signal(vix_close: pd.Series, sma_window: int = 10, threshold_pct: 
 def vxx_risk_off(vxx_close: pd.Series, ema_window: int = 21) -> pd.Series:
     """
     Buchregel Abschnitt 2.2 "VXX – die Alternative zum VIX":
-        Liegt der VXX über einer steigenden 21-Tage-Linie, nimmt die kurz-
+        Liegt der VXX über einer steigenden 21-EMA, nimmt die kurz-
         fristige Volatilität zu und das Risiko sollte gedrosselt werden.
     """
     ema_line = ema(vxx_close, ema_window)
@@ -423,7 +431,7 @@ def vxx_risk_off(vxx_close: pd.Series, ema_window: int = 21) -> pd.Series:
 def vxx_risk_on(vxx_close: pd.Series, ema_window: int = 21) -> pd.Series:
     """
     Buchregel Abschnitt 2.2:
-        Liegt der VXX unter einer fallenden 21-Tage-Linie, entspannt sich
+        Liegt der VXX unter einer fallenden 21-EMA, entspannt sich
         die Volatilität, Risk-on-Strategien sind dann meist von Vorteil.
     """
     ema_line = ema(vxx_close, ema_window)
@@ -637,7 +645,7 @@ def is_startschuss(
         - Handelsvolumen über dem des Vortags.
         - Bodenmarke an diesem Tag intraday nicht gerissen.
 
-    Bonuspunkt (nicht Voraussetzung): Schluss über der 21-Tage-Linie.
+    Bonuspunkt (nicht Voraussetzung): Schluss über der 21-EMA.
     """
     if current_idx - ankertag_idx <= min_days_after_ankertag:
         return False
@@ -658,8 +666,8 @@ def is_startschuss(
 
 
 def startschuss_bonus_above_21dma(df: pd.DataFrame, current_idx: int) -> bool:
-    """Bonuspunkt aus Abschnitt 2.3: Schluss über der 21-Tage-Linie."""
-    ma21 = sma(df["close"], 21).iloc[current_idx]
+    """Bonuspunkt aus Abschnitt 2.3: Schluss über der 21-EMA."""
+    ma21 = ema(df["close"], 21).iloc[current_idx]
     return df["close"].iloc[current_idx] > ma21
 
 
@@ -764,9 +772,10 @@ def closes_above_ma_for_n_days(close: pd.Series, ma_window: int, n_days: int = 3
         ohne sie erneut zu berühren.
 
     Operationalisiert: An n_days aufeinanderfolgenden Tagen liegen sowohl
-    Schluss als auch Tagestief über dem gleitenden Durchschnitt.
+    Schluss als auch Tagestief über dem gleitenden Durchschnitt. Für
+    ``ma_window == 21`` wird die 21-EMA verwendet, sonst SMA.
     """
-    ma = sma(close, ma_window)
+    ma = ema(close, ma_window) if ma_window == 21 else sma(close, ma_window)
     above = close > ma
     return above.rolling(window=n_days, min_periods=n_days).sum() == n_days
 
@@ -775,8 +784,9 @@ def low_above_ma_for_n_days(df: pd.DataFrame, ma_window: int, n_days: int = 3) -
     """
     Strengere Variante: Tagestief liegt an n_days aufeinanderfolgenden Tagen
     über dem gleitenden Durchschnitt (entspricht "ohne sie erneut zu berühren").
+    Für ``ma_window == 21`` wird die 21-EMA verwendet, sonst SMA.
     """
-    ma = sma(df["close"], ma_window)
+    ma = ema(df["close"], ma_window) if ma_window == 21 else sma(df["close"], ma_window)
     above = df["low"] > ma
     return above.rolling(window=n_days, min_periods=n_days).sum() == n_days
 
@@ -784,11 +794,12 @@ def low_above_ma_for_n_days(df: pd.DataFrame, ma_window: int, n_days: int = 3) -
 def ma_crossover(close: pd.Series, fast: int, slow: int, hold_days: int = 3) -> pd.Series:
     """
     Buchregel Abschnitt 2.4:
-        Die 21-Tage-Linie kreuzt die 50-Tage-Linie von unten nach oben und
-        diese Konstellation bleibt mindestens drei Tage bestehen.
+        Die 21-EMA kreuzt die 50-Tage-Linie von unten nach oben und
+        diese Konstellation bleibt mindestens drei Tage bestehen. Für ein
+        Fenster von 21 wird die EMA, sonst SMA verwendet.
     """
-    fast_ma = sma(close, fast)
-    slow_ma = sma(close, slow)
+    fast_ma = ema(close, fast) if fast == 21 else sma(close, fast)
+    slow_ma = ema(close, slow) if slow == 21 else sma(close, slow)
     above = fast_ma > slow_ma
     return above.rolling(window=hold_days, min_periods=hold_days).sum() == hold_days
 
@@ -797,9 +808,9 @@ def ma_full_stack(close: pd.Series) -> pd.Series:
     """
     Buchregel Abschnitt 2.4:
         Finales Zeichen eines intakten Aufwärtstrends:
-        21-Tage-Linie über 50-Tage-Linie, beide über 200-Tage-Linie.
+        21-EMA über 50-Tage-Linie, beide über 200-Tage-Linie.
     """
-    ma21 = sma(close, 21)
+    ma21 = ema(close, 21)
     ma50 = sma(close, 50)
     ma200 = sma(close, 200)
     return (ma21 > ma50) & (ma50 > ma200)
