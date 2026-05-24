@@ -10458,18 +10458,48 @@ def _tab_aktienbewertung():
         verdict_label = assessment["status"]
         verdict_cls = f"status-{assessment['status_tone']}"
         verdict_text = assessment["summary"]
-    elif overall_score >= 75:
-        verdict_label = "Attraktiv"
-        verdict_cls = "status-good"
-        verdict_text = "Mehrere Teilbereiche wirken stabil und liefern ein konstruktives Gesamtbild."
-    elif overall_score >= 55:
-        verdict_label = "Beobachten"
-        verdict_cls = "status-warn"
-        verdict_text = "Das Bild ist gemischt und sollte mit Blick auf Trend und Risiko weiter beobachtet werden."
     else:
-        verdict_label = "Zu schwach"
-        verdict_cls = "status-bad"
-        verdict_text = "Die regelbasierte Gesamtlage bleibt derzeit zu schwach für eine belastbare positive Einordnung."
+        # Verdict-Text dynamisch aus den 4 sichtbaren KPI-Scores ableiten,
+        # damit der Header zeigt, welcher Teilbereich gerade stark/dünn ist
+        # (statt der vorherigen Boilerplate-Sätze).
+        _kpi_scores = [
+            ("Trend", ma_score_single_i),
+            ("Technisch", technical_score_single_i),
+            ("Fundamentals", fundamental_score_single_i),
+            ("Chart", chart_score_100_i),
+        ]
+        _strong = [name for name, s in _kpi_scores if s >= 70]
+        _weak = [name for name, s in _kpi_scores if s < 45]
+
+        def _join_kpis(names):
+            if len(names) <= 1:
+                return names[0] if names else ""
+            if len(names) == 2:
+                return f"{names[0]} & {names[1]}"
+            return ", ".join(names[:-1]) + f" & {names[-1]}"
+
+        _parts = []
+        if _strong:
+            _parts.append(f"{_join_kpis(_strong)} stark")
+        if _weak:
+            _parts.append(f"{_join_kpis(_weak)} dünn")
+
+        if _parts:
+            verdict_text = " · ".join(_parts) + "."
+        elif overall_score >= 55:
+            verdict_text = "Alle vier Teilbereiche im soliden Mittelband."
+        else:
+            verdict_text = "Alle vier Teilbereiche schwach."
+
+        if overall_score >= 75:
+            verdict_label = "Attraktiv"
+            verdict_cls = "status-good"
+        elif overall_score >= 55:
+            verdict_label = "Beobachten"
+            verdict_cls = "status-warn"
+        else:
+            verdict_label = "Zu schwach"
+            verdict_cls = "status-bad"
 
     _vol_str = f"{vol_ratio:.2f}x 50-T-Schnitt" if not np.isnan(vol_ratio) else "—"
     rs_quick = f"{int(rs_rating_val)}" if rs_rating_val is not None and pd.notna(rs_rating_val) else "n/a"
