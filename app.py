@@ -2068,10 +2068,19 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
     return out
 
 
+_SELL_METRICS_SCHEMA_VERSION = "2026-05-24-ema21"
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_sell_decision_metrics(ticker: str, buy_date, buy_price: float, shares: float, benchmark_ticker: str = "SPY", currency: str = "", cache_buster: int = 0, pivot_date=None) -> dict:
-    """Load cached Yahoo data and build reusable metrics for the sell-decision area."""
-    _ = cache_buster
+    """Load cached Yahoo data and build reusable metrics for the sell-decision area.
+
+    Der Hash-Aufruf auf ``_SELL_METRICS_SCHEMA_VERSION`` ist gewollt: Wird der
+    Schlüsselsatz im Metrics-Payload (z. B. ``sma21`` → ``ema21``) geändert,
+    bewirkt das Bumpen der Version, dass Streamlit beim nächsten Aufruf den
+    Cache verwirft und das UI wieder konsistente Werte erhält.
+    """
+    _ = (cache_buster, _SELL_METRICS_SCHEMA_VERSION)
     norm_ticker = _normalize_single_ticker(ticker)
     norm_benchmark = _normalize_single_ticker(benchmark_ticker or "SPY") or "SPY"
     if not norm_ticker:
@@ -11608,7 +11617,7 @@ def _render_sell_decision_live_monitor() -> None:
     current = _safe_float(metrics.get("current_price"), np.nan)
     rs_status = "—"
     rs_line = _safe_float(metrics.get("rs_line"), np.nan)
-    rs21 = _safe_float(metrics.get("rs_ema21"), np.nan)
+    rs21 = _safe_float(metrics.get("rs_ma21"), np.nan)
     rs50 = _safe_float(metrics.get("rs_ma50"), np.nan)
     if not np.isnan(rs_line) and not np.isnan(rs21) and not np.isnan(rs50):
         rs_status = "Stark" if rs_line > rs21 > rs50 else "Schwach" if rs_line < rs21 or rs_line < rs50 else "Neutral"
@@ -11619,7 +11628,7 @@ def _render_sell_decision_live_monitor() -> None:
         {"title": "Distanz 50-MA", "value": _fmt_pct(_sell_monitor_distance(current, metrics.get("sma50"))), "detail": _sell_monitor_fmt_money(metrics.get("sma50"), market_currency)},
     ]
     _render_change_cards(kpis)
-    st.markdown(f'<div class="info-card"><div class="card-label">RS-Linien-Status</div><div style="font-size:1.1rem;font-weight:800;">{html.escape(rs_status)}</div><div class="mini-help">RS {rs_line:.4f} · 21-EMA {_fmt_num(rs21)} · 50-MA {_fmt_num(rs50)}</div></div>' if not np.isnan(rs_line) else '<div class="info-card"><div class="card-label">RS-Linien-Status</div>—</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="info-card"><div class="card-label">RS-Linien-Status</div><div style="font-size:1.1rem;font-weight:800;">{html.escape(rs_status)}</div><div class="mini-help">RS {rs_line:.4f} · 21-MA {_fmt_num(rs21)} · 50-MA {_fmt_num(rs50)}</div></div>' if not np.isnan(rs_line) else '<div class="info-card"><div class="card-label">RS-Linien-Status</div>—</div>', unsafe_allow_html=True)
 
     # C. Aktive Signale
     st.markdown("#### Aktive Signale")

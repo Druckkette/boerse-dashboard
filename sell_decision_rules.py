@@ -275,8 +275,8 @@ BOOK_REFERENCES = {
     "tranche_drawdown_15_full": "Trailing-Regel: Drawdown vom Hoch >= 15%",
     "tranche_extended_sma50": "Überdehnungsregel: >25% über 50-Tage-Linie",
     "tranche_extended_sma200": "Überdehnungsregel: >70% über 200-Tage-Linie",
-    "tranche_rs_first_21_break": "Relative-Stärke-Regel: RS-Linie bricht 21-EMA",
-    "tranche_rs_three_days_under_21": "Relative-Stärke-Regel: RS drei Tage unter 21-EMA",
+    "tranche_rs_first_21_break": "Relative-Stärke-Regel: RS-Linie bricht 21-Tage-Linie",
+    "tranche_rs_three_days_under_21": "Relative-Stärke-Regel: RS drei Tage unter 21-Tage-Linie",
     "tranche_rs_50_break": "Relative-Stärke-Regel: RS-Linie bricht 50-Tage-Linie",
     "tranche_worst_day_high_volume": "Volumenregel: größter Tagesverlust mit erhöhtem Volumen",
     "tranche_personality_changed": "Persönlichkeits-Check",
@@ -722,14 +722,14 @@ def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = 
         score -= 5; reasons.append("Drawdown 8-12%")
 
     rs_line = _metric(metrics, "rs_line")
-    rs_ema21 = _metric(metrics, "rs_ema21")
+    rs_ma21 = _metric(metrics, "rs_ma21")
     rs_ma50 = _metric(metrics, "rs_ma50")
-    days_under_rs21 = int(_metric(metrics, "days_under_rs_ema21", 0) or 0)
-    if rs_line is not None and rs_ema21 is not None and rs_ma50 is not None:
-        if rs_line >= rs_ema21 and rs_line >= rs_ma50 and days_under_rs21 == 0:
+    days_under_rs21 = int(_metric(metrics, "days_under_rs_ma21", 0) or 0)
+    if rs_line is not None and rs_ma21 is not None and rs_ma50 is not None:
+        if rs_line >= rs_ma21 and rs_line >= rs_ma50 and days_under_rs21 == 0:
             rs_trend = "hoch"
             score += 10; reasons.append("RS hoch")
-        elif rs_line < rs_ema21 or rs_line < rs_ma50 or days_under_rs21 >= 3:
+        elif rs_line < rs_ma21 or rs_line < rs_ma50 or days_under_rs21 >= 3:
             rs_trend = "runter"
             score -= 12; reasons.append("RS runter/unter MAs")
         else:
