@@ -253,7 +253,14 @@ def parse_sec_date(raw: object) -> date | None:
 def sec_headers() -> dict[str, str]:
     user_agent = os.environ.get("SEC_USER_AGENT", "").strip()
     if not user_agent:
-        user_agent = "Mozilla/5.0 BoerseDashboard contact@example.com"
+        # SEC Fair Access Policy verlangt eine echte Kontakt-Adresse. Ein
+        # Platzhalter wie contact@example.com kann zu Rate-Limits oder einem
+        # Block führen — daher hier explizit fehlschlagen statt unauffällig
+        # mit einer Beispiel-Adresse zu requesten.
+        raise RuntimeError(
+            "SEC_USER_AGENT ist nicht gesetzt. Bitte setze die Umgebungsvariable auf "
+            "'<Projektname> <gültige_Kontakt-Email>' (SEC Fair Access Policy)."
+        )
     return {
         "User-Agent": user_agent,
         "Accept-Encoding": "gzip, deflate",
@@ -292,15 +299,25 @@ def download_dataset(link: DatasetLink, cache_dir: Path) -> Path:
         return target
 
     logger.info("Lade SEC 13F Datensatz: %s", link.label)
-    with requests.get(link.url, headers=sec_headers(), stream=True, timeout=120) as response:
-        response.raise_for_status()
-        with tempfile.NamedTemporaryFile("wb", delete=False, dir=cache_dir) as tmp:
-            tmp_path = Path(tmp.name)
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    tmp.write(chunk)
-    tmp_path.replace(target)
-    return target
+    tmp_path: Path | None = None
+    try:
+        with requests.get(link.url, headers=sec_headers(), stream=True, timeout=120) as response:
+            response.raise_for_status()
+            with tempfile.NamedTemporaryFile("wb", delete=False, dir=cache_dir) as tmp:
+                tmp_path = Path(tmp.name)
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        tmp.write(chunk)
+        tmp_path.replace(target)
+        return target
+    except Exception:
+        # Temp-File-Leak vermeiden, wenn Download oder Replace scheitern.
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def load_universe(path: Path) -> set[str]:
@@ -312,9 +329,22 @@ def load_universe(path: Path) -> set[str]:
             tickers.discard("")
             if tickers:
                 return tickers
-    logger.warning("Keine Universe-CSV gefunden; nutze SEC company_tickers_exchange als Fallback.")
+    # Vollständige SEC-Universe ist groß (~10k Ticker) und kann Memory/Quota
+    # sprengen. Explizit warnen, statt unauffällig in den Fallback zu laufen.
+    logger.warning(
+        "Keine Universe-CSV unter %s gefunden; nutze SEC company_tickers_exchange als Fallback "
+        "(potenziell mehrere tausend Ticker — Speicher- und Laufzeitbedarf prüfen).",
+        path,
+    )
     records = fetch_sec_company_symbol_records(set())
-    return {record.ticker for record in records}
+    universe = {record.ticker for record in records}
+    if len(universe) > 5000:
+        logger.warning(
+            "Fallback-Universe enthält %d Ticker — falls unbeabsichtigt, bitte eine "
+            "kuratierte Universe-CSV bereitstellen.",
+            len(universe),
+        )
+    return universe
 
 
 def fetch_sec_company_symbol_records(universe: set[str]) -> list[SymbolRecord]:
@@ -394,9 +424,15 @@ def load_submission_index(zip_path: Path) -> pd.DataFrame:
             )
     df["period_date"] = df["PERIODOFREPORT"].map(parse_sec_date)
     df["filing_date"] = df["FILING_DATE"].map(parse_sec_date)
-    df["CIK"] = df["CIK"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(10)
+    # Erst CIKs säubern (nicht-numerische Zeichen entfernen), dann ungültige
+    # Werte als NaN markieren. Ohne diesen Filter würden NaN/leere CIKs durch
+    # .str.zfill(10) zu "0000000000" und alle solchen Submissions würden
+    # fälschlich als ein einziger Pseudo-Holder aggregiert.
+    cik_digits = df["CIK"].astype(str).str.replace(r"\D", "", regex=True)
+    df["CIK"] = cik_digits.where(cik_digits.str.len() > 0).str.zfill(10)
     df = df[df["ACCESSION_NUMBER"].notna()]
     df = df[df["period_date"].notna()]
+    df = df[df["CIK"].notna()]
     df = df[df["SUBMISSIONTYPE"].astype(str).str.upper().str.startswith("13F-HR")]
     return df
 
@@ -476,8 +512,11 @@ def process_holdings(
                     chunk["shares"] = pd.to_numeric(chunk["SSHPRNAMT"], errors="coerce").fillna(0)
 
                     holder_groups.append(
+                        # value_usd via sum: ein Holder kann pro CUSIP mehrere
+                        # Zeilen melden (verschiedene Sub-Accounts); diese müssen
+                        # zur tatsächlichen Position addiert werden.
                         chunk.groupby(["period", "CUSIP", "CIK"], as_index=False).agg(
-                            value_usd=("value_usd", "max"),
+                            value_usd=("value_usd", "sum"),
                             shares=("shares", "sum"),
                         )
                     )
@@ -492,8 +531,10 @@ def process_holdings(
         raise RuntimeError("Keine passenden INFOTABLE-Positionen gefunden.")
 
     holdings = pd.concat(holder_groups, ignore_index=True)
+    # Über Chunks hinweg ebenfalls summieren — derselbe Holder kann in mehrere
+    # Lese-Chunks gefallen sein. „max" der pro-Chunk-Summen würde verlieren.
     holdings = holdings.groupby(["period", "CUSIP", "CIK"], as_index=False).agg(
-        value_usd=("value_usd", "max"),
+        value_usd=("value_usd", "sum"),
         shares=("shares", "sum"),
     )
     holdings["is_large_holder"] = holdings["value_usd"] >= large_holder_min_value_usd
@@ -582,7 +623,7 @@ def build_cusip_mapping(
     return pd.DataFrame(mapped_rows), pd.DataFrame(unmatched_rows)
 
 
-def aggregate_by_ticker(holdings: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
+def aggregate_by_ticker(holdings: pd.DataFrame, mapping: pd.DataFrame, large_holder_min_value_usd: float | None = None) -> pd.DataFrame:
     if mapping.empty:
         return pd.DataFrame()
     mapped = holdings.merge(mapping[["cusip", "ticker"]], left_on="CUSIP", right_on="cusip", how="inner")
@@ -591,8 +632,20 @@ def aggregate_by_ticker(holdings: pd.DataFrame, mapping: pd.DataFrame) -> pd.Dat
     manager_ticker = mapped.groupby(["period", "ticker", "CIK"], as_index=False).agg(
         value_usd=("value_usd", "sum"),
         shares=("shares", "sum"),
-        is_large_holder=("is_large_holder", "max"),
     )
+    # is_large_holder erst NACH der (ticker, CIK)-Aggregation berechnen — sonst
+    # würden Holder, die zwei Share-Klassen desselben Tickers halten, einzeln
+    # unterhalb der Schwelle bleiben, in Summe aber Großhalter sein.
+    if large_holder_min_value_usd is not None:
+        manager_ticker["is_large_holder"] = manager_ticker["value_usd"] >= large_holder_min_value_usd
+    else:
+        # Rückwärts-Kompatibilität: ohne expliziten Schwellwert die per-CUSIP
+        # Klassifikation aus ``holdings`` per max nachziehen.
+        legacy = mapped.groupby(["period", "ticker", "CIK"], as_index=False).agg(
+            is_large_holder=("is_large_holder", "max"),
+        )
+        manager_ticker = manager_ticker.merge(legacy, on=["period", "ticker", "CIK"], how="left")
+        manager_ticker["is_large_holder"] = manager_ticker["is_large_holder"].fillna(False)
     return manager_ticker.groupby(["period", "ticker"], as_index=False).agg(
         holder_count=("CIK", "nunique"),
         large_holder_count=("is_large_holder", "sum"),
@@ -612,21 +665,40 @@ def trend_label(delta: int | None, current_count: int) -> str:
 
 
 def pct_delta(current: float | None, previous: float | None) -> float | None:
-    if current is None or previous in (None, 0):
+    if current is None or previous is None or previous == 0:
         return None
     return (current / previous) - 1
 
 
+def _is_na_scalar(value: object) -> bool:
+    """Robuste NA-Prüfung: pd.isna kann auf Arrays/Series ValueError werfen."""
+    if value is None:
+        return True
+    try:
+        result = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(result, bool):
+        return result
+    return False
+
+
 def as_int(value: object) -> int | None:
-    if pd.isna(value):
+    if _is_na_scalar(value):
         return None
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def as_float(value: object) -> float | None:
-    if pd.isna(value):
+    if _is_na_scalar(value):
         return None
-    return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_outputs(
@@ -637,8 +709,20 @@ def build_outputs(
     previous_period: str,
     metadata: dict,
 ) -> tuple[dict, pd.DataFrame]:
-    current = ticker_agg[ticker_agg["period"] == current_period].set_index("ticker")
-    previous = ticker_agg[ticker_agg["period"] == previous_period].set_index("ticker")
+    # set_index erlaubt doppelte Ticker — diese würden cur/prev zu DataFrames
+    # statt Series machen und alle nachfolgenden as_int/as_float-Aufrufe brechen.
+    # Über drop_duplicates absichern (sollte durch die vorherige Aggregation
+    # bereits gegeben sein; defensiv prüfen).
+    current = (
+        ticker_agg[ticker_agg["period"] == current_period]
+        .drop_duplicates("ticker", keep="last")
+        .set_index("ticker")
+    )
+    previous = (
+        ticker_agg[ticker_agg["period"] == previous_period]
+        .drop_duplicates("ticker", keep="last")
+        .set_index("ticker")
+    )
 
     current_cusips = holdings[holdings["period"] == current_period].merge(
         mapping[["cusip", "ticker"]],
@@ -741,7 +825,14 @@ def main() -> int:
         universe = set(sorted(universe)[: args.limit_universe])
     logger.info("Universe: %s Ticker", len(universe))
 
-    dataset_links = list_sec_13f_datasets()[: max(args.dataset_count, 2)]
+    effective_dataset_count = max(args.dataset_count, 2)
+    if args.dataset_count < 2:
+        logger.warning(
+            "--dataset-count=%d ist zu klein für einen Periodenvergleich; nutze stattdessen %d.",
+            args.dataset_count,
+            effective_dataset_count,
+        )
+    dataset_links = list_sec_13f_datasets()[:effective_dataset_count]
     zip_paths = [download_dataset(link, args.cache_dir) for link in dataset_links]
     submission_indexes = [load_submission_index(path) for path in zip_paths]
 
@@ -764,7 +855,7 @@ def main() -> int:
     records = fetch_sec_company_symbol_records(universe)
     overrides = load_overrides(args.overrides_csv, universe)
     mapping, unmatched = build_cusip_mapping(cusip_meta, universe, records, overrides)
-    ticker_agg = aggregate_by_ticker(holdings, mapping)
+    ticker_agg = aggregate_by_ticker(holdings, mapping, large_holder_min_value_usd=args.large_holder_min_value_usd)
 
     current_cusips = set(holdings.loc[holdings["period"] == current_period, "CUSIP"])
     mapped_current_cusips = set(mapping["cusip"]) & current_cusips if not mapping.empty else set()

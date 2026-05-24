@@ -306,11 +306,17 @@ def is_distribution_day(
             Filter für Rauschen.
         volume_lookback: Fensterlänge für den Volumendurchschnitt. Default 50.
     """
-    pct_change = df["close"].pct_change() * 100.0
+    pct_change = df["close"].pct_change(fill_method=None) * 100.0
     vol_prev = df["volume"].shift(1)
     vol_avg = df["volume"].rolling(window=volume_lookback, min_periods=volume_lookback).mean().shift(1)
 
-    higher_volume = (df["volume"] > vol_prev) | (df["volume"] > vol_avg)
+    # Buch: „ungewöhnlich viel Aktivität" relativ zum Durchschnitt.
+    # Solange der 50-Tage-Durchschnitt nicht verfügbar ist, gilt konservativ False —
+    # ein reiner Vortagesvergleich (wie zuvor) feuerte sonst auf den ersten Tagen
+    # auch ohne Bezug zu „ungewöhnlich".
+    higher_than_prev = df["volume"] > vol_prev
+    higher_than_avg = vol_avg.notna() & (df["volume"] > vol_avg)
+    higher_volume = (higher_than_prev & vol_avg.notna()) | higher_than_avg
     negative_close = pct_change <= -abs(min_loss_pct)
     return negative_close & higher_volume
 
@@ -345,9 +351,11 @@ def is_stalling_day(
 
     Default-Parameter entsprechen dem Wortlaut des Buchs.
     """
-    pct_change = df["close"].pct_change() * 100.0
+    pct_change = df["close"].pct_change(fill_method=None) * 100.0
     vol_prev = df["volume"].shift(1)
-    small_change = pct_change.abs() < max_gain_pct
+    # Buch: „schließt im Plus oder nur leicht im Minus" — daher asymmetrische
+    # Schwelle: nach unten max. -0.1%, nach oben < max_gain_pct.
+    small_change = (pct_change >= -0.1) & (pct_change < max_gain_pct)
     high_volume = df["volume"] >= min_volume_ratio * vol_prev
     return small_change & high_volume
 
@@ -475,11 +483,16 @@ def steep_first_leg_signal(
     Fenster und gibt True am Ende des Fensters zurück, wenn beide erfüllt sind.
     Die dritte Bedingung wird mit `trend_warning_levels` separat geprüft.
     """
-    pct = df["close"].pct_change() * 100.0
+    pct = df["close"].pct_change(fill_method=None) * 100.0
     losses = (pct < 0).astype(int).rolling(window_days).sum()
     gains = (pct > 0).astype(int).rolling(window_days).sum()
     has_big_loss = (pct <= big_loss_pct).rolling(window_days).max().astype(bool)
-    return (losses >= loss_to_gain_ratio * gains.replace(0, np.nan)) & has_big_loss
+    # Sonderfall: 0 Gewinntage und mind. 1 Verlusttag → Verhältnis ist faktisch
+    # unendlich; ohne Sonderbehandlung würde gains.replace(0, NaN) das Ergebnis
+    # auf NaN setzen und gerade die extremsten Verlustphasen ausblenden.
+    extreme_loss_streak = (gains == 0) & (losses > 0)
+    ratio_ok = losses >= loss_to_gain_ratio * gains.replace(0, np.nan)
+    return (ratio_ok.fillna(False) | extreme_loss_streak) & has_big_loss
 
 
 # ---------------------------------------------------------------------
@@ -500,8 +513,10 @@ def is_low_volume_rally(
     hat in den letzten rally_days Tagen monoton abgenommen.
     """
     higher_close = df["close"] > df["close"].shift(rally_days)
-    vol_decreasing = df["volume"].diff().rolling(rally_days).max() < 0
-    return higher_close & vol_decreasing
+    # rolling(rally_days, min_periods=rally_days) auf diff(): max < 0 bedeutet, dass
+    # alle Volumendifferenzen in diesem Fenster strikt negativ sind (monoton fallend).
+    vol_decreasing = df["volume"].diff().rolling(rally_days, min_periods=rally_days).max() < 0
+    return higher_close & vol_decreasing.fillna(False)
 
 
 def recovery_quote(prior_high: float, first_low: float, current: float) -> float:
@@ -819,8 +834,13 @@ def ma_full_stack(close: pd.Series) -> pd.Series:
 def classify_uptrend_stage(df: pd.DataFrame) -> pd.Series:
     """
     Liefert die jeweils höchste erreichte Stufe nach Abschnitt 2.4.
-    Stufen können in der Praxis in unterschiedlicher Reihenfolge auftreten,
-    deshalb wird hier konservativ ausgewertet.
+
+    Hierarchie (von schwach nach stark):
+        NONE → ABOVE_200 → ABOVE_21 → ABOVE_50 → GOLDEN_CROSS_21_OVER_50 → FULL_STACK
+
+    Eine höhere Stufe überschreibt die niedrigere konsequent; gleichzeitig
+    bleibt eine erreichte niedrigere Stufe erhalten, falls eine höhere ihre
+    Bedingung nicht (mehr) erfüllt.
     """
     close = df["close"]
     ma200 = sma(close, 200)
@@ -830,13 +850,24 @@ def classify_uptrend_stage(df: pd.DataFrame) -> pd.Series:
     above_50 = closes_above_ma_for_n_days(close, 50, 3)
     above_21 = closes_above_ma_for_n_days(close, 21, 3)
 
-    stage = pd.Series(UptrendStage.NONE, index=df.index, dtype=object)
-    stage[above_200] = UptrendStage.ABOVE_200
-    stage[above_200 & above_21] = UptrendStage.ABOVE_21
-    stage[above_200 & above_50] = UptrendStage.ABOVE_50
-    stage[above_200 & cross] = UptrendStage.GOLDEN_CROSS_21_OVER_50
-    stage[full] = UptrendStage.FULL_STACK
-    return stage
+    # Konditionen aufsteigend nach Stärke. np.select prüft sie von hinten
+    # nach vorn (defaults gewinnt das erste True der höchsten Stufe).
+    conditions = [
+        full,
+        above_200 & cross,
+        above_200 & above_50,
+        above_200 & above_21,
+        above_200,
+    ]
+    choices = [
+        UptrendStage.FULL_STACK,
+        UptrendStage.GOLDEN_CROSS_21_OVER_50,
+        UptrendStage.ABOVE_50,
+        UptrendStage.ABOVE_21,
+        UptrendStage.ABOVE_200,
+    ]
+    result = np.select(conditions, choices, default=UptrendStage.NONE)
+    return pd.Series(result, index=df.index, dtype=object)
 
 
 # =====================================================================
@@ -1106,13 +1137,16 @@ def classify_nh_nt(ratio: pd.Series) -> pd.Series:
         unter 0.5: breiter Abverkauf
         unter 0.2: Kapitulationszone
     """
-    out = pd.Series(NhNtZone.UNCERTAIN, index=ratio.index, dtype=object)
-    out[ratio > 3.0] = NhNtZone.OVERHEATED
-    out[(ratio >= 1.5) & (ratio <= 3.0)] = NhNtZone.SOLID
-    out[(ratio >= 0.9) & (ratio < 1.5)] = NhNtZone.UNCERTAIN
-    out[(ratio >= 0.5) & (ratio < 0.9)] = NhNtZone.BEARISH_TONE
-    out[ratio < 0.5] = NhNtZone.BROAD_SELLOFF
-    out[ratio < 0.2] = NhNtZone.CAPITULATION
+    # Default None statt UNCERTAIN, damit NaN-Inputs nicht stillschweigend als
+    # „unentschieden" klassifiziert werden.
+    out = pd.Series(None, index=ratio.index, dtype=object)
+    valid = ratio.notna()
+    out[valid & (ratio > 3.0)] = NhNtZone.OVERHEATED
+    out[valid & (ratio >= 1.5) & (ratio <= 3.0)] = NhNtZone.SOLID
+    out[valid & (ratio >= 0.9) & (ratio < 1.5)] = NhNtZone.UNCERTAIN
+    out[valid & (ratio >= 0.5) & (ratio < 0.9)] = NhNtZone.BEARISH_TONE
+    out[valid & (ratio < 0.5)] = NhNtZone.BROAD_SELLOFF
+    out[valid & (ratio < 0.2)] = NhNtZone.CAPITULATION
     return out
 
 

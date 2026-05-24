@@ -16,6 +16,26 @@ import pandas as pd
 REQUIRED_OHLC_COLUMNS = {"High", "Low", "Close", "Volume"}
 
 
+def _to_naive_ts(value):
+    """Konvertiert ``value`` in einen tz-naiven ``pd.Timestamp``.
+
+    ``pd.Timestamp(x).tz_localize(None)`` wirft, wenn der Wert bereits tz-aware ist;
+    ``tz_convert(None)`` umgekehrt bei tz-naiven Inputs. Diese Helfer-Funktion fängt
+    beide Fälle ab.
+    """
+    ts = pd.Timestamp(value)
+    if getattr(ts, "tzinfo", None) is not None:
+        return ts.tz_convert(None)
+    return ts
+
+
+def _to_naive_index(index):
+    idx = pd.to_datetime(index)
+    if getattr(idx, "tz", None) is not None:
+        return idx.tz_convert(None)
+    return idx
+
+
 def _safe_float(value, default=None):
     if value is None:
         return default
@@ -51,7 +71,7 @@ def _clean_ohlc_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
     df = frame.copy()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+    df.index = _to_naive_index(df.index).normalize()
     df = df.sort_index()
     for col in ["Open", "High", "Low", "Close", "Volume"]:
         if col in df.columns:
@@ -134,7 +154,7 @@ def _last_float(series: pd.Series | None):
 def _series_float_at_or_after(series: pd.Series, date_value):
     if series is None or series.empty:
         return None
-    ts = pd.Timestamp(date_value).tz_localize(None).normalize()
+    ts = _to_naive_ts(date_value).normalize()
     subset = series[series.index >= ts]
     if subset.empty:
         return None
@@ -144,7 +164,7 @@ def _series_float_at_or_after(series: pd.Series, date_value):
 def _previous_series_float(series: pd.Series, date_value):
     if series is None or series.empty:
         return None
-    ts = pd.Timestamp(date_value).tz_localize(None).normalize()
+    ts = _to_naive_ts(date_value).normalize()
     subset = series[series.index < ts]
     if subset.empty:
         return None
@@ -175,7 +195,7 @@ def _trailing_lower_low_days(low: pd.Series) -> int:
 def _max_pct_gain(series: pd.Series | None) -> float | None:
     if series is None or series.empty:
         return None
-    pct = pd.to_numeric(series, errors="coerce").pct_change().dropna() * 100
+    pct = pd.to_numeric(series, errors="coerce").pct_change(fill_method=None).dropna() * 100
     if pct.empty:
         return None
     return float(pct.max())
@@ -226,13 +246,13 @@ def build_sell_decision_metrics_payload(
     if not clean_ticker:
         return _error("Ticker fehlt.", clean_ticker, clean_benchmark)
     try:
-        buy_ts = pd.Timestamp(buy_date).tz_localize(None).normalize()
+        buy_ts = _to_naive_ts(buy_date).normalize()
     except Exception:
         return _error("Ungültiges Einstiegsdatum.", clean_ticker, clean_benchmark)
     pivot_ts = None
     if pivot_date not in (None, ""):
         try:
-            pivot_ts = pd.Timestamp(pivot_date).tz_localize(None).normalize()
+            pivot_ts = _to_naive_ts(pivot_date).normalize()
         except Exception:
             pivot_ts = None
     reference_ts = pivot_ts if pivot_ts is not None else buy_ts
@@ -288,13 +308,14 @@ def build_sell_decision_metrics_payload(
     if latest_vol_avg and latest_vol_avg > 0 and latest_volume is not None:
         vol_ratio = latest_volume / latest_vol_avg
 
-    pct_change = close.pct_change()
+    pct_change = close.pct_change(fill_method=None)
     distribution_mask = (close < close.shift(1)) & (volume >= vol_sma50 * 1.2)
     distribution_days_25 = int(distribution_mask.tail(25).sum()) if len(distribution_mask) else 0
 
     last_50 = df.tail(50).copy()
-    up_volume = float(last_50.loc[pd.to_numeric(last_50["Close"], errors="coerce").pct_change() > 0, "Volume"].sum(skipna=True)) if not last_50.empty else 0.0
-    down_volume = float(last_50.loc[pd.to_numeric(last_50["Close"], errors="coerce").pct_change() < 0, "Volume"].sum(skipna=True)) if not last_50.empty else 0.0
+    last_50_pct = pd.to_numeric(last_50["Close"], errors="coerce").pct_change(fill_method=None) if not last_50.empty else pd.Series(dtype=float)
+    up_volume = float(last_50.loc[last_50_pct > 0, "Volume"].sum(skipna=True)) if not last_50.empty else 0.0
+    down_volume = float(last_50.loc[last_50_pct < 0, "Volume"].sum(skipna=True)) if not last_50.empty else 0.0
     up_down_volume_ratio_50 = (up_volume / down_volume) if down_volume > 0 else None
 
     bench_close = pd.to_numeric(bench["Close"], errors="coerce").dropna()
@@ -328,7 +349,7 @@ def build_sell_decision_metrics_payload(
     worst_day_date = ""
     worst_day_high_volume = None
     if not since_entry.empty:
-        since_entry_pct = pd.to_numeric(since_entry["Close"], errors="coerce").pct_change() * 100
+        since_entry_pct = pd.to_numeric(since_entry["Close"], errors="coerce").pct_change(fill_method=None) * 100
         # Include the first held day relative to prior close if available in full history.
         full_pct = pct_change.reindex(since_entry.index)
         if full_pct.dropna().size:
@@ -354,7 +375,11 @@ def build_sell_decision_metrics_payload(
     close_since_buy = close[close.index >= buy_ts]
     high_since_buy_series = high[high.index >= buy_ts]
     running_high_since_buy = high_since_buy_series.cummax() if not high_since_buy_series.empty else pd.Series(dtype=float)
-    drawdown_since_buy = (close_since_buy / running_high_since_buy.reindex(close_since_buy.index) - 1) * 100 if not close_since_buy.empty else pd.Series(dtype=float)
+    if not close_since_buy.empty:
+        running_high_aligned = running_high_since_buy.reindex(close_since_buy.index).replace(0, np.nan)
+        drawdown_since_buy = (close_since_buy / running_high_aligned - 1) * 100
+    else:
+        drawdown_since_buy = pd.Series(dtype=float)
     first_drawdown_8_date = _first_true_date(drawdown_since_buy <= -8)
     first_drawdown_12_date = _first_true_date(drawdown_since_buy <= -12)
     first_drawdown_15_date = _first_true_date(drawdown_since_buy <= -15)
@@ -390,7 +415,7 @@ def build_sell_decision_metrics_payload(
         first_green_ratio = float((first_close > first_close.shift(1)).sum() / max(1, len(first_close) - 1))
 
     recent_20 = df.tail(20)
-    recent_pct_20 = pd.to_numeric(recent_20.get("Close", pd.Series(dtype=float)), errors="coerce").pct_change() if not recent_20.empty else pd.Series(dtype=float)
+    recent_pct_20 = pd.to_numeric(recent_20.get("Close", pd.Series(dtype=float)), errors="coerce").pct_change(fill_method=None) if not recent_20.empty else pd.Series(dtype=float)
     recent_volume_20 = pd.to_numeric(recent_20.get("Volume", pd.Series(dtype=float)), errors="coerce") if not recent_20.empty else pd.Series(dtype=float)
     recent_up_avg_volume = _avg_volume_on_mask(recent_volume_20, recent_pct_20 > 0)
     recent_down_avg_volume = _avg_volume_on_mask(recent_volume_20, recent_pct_20 < 0)
@@ -403,7 +428,7 @@ def build_sell_decision_metrics_payload(
     if pivot_default and pivot_default > 0 and not recent_close_10.empty:
         pivot_distance = (recent_close_10 / pivot_default - 1) * 100
         pivot_near_mask = pivot_distance.between(-3, 5, inclusive="both")
-    tight_close_mask = recent_close_10.pct_change().fillna(0).abs() <= 0.018
+    tight_close_mask = recent_close_10.pct_change(fill_method=None).fillna(0).abs() <= 0.018
     stall_mask = pivot_near_mask & tight_close_mask & (recent_volume_10 >= recent_volume_10.shift(1) * 0.95) & (recent_cr_10 < 0.55)
 
     low_close_count_5 = _recent_true_count(closing_range <= 0.25, 5)
@@ -412,6 +437,9 @@ def build_sell_decision_metrics_payload(
     upper_third_close_count_10 = _recent_true_count(closing_range >= (2 / 3), 10)
     lower_lows_count_4 = _trailing_true_count(low < low.shift(1))
     lower_low_days = _trailing_lower_low_days(low)
+    # "Rebound" hier i.S.v. „bestem Tag innerhalb der lower-low-Sequenz": Ist der
+    # größte Tagesgewinn (max pct_change) innerhalb dieses Fensters trotz fallender
+    # Tiefs noch <= 2.5%, spricht das für anhaltenden Druck ohne Erholung.
     lower_low_window = close.tail(max(lower_low_days, 1))
     lower_low_max_rebound_pct = _max_pct_gain(lower_low_window)
     lower_lows_no_rebound = bool(lower_low_days >= 3 and (lower_low_max_rebound_pct is None or lower_low_max_rebound_pct <= 2.5))
@@ -422,10 +450,15 @@ def build_sell_decision_metrics_payload(
     pullback_rebound_50 = (low <= recent_sma50 * 1.015) & (close > recent_sma50) & (close > close.shift(1))
     pullback_rebound_recent = bool(((pullback_rebound_21 | pullback_rebound_50).tail(8)).fillna(False).any())
 
-    asset_return_10 = (close.iloc[-1] / close.iloc[-11] - 1) if len(close.dropna()) >= 11 else None
-    benchmark_return_10 = (bench_close.iloc[-1] / bench_close.iloc[-11] - 1) if len(bench_close.dropna()) >= 11 else None
-    asset_return_20 = (close.iloc[-1] / close.iloc[-21] - 1) if len(close.dropna()) >= 21 else None
-    benchmark_return_20 = (bench_close.iloc[-1] / bench_close.iloc[-21] - 1) if len(bench_close.dropna()) >= 21 else None
+    # Returns über gemeinsam handelbare Tage (joined), damit Asset und Benchmark
+    # exakt denselben Zeitraum vergleichen — bei Handelsfeiertagen kann ein nicht
+    # gejointes close/bench_close sonst um Tage verschoben sein.
+    joined_asset = joined["asset"] if not joined.empty else pd.Series(dtype=float)
+    joined_bench = joined["benchmark"] if not joined.empty else pd.Series(dtype=float)
+    asset_return_10 = (joined_asset.iloc[-1] / joined_asset.iloc[-11] - 1) if len(joined_asset.dropna()) >= 11 else None
+    benchmark_return_10 = (joined_bench.iloc[-1] / joined_bench.iloc[-11] - 1) if len(joined_bench.dropna()) >= 11 else None
+    asset_return_20 = (joined_asset.iloc[-1] / joined_asset.iloc[-21] - 1) if len(joined_asset.dropna()) >= 21 else None
+    benchmark_return_20 = (joined_bench.iloc[-1] / joined_bench.iloc[-21] - 1) if len(joined_bench.dropna()) >= 21 else None
     rs_latest = _last_float(rs_line)
     rs21_latest = _last_float(rs_ma21)
     rs50_latest = _last_float(rs_ma50)
@@ -595,7 +628,7 @@ def build_sell_decision_metrics_payload(
         for src, dst in (("Open", "open"), ("High", "high"), ("Low", "low"), ("Close", "close"), ("Volume", "volume")):
             cols[dst] = pd.to_numeric(frame.get(src, pd.Series(dtype=float)), errors="coerce")
         out = pd.DataFrame(cols).dropna(subset=["close"])
-        out.index = pd.to_datetime(out.index).tz_localize(None) if not out.empty else out.index
+        out.index = _to_naive_index(out.index) if not out.empty else out.index
         return out
 
     daily_full = _lowercase_ohlc(df)

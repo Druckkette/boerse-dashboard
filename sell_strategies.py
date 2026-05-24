@@ -81,7 +81,13 @@ def letzter_schlusskurs(daten: pd.DataFrame) -> float: return float(daten["close
 def tagestief(daten: pd.DataFrame) -> float: return float(daten["low"].iloc[-1])
 def pnl_pct(position: Position, daten: pd.DataFrame) -> float: return (letzter_schlusskurs(daten)/position.einstiegspreis - 1) * 100
 def drawdown_vom_peak(position: Position, daten: pd.DataFrame) -> float:
-    peak = float(position.peak or daten["high"].max())
+    if position.peak:
+        peak = float(position.peak)
+    else:
+        # Fallback: Peak seit Einstieg, nicht das All-Time-High der gesamten Historie.
+        daten_seit = _seit_einstieg(daten, position) if position.einstiegsdatum else daten
+        basis = daten_seit if daten_seit is not None and len(daten_seit) > 0 else daten
+        peak = float(basis["high"].max())
     return max(0.0, (peak - letzter_schlusskurs(daten)) / peak * 100) if peak else 0.0
 
 def vol_verhaeltnis(daten: pd.DataFrame) -> float:
@@ -99,23 +105,39 @@ def atr(daten: pd.DataFrame, periode: int = 14) -> float:
     h,l,c = daten["high"], daten["low"], daten["close"]
     tr = pd.concat([(h-l), (h-c.shift(1)).abs(), (l-c.shift(1)).abs()], axis=1).max(axis=1)
     a = tr.rolling(periode, min_periods=periode).mean().iloc[-1]
-    return float(a / c.iloc[-1] * 100) if c.iloc[-1] else 0.0
+    cl = c.iloc[-1]
+    if a is None or pd.isna(a) or cl is None or pd.isna(cl) or cl == 0:
+        return 0.0
+    return float(a / cl * 100)
 
 def distribution_tage(daten: pd.DataFrame, n: int = 25) -> int:
     d = daten.tail(n).copy(); v50 = daten["volume"].rolling(50, min_periods=10).mean()
     return int(((d["close"].diff() < 0) & (d["volume"] >= 1.2*v50.loc[d.index])).sum())
 
-def up_down_volume_ratio(daten: pd.DataFrame, n: int = 50) -> float:
+def up_down_volume_ratio(daten: pd.DataFrame, n: int = 50):
+    """Liefert das Verhältnis Up-Volumen / Down-Volumen über die letzten ``n`` Tage.
+
+    Konvention (konsistent mit ``sell_decision_metrics``): liefert ``None``, wenn
+    keine Down-Tage existieren oder zu wenig Daten vorliegen — so können Aufrufer
+    den Wert klar als „nicht verfügbar" behandeln statt einen Pseudo-Maximalwert
+    (z. B. 999) zu interpretieren.
+    """
+    if daten is None or len(daten) == 0:
+        return None
     d = daten.tail(n)
-    up = float(d.loc[d["close"] > d["open"], "volume"].sum()); dn = float(d.loc[d["close"] < d["open"], "volume"].sum())
-    return up / dn if dn else 999.0
+    up = float(d.loc[d["close"] > d["open"], "volume"].sum())
+    dn = float(d.loc[d["close"] < d["open"], "volume"].sum())
+    if dn <= 0:
+        return None
+    return up / dn
 
 def _none_if_nan(x): return None if pd.isna(x) else float(x)
 def _linear_marke(points, idx):
     if not points or len(points) < 2: return None
     y0, y1 = float(points[0][1]), float(points[-1][1])
     n = max(1, len(points)-1)
-    return y0 + (y1-y0) * (n/n)
+    pos = max(0, min(int(idx), n))
+    return y0 + (y1-y0) * (pos/n)
 
 
 def _seit_einstieg(daten: pd.DataFrame, position: Position) -> pd.DataFrame:
@@ -305,7 +327,10 @@ def strategie_groesster_anstieg_volumen(position,daten):
     # „Seit Kauf" — Vergleich des größten Tagesanstiegs/Volumens nur ab Einstiegsdatum.
     daten_seit = _seit_einstieg(daten, position)
     if len(daten_seit)<3:return []
-    ch=daten_seit["close"].pct_change()*100; t=ch.iloc[-1]; mx=float(ch.iloc[1:].max()); v=daten_seit["volume"].iloc[-1] >= daten_seit["volume"].max()
+    ch=daten_seit["close"].pct_change(fill_method=None)*100; t=ch.iloc[-1]
+    mx=float(ch.iloc[1:-1].max()) if len(ch) > 2 else float("-inf")
+    prev_vol_max = float(daten_seit["volume"].iloc[:-1].max()) if len(daten_seit) > 1 else float("inf")
+    v = float(daten_seit["volume"].iloc[-1]) >= prev_vol_max
     if t>=mx and v:return [_signal("Größter Anstieg + höchstes Volumen",33,"schluss",True,float(daten_seit["low"].iloc[-1]),"Kap. 6.2","Klimax-Muster")]
     if t>=mx:return [_signal("Größter Tagesanstieg",20,"schluss",True,float(daten_seit["low"].iloc[-1]),"Kap. 6.2","Vorwarnung")]
     return []
@@ -486,7 +511,9 @@ def strategie_ma_bruch_defensiv(position,daten,wochen_daten):
 def strategie_drei_verlustwochen(position,wochen_daten):
     if len(wochen_daten)<3:return []
     l=wochen_daten.tail(3)
-    three=(l["close"].iloc[0]>l["close"].iloc[1]>l["close"].iloc[2]); vol=(l["volume"].iloc[0]<l["volume"].iloc[1]<l["volume"].iloc[2]); red=bool((l["close"]<l["open"]).all())
+    three=(l["close"].iloc[0]>l["close"].iloc[1]>l["close"].iloc[2])
+    vol=(l["volume"].iloc[1]>l["volume"].iloc[0]) and (l["volume"].iloc[2]>l["volume"].iloc[1])
+    red=bool((l["close"]<l["open"]).all())
     if three and vol and red:return [_signal("3 Verlustwochen + steigendes Volumen",100,"schluss",True,None,"Kap. 6.3","Verteilungsmuster")]
     if three and vol:return [_signal("Vorbereitung Drei-Wochen-Regel",33,"schluss",True,None,"Kap. 6.3","Muster im Aufbau")]
     return []
@@ -537,7 +564,10 @@ def strategie_rs_linie(
     else:
         zeitebene="monat"; basis=daten.resample("ME").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"})
         basis_spy=daten_spy.resample("ME").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}); sp,lp=12,24
-    rs=(basis["close"]/basis_spy["close"].reindex(basis.index).ffill()).dropna()
+    joined = pd.concat([basis["close"].rename("a"), basis_spy["close"].rename("b")], axis=1, join="inner").dropna()
+    if joined.empty:
+        return []
+    rs = (joined["a"] / joined["b"]).dropna()
     if len(rs)<max(lp+1,4):return []
     rsf=sma(rs,sp); rsl=sma(rs,lp); out=[]
     if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS bricht {sp}-MA ({zeitebene})",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1","Erstes Warnsignal — RS-Linie bricht schnellen MA"))
@@ -631,14 +661,16 @@ def strategie_misslungener_ausbruch_5stufen(position,daten):
 def strategie_einfache_verluststufen(position,daten,verlust_stufe_1=3.0,verlust_stufe_2=5.0,verlust_stufe_3=7.0):
     pnl=pnl_pct(position,daten)
     s1=abs(float(verlust_stufe_1)); s2=max(abs(float(verlust_stufe_2)),s1); s3=max(abs(float(verlust_stufe_3)),s2)
-    if -s2<pnl<=-s1:return [_signal(f"Verlust ≥ {s1:g}%",33,"intraday",True,position.einstiegspreis*(1-s2/100),"Kap. 6.4","Erste Tranche")]
-    if -s3<pnl<=-s2:return [_signal(f"Verlust ≥ {s2:g}%",33,"intraday",True,position.einstiegspreis*(1-s3/100),"Kap. 6.4","Zweite Tranche")]
+    # Höchste Stufe zuerst prüfen, damit auch bei gleichen Schwellen (s1==s2==s3) das
+    # stärkste passende Signal feuert, statt durch das offene Intervall „leerzulaufen".
     if pnl<=-s3:return [_signal(f"Verlust ≥ {s3:g}%",100,"intraday",True,None,"Kap. 6.4","Rest sofort schließen")]
+    if pnl<=-s2:return [_signal(f"Verlust ≥ {s2:g}%",33,"intraday",True,position.einstiegspreis*(1-s3/100),"Kap. 6.4","Zweite Tranche")]
+    if pnl<=-s1:return [_signal(f"Verlust ≥ {s1:g}%",33,"intraday",True,position.einstiegspreis*(1-s2/100),"Kap. 6.4","Erste Tranche")]
     return []
 
 def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3,ueberdehnung_atr_start=3,ueberdehnung_atr_stark=4):
     p=pnl_pct(position,daten); s=letzter_schlusskurs(daten); a=atr(daten,14)
-    if not a:return []
+    if a is None or pd.isna(a) or a == 0: return []
     out=[]; ga=p/a
     if ga>=ziel_atr_multiplikator: out.append(_signal(f"{ga:.1f} ATR Gewinn erreicht",33,"schluss",True,None,"Kap. 6.4",f"Ziel {ziel_atr_multiplikator} ATR erreicht — Tranche in Stärke"))
     stop=position.einstiegspreis*(1-1.5*a/100)
@@ -653,7 +685,8 @@ def berechne_watch_signale(position,daten):
     w=[]; pnl=pnl_pct(position,daten); ma21=ema(daten["close"],21); t=tage_unter_ma(daten,ma21); dd=drawdown_vom_peak(position,daten)
     if pnl>0 and t in [1,2]: w.append({"name":f"{t} Tage unter 21-EMA","buch_verweis":"Kap. 6.2"})
     if pnl>0 and 5<=dd<8: w.append({"name":f"Drawdown {dd:.1f}% vom Peak","buch_verweis":"Kap. 6.2"})
-    if up_down_volume_ratio(daten,50)<1.0: w.append({"name":"Up/Down-Volume < 1.0","buch_verweis":"Kap. 5.3"})
+    udv = up_down_volume_ratio(daten,50)
+    if udv is not None and udv < 1.0: w.append({"name":"Up/Down-Volume < 1.0","buch_verweis":"Kap. 5.3"})
     d=distribution_tage(daten,25)
     if d>=4: w.append({"name":f"{d} Distribution-Tage in 25 Sessions","buch_verweis":"Kap. 5.3"})
     return w
@@ -717,7 +750,9 @@ def diagnose_strategie_kein_signal(
             return "21-EMA konnte nicht berechnet werden (zu wenige Daten)."
         m = float(ma21.iloc[-1]); t = tage_unter_ma(daten, ma21)
         if t == 0:
-            return f"Kurs ({s:.2f}) liegt über der 21-EMA ({m:.2f}) — kein Bruch."
+            # Auch bei „kein Bruch" die aktive Variante nennen, damit User die
+            # konfigurierte Aggressivität (z. B. ‚geduldig‘) in der Diagnose sehen.
+            return f"Variante '{variante}': Kurs ({s:.2f}) liegt über der 21-EMA ({m:.2f}) — noch kein Bruch."
         if variante == "geduldig":
             return f"Variante 'geduldig': erst nach 3 Tagen unter 21-EMA aktiv, aktuell {t} Tag(e) unter MA."
         if variante == "aggressiv":
@@ -773,8 +808,10 @@ def diagnose_strategie_kein_signal(
         daten_seit = _seit_einstieg(daten, position)
         if len(daten_seit) < 3:
             return f"Zu wenige Daten seit Einstieg ({len(daten_seit)}) für Klimax-Vergleich (mind. 3 Sessions nötig)."
-        ch = daten_seit["close"].pct_change() * 100
-        return f"Heutige Tagesveränderung {float(ch.iloc[-1]):+.1f}% ist nicht der größte Anstieg seit Einstieg ({float(ch.iloc[1:].max()):+.1f}%)."
+        ch = daten_seit["close"].pct_change(fill_method=None) * 100
+        vergleich = ch.iloc[1:-1] if len(ch) > 2 else ch.iloc[1:]
+        ref = float(vergleich.max()) if len(vergleich) > 0 else float("nan")
+        return f"Heutige Tagesveränderung {float(ch.iloc[-1]):+.1f}% ist nicht der größte Anstieg seit Einstieg ({ref:+.1f}%)."
 
     if strategie_key == "split_anstieg":
         split_datum = o.get("split_datum")

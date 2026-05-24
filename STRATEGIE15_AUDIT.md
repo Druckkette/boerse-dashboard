@@ -24,21 +24,20 @@ Die Kernlogik ist **weitgehend umgesetzt**, aber es gibt mehrere **Abweichungen*
    - Spezifikation: Bei Bruch unter 200-MA mit Volumen (`>=1.5`) 100%, sonst 75%.
    - Code: Exakt so umgesetzt.
 
+5. **Bestätigungssignal „200-MA dreht abwärts“**
+   - Spezifikation: Zusätzliches Info-Signal (Tranche 0), wenn MA200-Neigung über 20 Perioden negativ ist und Kurs unter MA200 liegt.
+   - Code: Umgesetzt — `strategie_ma_bruch_defensiv` emittiert das Signal, wenn `ma200_richtung < 0` und Kurs unter MA200.
+
 ## Abweichungen / Lücken
 
-1. **Fehlendes Bestätigungssignal „200-MA dreht abwärts“**
-   - In der Spezifikation ist ein zusätzliches Info-Signal vorgesehen (Tranche 0), wenn MA200-Neigung über 20 Perioden negativ ist und Kurs unter MA200 liegt.
-   - Dieses Signal fehlt vollständig im Code.
-
-2. **Buchverweis nicht granular**
+1. **Buchverweis nicht granular**
    - Spezifikation unterscheidet teils `Kap. 6.3 50-MA`, `Kap. 6.3 10-Wochen-Linie`, `Kap. 6.3 200-MA`.
    - Code nutzt überall nur `Kap. 6.3`.
 
-3. **Begründungstexte vereinfacht**
+2. **Begründungstexte vereinfacht**
    - Texte sind funktional ähnlich, aber weniger präzise als in der Spezifikation (z. B. „Defensiver Verkauf“ statt klarer Regelbegründung).
 
 ## Fazit
 
-- **Regeltechnisch vorhanden:** 50-MA-Bruch, 3-Tage-Toleranz, 10-Wochen-Unterbietung, 200-MA-Bruch (mit/ohne Volumen).
-- **Nicht vollständig:** Das Bestätigungssignal zur fallenden 200-MA-Neigung ist derzeit nicht implementiert.
+- **Regeltechnisch vorhanden:** 50-MA-Bruch, 3-Tage-Toleranz, 10-Wochen-Unterbietung, 200-MA-Bruch (mit/ohne Volumen), 200-MA-Neigung dreht abwärts.
 - **Dokumentations-/Semantikdelta:** Buchverweise und Textbegründungen sind knapper als die Strategievorlage.
