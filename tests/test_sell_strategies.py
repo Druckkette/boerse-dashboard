@@ -126,7 +126,7 @@ def test_21ma_aggressiv_mit_volumen():
         "volume": volumes[-len(closes):],
     })
     sigs = strategie_21ma_bruch(p, d, "aggressiv")
-    assert any("Deutlicher 21-MA-Bruch" in s["name"] for s in sigs)
+    assert any("Deutlicher 21-EMA-Bruch" in s["name"] for s in sigs)
 
 
 def test_21ma_geduldig_nach_drei_tagen():
@@ -470,7 +470,7 @@ def test_ma_abstand_kapitel_6_2_stufen_und_texte():
     names = [s["name"] for s in sigs]
 
     assert "10% über 10-MA" in names
-    assert "15% über 21-MA" in names
+    assert "15% über 21-EMA" in names
     assert "25% über 50-MA" in names
     assert any("über 200-MA (Klimaxzone)" in n for n in names)
     assert all(s["buch_verweis"] == "Kap. 6.2 MA-Abstand" for s in sigs)
@@ -570,9 +570,9 @@ def test_themen_dedup_zaehlt_pro_thema_nur_staerkstes_signal():
 
 
 def test_themen_dedup_drawdown_und_ma21_bruch_zaehlen_einzeln():
-    """Drawdown vom Peak und 21-MA-Bruch sind unterschiedliche Themen → beide tragen zur Summe bei."""
+    """Drawdown vom Peak und 21-EMA-Bruch sind unterschiedliche Themen → beide tragen zur Summe bei."""
     p = Position("T", 100, "2026-01-01", 10, peak=130)
-    # Konstruiere Szenario: hoher Peak, jetzt PnL+18%, Drawdown ~9% (Stufe 1 → 25%), gleichzeitig Schluss unter 21-MA.
+    # Konstruiere Szenario: hoher Peak, jetzt PnL+18%, Drawdown ~9% (Stufe 1 → 25%), gleichzeitig Schluss unter 21-EMA.
     closes = [120.0] * 30 + [110.0]
     d = pd.DataFrame({
         "open": closes,

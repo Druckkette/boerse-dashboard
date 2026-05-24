@@ -7,7 +7,7 @@ import pandas as pd
 # Themen-Klassifikation jeder Hub-Strategie. Wird in `verkaufs_empfehlung_gesamt`
 # verwendet, um pro Thema nur das stärkste aktive Signal in die Tranche-Summe einzubringen.
 # Damit wird verhindert, dass mehrere Strategien dieselbe Ursache mehrfach zählen
-# (z. B. Drawdown + 21-MA-Bruch + MA-Abstand bei demselben Pullback).
+# (z. B. Drawdown + 21-EMA-Bruch + MA-Abstand bei demselben Pullback).
 STRATEGY_THEMES: dict[str, str] = {
     "notbremse_verlust": "verlust_notbremse",
     "einfache_verluststufen": "verlust_notbremse",
@@ -36,9 +36,9 @@ STRATEGY_THEMES: dict[str, str] = {
 STRATEGIE_INFO: dict[str, str] = {
     "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
     "gewinn_in_stufen": "Strategie 3 (Kap. 6.2): Gewinnmitnahme in Stufen mit Nachdenkschwelle und Pflicht-Teilverkauf. Standard: Bullisch/Unsicher 15% Hinweis, dann 20–35% Teilverkauf (33% bis 50% Tranche). Bärisch: 10% Hinweis, dann 10–15% Teilverkauf. Alle Schwellen sind im Setup konfigurierbar.",
-    "ma21_bruch": "Strategie 4 (Kap. 6.2): Bruch der 21-Tage-Linie in drei Risikoprofilen. Aggressiv: schneller Teilverkauf bei klarem Bruch + Volumenbestätigung (33%, +50% bei -7% Tagesverlust Tag 2). Gestaffelt: stufenweises Vorgehen über 3 Tage unter 21-MA (jeweils 25%). Geduldig: erst nach 3 bestätigten Tagen unter 21-MA aktiv (33%). Nur im Gewinnfall aktiv.",
-    "drawdown_vom_peak": "Strategie 5 (Kap. 6.2): Drawdown vom Peak mit 3 Eskalationsstufen. Stufe 1 (Standard 8%): erstes Sicherungssignal 25%. Stufe 2 (12%): deutliche Reduktion 33%. Stufe 3 (15%): harte Reduktion (50%); bei zusätzlichem Trendbruch unter 21-MA Vollausstieg (100%).",
-    "ma_abstand": "Strategie 6 (Kap. 6.2): Teilverkäufe bei Überdehnung über gleitende Durchschnitte. Nur im Gewinnfall aktiv. Vier Stufen: 10-MA (Standard 10% → 25% Tranche), 21-MA (15% → 33%), 50-MA (25% → 33%), 200-MA (70% → 50%). 200-MA Klimaxzone ab 100% löst Vollausstieg aus.",
+    "ma21_bruch": "Strategie 4 (Kap. 6.2): Bruch der 21-EMA in drei Risikoprofilen. Aggressiv: schneller Teilverkauf bei klarem Bruch + Volumenbestätigung (33%, +50% bei -7% Tagesverlust Tag 2). Gestaffelt: stufenweises Vorgehen über 3 Tage unter 21-EMA (jeweils 25%). Geduldig: erst nach 3 bestätigten Tagen unter 21-EMA aktiv (33%). Nur im Gewinnfall aktiv.",
+    "drawdown_vom_peak": "Strategie 5 (Kap. 6.2): Drawdown vom Peak mit 3 Eskalationsstufen. Stufe 1 (Standard 8%): erstes Sicherungssignal 25%. Stufe 2 (12%): deutliche Reduktion 33%. Stufe 3 (15%): harte Reduktion (50%); bei zusätzlichem Trendbruch unter 21-EMA Vollausstieg (100%).",
+    "ma_abstand": "Strategie 6 (Kap. 6.2): Teilverkäufe bei Überdehnung über gleitende Durchschnitte. Nur im Gewinnfall aktiv. Vier Stufen: 10-MA (Standard 10% → 25% Tranche), 21-EMA (15% → 33%), 50-MA (25% → 33%), 200-MA (70% → 50%). 200-MA Klimaxzone ab 100% löst Vollausstieg aus.",
     "verlusttage_haeufung": "Strategie 7 (Kap. 6.2): Erkennt Distribution über eine Häufung schwacher Tage. Signal 1: drei tiefere Schlusskurse in Folge mit erhöhter 3-Tage-Volumenquote gegen den Referenz-Lookback. Signal 2: im Up/Down-Fenster überwiegen Abwärtstage gegenüber Aufwärtstagen deutlich (Mindestdifferenz). Beide Trigger erzeugen standardmäßig eine 25%-Tranche mit Stop-/Marker-Logik auf lokale Tiefs.",
     "groesster_anstieg_volumen": "Strategie 9 (Kap. 6.2): Klimax-/Spätphasen-Signal bei größtem Tagesanstieg mit extremem Volumen. Aktiviert ab P&L > 15%. Bei höchstem Volumen 33%, sonst 20% Vorwarnung.",
     "split_anstieg": "Strategie 10 (Kap. 6.2): Warnt vor möglichem Gipfel, wenn die Aktie innerhalb der ersten 1-2 Wochen nach Aktiensplit stark steigt. Trigger nur, wenn ein Split-Datum bekannt ist. Ab +25% seit Split wird ein aktives Signal erzeugt (33% Tranche), ab +50% erhöht auf 50%. Referenz-/Stoppmarke ist der Schlusskurs am Split-Tag.",
@@ -50,7 +50,7 @@ STRATEGIE_INFO: dict[str, str] = {
     "drei_verlustwochen": "Strategie 16 (Kap. 6.3): Triggert bei drei Verlustwochen in Folge mit jeweils tieferem Wochenschluss als in der Vorwoche und gleichzeitig steigendem Wochenvolumen. Vollsignal (100%) nur, wenn alle drei Wochen klare Abwärtswochen sind (Close < Open). Vorwarnstufe (33%) falls nur die Sequenz aus fallenden Wochenschlüssen + steigendem Volumen erfüllt ist.",
     "groesster_einbruch": "Strategie 17 (Kap. 6.3): Reagiert auf den größten Einbruch seit Einstieg nach bereits gelaufener Position. Tagesregel: wenn der heutige Verlust der größte seit Einstieg ist und über einer Mindestschwelle liegt, wird defensiv reduziert (33%) oder bei deutlich erhöhtem Volumen stärker (50%). Wochenregel: wenn die aktuelle Verlustwoche die größte seit Einstieg ist und gleichzeitig das Wochenvolumen überdurchschnittlich hoch ist, folgt eine starke Reduktion (66%).",
     "rs_linie": "Strategie 18 (Kap. 6.4): 3-Stufen-Strategie auf Basis relativer Stärke gegen Benchmark (z. B. SPY) mit adaptivem Zeithorizont. Unter Schwelle 1 Tagesebene (21/50-MA), zwischen Schwelle 1 und 2 Wochenebene (10/25-MA), ab Schwelle 2 Monatsebene (12/24-MA). Stufe 1 (20%): RS bricht schnellen MA. Stufe 2 (30%): RS bleibt 3 Perioden darunter. Stufe 3 (50%): RS bricht langsamen MA.",
-    "ma_basierte_sequenz": "Strategie 19 (Kap. 6.4): Geschlossene MA-Verkaufssequenz von Gewinnzone bis klarem 50-MA-Bruch. Punkt 1: Teilverkauf in Gewinnzone 20-25% (33%). Punkt 2: Überdehnung über 10-MA (20%). Punkt 3: Bruch 10-MA (20% normal / 25% pendelnd). Punkt 4: Bruch 21-MA (25%). Punkt 5: klarer 50-MA-Bruch = Vollausstieg (100%).",
+    "ma_basierte_sequenz": "Strategie 19 (Kap. 6.4): Geschlossene MA-Verkaufssequenz von Gewinnzone bis klarem 50-MA-Bruch. Punkt 1: Teilverkauf in Gewinnzone 20-25% (33%). Punkt 2: Überdehnung über 10-MA (20%). Punkt 3: Bruch 10-MA (20% normal / 25% pendelnd). Punkt 4: Bruch 21-EMA (25%). Punkt 5: klarer 50-MA-Bruch = Vollausstieg (100%).",
     "einfach_halbe_position": "Strategie 20 (Kap. 6.4): Einfache 50/50-Logik. Erste Hälfte sichern bei festgelegtem Gewinn (Standard 20%), zweite Hälfte über Break-Even/erneute Stärke managen. Erneut 20% Gewinn nach erster Hälfte → weitere Tranche.",
     "misslungener_ausbruch_5stufen": "Strategie 21 (Kap. 6.4): Fehl-Ausbruch detailliert in 5 Stufen inkl. Intraday-/Gap-Logik. Behandelt Gap-down-Sonderfälle, Intraday-/Schlussbrüche unter Tief Tag 1 und Tag 0, sowie 7%-Notbremse als Intraday-Exit. Zusätzlich: zweite Rückkehr zum Pivot nach Erholung.",
     "einfache_verluststufen": "Strategie 22 (Kap. 6.4): Minimalregel mit gestaffelten Verluststufen. Standard: -3% (33%), -5% (33%), -7% (Komplettverkauf intraday).",
@@ -185,27 +185,27 @@ def strategie_gewinn_in_stufen(
     return out
 
 def strategie_21ma_bruch(position: Position, daten: pd.DataFrame, variante: str = "gestaffelt"):
-    """Strategie 4 (Kap. 6.2): Bruch der 21-Tage-Linie in drei Risikoprofilen.
+    """Strategie 4 (Kap. 6.2): Bruch der 21-EMA in drei Risikoprofilen.
 
     Setup:
     - variante="aggressiv": schneller Teilverkauf bei klarem Bruch + Volumenbestätigung.
-    - variante="gestaffelt": stufenweises Vorgehen über 3 Tage unter 21-MA.
-    - variante="geduldig": erst nach 3 bestätigten Tagen unter 21-MA aktiv.
+    - variante="gestaffelt": stufenweises Vorgehen über 3 Tage unter 21-EMA.
+    - variante="geduldig": erst nach 3 bestätigten Tagen unter 21-EMA aktiv.
 
     Regel: Nur im Gewinnfall aktiv (pnl > 0). Im Verlustfall greift Strategie 1.
     """
     if pnl_pct(position,daten) <= 0: return []
-    ma21=sma(daten["close"],21); m=float(ma21.iloc[-1]); s=letzter_schlusskurs(daten); t=tage_unter_ma(daten,ma21); out=[]
+    ma21=ema(daten["close"],21); m=float(ma21.iloc[-1]); s=letzter_schlusskurs(daten); t=tage_unter_ma(daten,ma21); out=[]
     if variante=="aggressiv":
         br=(m-s)/m*100 if m else 0
-        if s<m and br>=2 and vol_verhaeltnis(daten)>=1.2: out.append(_signal("Deutlicher 21-MA-Bruch mit Volumen",33,"schluss",True,_none_if_nan(sma(daten['close'],50).iloc[-1]),"Kap. 6.2","Klarer Bruch"))
-        if t==2 and len(daten)>=2 and (daten["close"].iloc[-1]/daten["close"].iloc[-2]-1)*100<=-7: out.append(_signal("21-MA Bruch + 7% Tagesverlust",50,"intraday",True,None,"Kap. 6.2","Beschleunigte Schwäche"))
+        if s<m and br>=2 and vol_verhaeltnis(daten)>=1.2: out.append(_signal("Deutlicher 21-EMA-Bruch mit Volumen",33,"schluss",True,_none_if_nan(sma(daten['close'],50).iloc[-1]),"Kap. 6.2","Klarer Bruch"))
+        if t==2 and len(daten)>=2 and (daten["close"].iloc[-1]/daten["close"].iloc[-2]-1)*100<=-7: out.append(_signal("21-EMA Bruch + 7% Tagesverlust",50,"intraday",True,None,"Kap. 6.2","Beschleunigte Schwäche"))
     elif variante=="geduldig":
-        if t>=3: out.append(_signal("21-MA seit 3 Tagen gebrochen",33,"schluss",True,float(daten["low"].tail(10).min()),"Kap. 6.2","Bruch bestätigt"))
+        if t>=3: out.append(_signal("21-EMA seit 3 Tagen gebrochen",33,"schluss",True,float(daten["low"].tail(10).min()),"Kap. 6.2","Bruch bestätigt"))
     else:
-        if t==1: out.append(_signal("Erster Schluss unter 21-MA",25,"schluss",True,m,"Kap. 6.2","Stufe 1"))
-        if t==2 and s<float(daten["close"].iloc[-2]): out.append(_signal("Zweiter Tag unter 21-MA (tiefer)",25,"schluss",True,m,"Kap. 6.2","Stufe 2"))
-        if t>=3: out.append(_signal("Dritter Tag unter 21-MA",25,"schluss",True,position.einstiegspreis,"Kap. 6.2","Stufe 3"))
+        if t==1: out.append(_signal("Erster Schluss unter 21-EMA",25,"schluss",True,m,"Kap. 6.2","Stufe 1"))
+        if t==2 and s<float(daten["close"].iloc[-2]): out.append(_signal("Zweiter Tag unter 21-EMA (tiefer)",25,"schluss",True,m,"Kap. 6.2","Stufe 2"))
+        if t>=3: out.append(_signal("Dritter Tag unter 21-EMA",25,"schluss",True,position.einstiegspreis,"Kap. 6.2","Stufe 3"))
     return out
 
 def strategie_drawdown_vom_peak(
@@ -224,15 +224,15 @@ def strategie_drawdown_vom_peak(
     Setup/Anpassung:
     - Stufe 1: erstes Sicherungssignal bei moderatem Rücksetzer vom Peak.
     - Stufe 2: deutliche Reduktion bei fortgeschrittenem Drawdown.
-    - Stufe 3: harte Reduktion; bei zusätzlichem Trendbruch (Schluss unter 21-MA)
+    - Stufe 3: harte Reduktion; bei zusätzlichem Trendbruch (Schluss unter 21-EMA)
       vollständiger Ausstieg.
     """
     if pnl_pct(position,daten)<=0: return []
     d1=max(0.0,float(drawdown_stufe1_min_pct)); d2=max(d1,float(drawdown_stufe2_min_pct)); d3=max(d2,float(drawdown_stufe3_min_pct))
-    dd=drawdown_vom_peak(position,daten); ma21=_none_if_nan(sma(daten["close"],21).iloc[-1]); s=letzter_schlusskurs(daten); peak=float(position.peak or daten["high"].max()); out=[]
+    dd=drawdown_vom_peak(position,daten); ma21=_none_if_nan(ema(daten["close"],21).iloc[-1]); s=letzter_schlusskurs(daten); peak=float(position.peak or daten["high"].max()); out=[]
     if d1<=dd<d2: out.append(_signal("Drawdown 8% vom Peak",tranche_stufe1_pct,"schluss",True,peak*(1-d2/100),"Kap. 6.2 Drawdown vom Peak","Erster Schwellwert — Stopps enger ziehen, Teil sichern"))
-    if d2<=dd<d3: out.append(_signal("Drawdown 12-15% vom Peak",tranche_stufe2_pct,"schluss",True,peak*(1-d3/100),"Kap. 6.2","Gewinnsicherung Pflicht — Stoppmarken: Tief schwächste Kerze oder 21-MA"))
-    if dd>=d3: out.append(_signal("Drawdown >15% + Trendbruch" if (ma21 and s<ma21) else "Drawdown >15%",tranche_stufe3_mit_trendbruch_pct if (ma21 and s<ma21) else tranche_stufe3_ohne_trendbruch_pct,"schluss",True,None if (ma21 and s<ma21) else ma21,"Kap. 6.2",">15% Rückgang + Bruch 21-MA — Komplettausstieg" if (ma21 and s<ma21) else "Position deutlich reduzieren"))
+    if d2<=dd<d3: out.append(_signal("Drawdown 12-15% vom Peak",tranche_stufe2_pct,"schluss",True,peak*(1-d3/100),"Kap. 6.2","Gewinnsicherung Pflicht — Stoppmarken: Tief schwächste Kerze oder 21-EMA"))
+    if dd>=d3: out.append(_signal("Drawdown >15% + Trendbruch" if (ma21 and s<ma21) else "Drawdown >15%",tranche_stufe3_mit_trendbruch_pct if (ma21 and s<ma21) else tranche_stufe3_ohne_trendbruch_pct,"schluss",True,None if (ma21 and s<ma21) else ma21,"Kap. 6.2",">15% Rückgang + Bruch 21-EMA — Komplettausstieg" if (ma21 and s<ma21) else "Position deutlich reduzieren"))
     return out
 
 def strategie_ma_abstand(
@@ -252,7 +252,7 @@ def strategie_ma_abstand(
     if pnl_pct(position,daten)<=0:return []
 
     s=letzter_schlusskurs(daten); out=[]
-    ma10=_none_if_nan(sma(daten["close"],10).iloc[-1]); ma21=_none_if_nan(sma(daten["close"],21).iloc[-1]); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1]); ma200=_none_if_nan(sma(daten["close"],200).iloc[-1])
+    ma10=_none_if_nan(sma(daten["close"],10).iloc[-1]); ma21=_none_if_nan(ema(daten["close"],21).iloc[-1]); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1]); ma200=_none_if_nan(sma(daten["close"],200).iloc[-1])
 
     if ma10:
         abstand_10=(s-ma10)/ma10*100
@@ -261,7 +261,7 @@ def strategie_ma_abstand(
     if ma21:
         abstand_21=(s-ma21)/ma21*100
         if abstand_21>=float(schwelle_ma21_pct):
-            out.append(_signal("15% über 21-MA",tranche_ma21_pct,"schluss",True,ma21,"Kap. 6.2 MA-Abstand","Erste klare Überdehnung"))
+            out.append(_signal("15% über 21-EMA",tranche_ma21_pct,"schluss",True,ma21,"Kap. 6.2 MA-Abstand","Erste klare Überdehnung"))
     if ma50:
         abstand_50=(s-ma50)/ma50*100
         if abstand_50>=float(schwelle_ma50_pct):
@@ -567,7 +567,7 @@ def strategie_ma_basierte_sequenz(
     klarer_ma50_bruch_pct=2.0,
 ):
     pnl=pnl_pct(position,daten); s=letzter_schlusskurs(daten); r=sum(position.realisierte_tranchen or []); out=[]
-    ma10=_none_if_nan(sma(daten["close"],10).iloc[-1]); ma21=_none_if_nan(sma(daten["close"],21).iloc[-1]); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1])
+    ma10=_none_if_nan(sma(daten["close"],10).iloc[-1]); ma21=_none_if_nan(ema(daten["close"],21).iloc[-1]); ma50=_none_if_nan(sma(daten["close"],50).iloc[-1])
     if gewinnzone_min_pct<=pnl<=gewinnzone_max_pct and r<gewinnzone_tranche_pct:
         out.append(_signal("Gewinnzone 20-25%",gewinnzone_tranche_pct,"schluss",True,ma10,"Kap. 6.4 Sequenz Punkt 1","Objektive Gewinnzone — ersten Teil sichern"))
     if ma10 and (s-ma10)/ma10*100>=ueber_ma10_pct and r<50:
@@ -590,7 +590,7 @@ def strategie_ma_basierte_sequenz(
         tranche=pendel_tranche_pct if pendelt else unter_ma10_tranche_pct
         out.append(_signal("Schluss unter 10-MA (pendelnd)" if pendelt else "Schluss unter 10-MA",tranche,"schluss",True,ma21,"Kap. 6.4 Sequenz Punkt 3","Pendel um 10-MA — Warnzeichen" if pendelt else "Kurzfristige Unterstützung verloren"))
     if ma21 and s<ma21 and pnl>unter_ma21_mindestgewinn_pct:
-        out.append(_signal("Schluss unter 21-MA",unter_ma21_tranche_pct,"schluss",True,ma50,"Kap. 6.4 Sequenz Punkt 4","Mittelfristige Linie verloren"))
+        out.append(_signal("Schluss unter 21-EMA",unter_ma21_tranche_pct,"schluss",True,ma50,"Kap. 6.4 Sequenz Punkt 4","Mittelfristige Linie verloren"))
     if ma50 and s<ma50 and (ma50-s)/ma50*100>=klarer_ma50_bruch_pct:
         out.append(_signal("Klarer 50-MA-Bruch",100,"schluss",True,None,"Kap. 6.4 Sequenz Punkt 5","Mittelfristiger Trend gebrochen — alle Reste schließen"))
     return out
@@ -650,8 +650,8 @@ def strategie_atr_basiert(position,daten,ziel_atr_multiplikator=3,ueberdehnung_a
     return out
 
 def berechne_watch_signale(position,daten):
-    w=[]; pnl=pnl_pct(position,daten); ma21=sma(daten["close"],21); t=tage_unter_ma(daten,ma21); dd=drawdown_vom_peak(position,daten)
-    if pnl>0 and t in [1,2]: w.append({"name":f"{t} Tage unter 21-MA","buch_verweis":"Kap. 6.2"})
+    w=[]; pnl=pnl_pct(position,daten); ma21=ema(daten["close"],21); t=tage_unter_ma(daten,ma21); dd=drawdown_vom_peak(position,daten)
+    if pnl>0 and t in [1,2]: w.append({"name":f"{t} Tage unter 21-EMA","buch_verweis":"Kap. 6.2"})
     if pnl>0 and 5<=dd<8: w.append({"name":f"Drawdown {dd:.1f}% vom Peak","buch_verweis":"Kap. 6.2"})
     if up_down_volume_ratio(daten,50)<1.0: w.append({"name":"Up/Down-Volume < 1.0","buch_verweis":"Kap. 5.3"})
     d=distribution_tage(daten,25)
@@ -674,7 +674,7 @@ def diagnose_strategie_kein_signal(
     Wird vom UI aufgerufen, wenn `verkaufs_empfehlung_gesamt` für diese
     Strategie eine leere Signalliste zurückgegeben hat. Liefert je nach
     Strategie-Konfiguration einen konkreten Grund (z. B. „Position im
-    Verlust", „21-MA noch nicht gebrochen", „Variante geduldig braucht
+    Verlust", „21-EMA noch nicht gebrochen", „Variante geduldig braucht
     mindestens 3 Tage unter MA"), so dass im Hub nicht nur eine generische
     Fallback-Meldung steht.
     """
@@ -712,22 +712,22 @@ def diagnose_strategie_kein_signal(
         if pnl <= 0:
             return f"Position im Verlust ({pnl:.1f}%). Strategie ist nur im Gewinnfall aktiv (im Verlust greift Strategie 1 / rueckkehr_pivot)."
         variante = str(o.get("ma21_variante", "gestaffelt"))
-        ma21 = sma(daten["close"], 21)
+        ma21 = ema(daten["close"], 21)
         if pd.isna(ma21.iloc[-1]):
-            return "21-Tage-Linie konnte nicht berechnet werden (zu wenige Daten)."
+            return "21-EMA konnte nicht berechnet werden (zu wenige Daten)."
         m = float(ma21.iloc[-1]); t = tage_unter_ma(daten, ma21)
         if t == 0:
-            return f"Kurs ({s:.2f}) liegt über der 21-Tage-Linie ({m:.2f}) — kein Bruch."
+            return f"Kurs ({s:.2f}) liegt über der 21-EMA ({m:.2f}) — kein Bruch."
         if variante == "geduldig":
-            return f"Variante 'geduldig': erst nach 3 Tagen unter 21-MA aktiv, aktuell {t} Tag(e) unter MA."
+            return f"Variante 'geduldig': erst nach 3 Tagen unter 21-EMA aktiv, aktuell {t} Tag(e) unter MA."
         if variante == "aggressiv":
             br = (m - s) / m * 100 if m else 0
             vr = vol_verhaeltnis(daten)
             return f"Variante 'aggressiv': Bruch nur {br:.1f}% (≥2% nötig) oder Volumenfaktor {vr:.2f} (≥1.2 nötig); Tage unter MA: {t}."
         # gestaffelt
         if t == 2 and len(daten) >= 2 and not (s < float(daten["close"].iloc[-2])):
-            return f"Variante 'gestaffelt': Tag 2 unter 21-MA, aber Schluss ({s:.2f}) nicht tiefer als Vortag ({float(daten['close'].iloc[-2]):.2f})."
-        return f"Variante 'gestaffelt': {t} Tag(e) unter 21-MA, Stufe-Bedingung aktuell nicht erfüllt."
+            return f"Variante 'gestaffelt': Tag 2 unter 21-EMA, aber Schluss ({s:.2f}) nicht tiefer als Vortag ({float(daten['close'].iloc[-2]):.2f})."
+        return f"Variante 'gestaffelt': {t} Tag(e) unter 21-EMA, Stufe-Bedingung aktuell nicht erfüllt."
 
     if strategie_key == "drawdown_vom_peak":
         if pnl <= 0:
@@ -740,12 +740,12 @@ def diagnose_strategie_kein_signal(
         if pnl <= 0:
             return f"Position im Verlust ({pnl:.1f}%). Strategie greift nur im Gewinnfall."
         ma10 = _none_if_nan(sma(daten["close"], 10).iloc[-1])
-        ma21 = _none_if_nan(sma(daten["close"], 21).iloc[-1])
+        ma21 = _none_if_nan(ema(daten["close"], 21).iloc[-1])
         ma50 = _none_if_nan(sma(daten["close"], 50).iloc[-1])
         ma200 = _none_if_nan(sma(daten["close"], 200).iloc[-1])
         teile = []
         if ma10: teile.append(f"10-MA {((s-ma10)/ma10*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma10_pct', 10.0)):g}%)")
-        if ma21: teile.append(f"21-MA {((s-ma21)/ma21*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma21_pct', 15.0)):g}%)")
+        if ma21: teile.append(f"21-EMA {((s-ma21)/ma21*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma21_pct', 15.0)):g}%)")
         if ma50: teile.append(f"50-MA {((s-ma50)/ma50*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma50_pct', 25.0)):g}%)")
         if ma200: teile.append(f"200-MA {((s-ma200)/ma200*100):+.1f}% (Schwelle {float(o.get('ma_abstand_schwelle_ma200_pct', 70.0)):g}%)")
         return "Keine MA-Überdehnung erreicht: " + "; ".join(teile) if teile else "MA-Abstände nicht berechenbar (zu wenige Daten)."
@@ -885,11 +885,11 @@ def diagnose_strategie_kein_signal(
 
     if strategie_key == "ma_basierte_sequenz":
         ma10 = _none_if_nan(sma(daten["close"], 10).iloc[-1])
-        ma21 = _none_if_nan(sma(daten["close"], 21).iloc[-1])
+        ma21 = _none_if_nan(ema(daten["close"], 21).iloc[-1])
         ma50 = _none_if_nan(sma(daten["close"], 50).iloc[-1])
         teile = [f"Gewinn {pnl:.1f}%"]
         if ma10: teile.append(f"10-MA {ma10:.2f} ({'über' if s >= ma10 else 'unter'})")
-        if ma21: teile.append(f"21-MA {ma21:.2f} ({'über' if s >= ma21 else 'unter'})")
+        if ma21: teile.append(f"21-EMA {ma21:.2f} ({'über' if s >= ma21 else 'unter'})")
         if ma50: teile.append(f"50-MA {ma50:.2f} ({'über' if s >= ma50 else 'unter'})")
         return "Kein Sequenzpunkt aktiv — " + "; ".join(teile) + "."
 
@@ -1070,7 +1070,7 @@ def verkaufs_empfehlung_gesamt(position: Position, daten: pd.DataFrame, wochen_d
         act=[s for s in all_signals if s["aktuell_aktiv"] and s["tranche_pct"]>0]
         # Themen-Deduplizierung: pro Thema nur das Signal mit dem höchsten Tranche-Beitrag
         # in die Summe einbringen. Verhindert, dass mehrere Strategien dieselbe Ursache
-        # (z. B. Pullback unter 21-MA) zur Summe verstärken.
+        # (z. B. Pullback unter 21-EMA) zur Summe verstärken.
         best_per_theme: dict[str, dict] = {}
         for s in act:
             thema = str(s.get("thema") or "sonstige")

@@ -50,15 +50,15 @@ Die App ist live unter: `https://dein-name-boerse-dashboard.streamlit.app`
 - **Divergenz-Check** (Index vs. A/D-Linie)
 - **Federal Funds Rate** Trend (FRED API)
 
-## Strategie 4 (Kap. 6.2): 21-MA-Bruch korrekt einsetzen
+## Strategie 4 (Kap. 6.2): 21-EMA-Bruch korrekt einsetzen
 
 Im Strategien-Hub kann für jede Position die Ausstiegslogik der **Strategie 4** einmalig gewählt werden. Die Auswahl wird pro Ticker in der Session gespeichert und beim erneuten Öffnen wieder vorgeschlagen.
 
 Verfügbare Varianten:
 
-- **gestaffelt (Standard)**: 25% an Tag 1 unter 21-MA, weitere 25% an Tag 2 (bei tieferem Schluss), weitere 25% ab Tag 3.
-- **aggressiv**: 33% bei klarem Bruch (mind. 2% unter 21-MA) und erhöhtem Volumen (Volumenfaktor ≥ 1.2). Sonderfall: am 2. Tag unter 21-MA mit Tagesverlust ≤ -7% sofort 50%.
-- **geduldig**: erst nach bestätigtem Bruch (mindestens 3 Tage unter 21-MA) 33%.
+- **gestaffelt (Standard)**: 25% an Tag 1 unter 21-EMA, weitere 25% an Tag 2 (bei tieferem Schluss), weitere 25% ab Tag 3.
+- **aggressiv**: 33% bei klarem Bruch (mind. 2% unter 21-EMA) und erhöhtem Volumen (Volumenfaktor ≥ 1.2). Sonderfall: am 2. Tag unter 21-EMA mit Tagesverlust ≤ -7% sofort 50%.
+- **geduldig**: erst nach bestätigtem Bruch (mindestens 3 Tage unter 21-EMA) 33%.
 
 Wichtig:
 - Die Strategie ist nur im Gewinnfall aktiv (`P&L > 0`).

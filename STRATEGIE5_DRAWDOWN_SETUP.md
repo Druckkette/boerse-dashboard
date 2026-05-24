@@ -9,7 +9,7 @@ Diese Strategie ist in `sell_strategies.py` als `strategie_drawdown_vom_peak(...
 - **Stufe 1 (Standard: ab 8%)**: erste Sicherung, Stopps enger, Teilverkauf.
 - **Stufe 2 (Standard: ab 12%)**: deutliche Reduktion.
 - **Stufe 3 (Standard: ab 15%)**:
-  - mit zusätzlichem Trendbruch (Schluss < 21-MA): Komplettausstieg,
+  - mit zusätzlichem Trendbruch (Schluss < 21-EMA): Komplettausstieg,
   - ohne Trendbruch: starke Reduktion.
 
 ## Setup-/Konfigurationsmöglichkeiten

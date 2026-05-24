@@ -266,8 +266,8 @@ BOOK_REFERENCES = {
     "killer_eight_weeks_under_10w": "Wochenchart-Regel: acht Wochenschlüsse unter 10-Wochen-Linie",
     "tranche_low_day_1_loss": "Ausbruchsrisiko: Schluss unter Tief Tag 1",
     "tranche_low_day_0_loss": "Ausbruchsrisiko: Schluss unter Tief Tag 0",
-    "tranche_first_sma21_break_gain": "Trendregel: erster 21-Tage-Linienbruch im Gewinn",
-    "tranche_three_days_under_sma21_gain": "Trendregel: drei Tage unter 21-Tage-Linie",
+    "tranche_first_ema21_break_gain": "Trendregel: erster 21-EMA-Bruch im Gewinn",
+    "tranche_three_days_under_ema21_gain": "Trendregel: drei Tage unter 21-EMA",
     "tranche_sma50_break_volume": "Trendregel: 50-Tage-Linienbruch mit erhöhtem Volumen",
     "tranche_profit_zone_20_25": "Gewinnmitnahme-Regel: 20-25%-Zone",
     "tranche_drawdown_8": "Trailing-Regel: Drawdown vom Hoch >= 8%",
@@ -275,8 +275,8 @@ BOOK_REFERENCES = {
     "tranche_drawdown_15_full": "Trailing-Regel: Drawdown vom Hoch >= 15%",
     "tranche_extended_sma50": "Überdehnungsregel: >25% über 50-Tage-Linie",
     "tranche_extended_sma200": "Überdehnungsregel: >70% über 200-Tage-Linie",
-    "tranche_rs_first_21_break": "Relative-Stärke-Regel: RS-Linie bricht 21-Tage-Linie",
-    "tranche_rs_three_days_under_21": "Relative-Stärke-Regel: RS drei Tage unter 21-Tage-Linie",
+    "tranche_rs_first_21_break": "Relative-Stärke-Regel: RS-Linie bricht 21-EMA",
+    "tranche_rs_three_days_under_21": "Relative-Stärke-Regel: RS drei Tage unter 21-EMA",
     "tranche_rs_50_break": "Relative-Stärke-Regel: RS-Linie bricht 50-Tage-Linie",
     "tranche_worst_day_high_volume": "Volumenregel: größter Tagesverlust mit erhöhtem Volumen",
     "tranche_personality_changed": "Persönlichkeits-Check",
@@ -287,7 +287,7 @@ BOOK_REFERENCES = {
     "warning_weak_rebounds": "Warnzeichen: schwache Erholungsversuche",
     "warning_downside_reversal": "Warnzeichen: Downside Reversal nahe Hoch",
     "warning_lower_lows": "Warnzeichen: drei bis vier tiefere Tiefs ohne Rebound",
-    "watch_under_sma21_1_2": "Watch: ein bis zwei Tage unter 21-Tage-Linie",
+    "watch_under_ema21_1_2": "Watch: ein bis zwei Tage unter 21-EMA",
     "watch_drawdown_5_8": "Watch: Drawdown 5-8% vom Hoch",
     "watch_up_down_volume": "Watch: Up/Down-Volume-Ratio < 1,0",
     "watch_distribution_days": "Watch: vier oder mehr Distribution-Tage in 25 Sessions",
@@ -629,7 +629,7 @@ def _build_stop_price(regime: str, metrics: dict, metrics_payload: dict, manual_
     current = _metric(metrics, "current_price")
     pivot = _safe_float(_manual_value(manual_data, metrics_payload, "pivot"))
     low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload, "low_day_1"))
-    sma21 = _metric(metrics, "sma21")
+    ema21 = _metric(metrics, "ema21")
     sma50 = _metric(metrics, "sma50")
     weekly_sma10 = _metric(metrics, "weekly_sma10")
 
@@ -640,11 +640,11 @@ def _build_stop_price(regime: str, metrics: dict, metrics_payload: dict, manual_
     if regime == "Defensiv":
         return highest_valid(buy_price * 0.93 if buy_price else None, low_day_1)
     if regime == "Schutz":
-        candidates = [v for v in [pivot, sma21] if v is not None and v > 0]
+        candidates = [v for v in [pivot, ema21] if v is not None and v > 0]
         if current and candidates:
             below = [v for v in candidates if v <= current]
             return max(below) if below else max(candidates)
-        return highest_valid(pivot, sma21)
+        return highest_valid(pivot, ema21)
     if regime == "Erste Gewinnmitnahme":
         return buy_price if buy_price > 0 else None
     if regime == "Trailing":
@@ -657,15 +657,15 @@ def _build_stop_price(regime: str, metrics: dict, metrics_payload: dict, manual_
 def _build_trigger_prices(regime: str, metrics: dict, metrics_payload: dict, manual_data: dict, stop_price):
     low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload, "low_day_1"))
     low_day_0 = _safe_float(_manual_value(manual_data, metrics_payload, "low_day_0"))
-    sma21 = _metric(metrics, "sma21")
+    ema21 = _metric(metrics, "ema21")
     sma50 = _metric(metrics, "sma50")
     weekly_sma10 = _metric(metrics, "weekly_sma10")
     if regime == "Defensiv":
         return low_day_1 or stop_price, low_day_0 or stop_price
     if regime == "Schutz":
-        return sma21 or stop_price, low_day_0 or stop_price
+        return ema21 or stop_price, low_day_0 or stop_price
     if regime == "Erste Gewinnmitnahme":
-        return sma21 or stop_price, sma50 or stop_price
+        return ema21 or stop_price, sma50 or stop_price
     if regime == "Trailing":
         return sma50 or weekly_sma10 or stop_price, weekly_sma10 or stop_price
     return weekly_sma10 or stop_price, weekly_sma10 or stop_price
@@ -694,15 +694,15 @@ def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = 
             score -= 30; reasons.append("P&L < -7%")
 
     current = _metric(metrics, "current_price")
-    sma21 = _metric(metrics, "sma21")
+    ema21 = _metric(metrics, "ema21")
     sma50 = _metric(metrics, "sma50")
     low_day_1 = _safe_float(_manual_value(manual_data, metrics_payload or {}, "low_day_1"))
 
-    if current is not None and sma21 is not None:
-        if current >= sma21:
-            score += 8; reasons.append("Kurs >= 21-MA")
+    if current is not None and ema21 is not None:
+        if current >= ema21:
+            score += 8; reasons.append("Kurs >= 21-EMA")
         else:
-            score -= 12; reasons.append("Kurs < 21-MA")
+            score -= 12; reasons.append("Kurs < 21-EMA")
     if current is not None and sma50 is not None:
         if current >= sma50:
             score += 6; reasons.append("Kurs >= 50-MA")
@@ -722,14 +722,14 @@ def compute_sell_health_score(metrics_payload: dict, manual_data: dict | None = 
         score -= 5; reasons.append("Drawdown 8-12%")
 
     rs_line = _metric(metrics, "rs_line")
-    rs_ma21 = _metric(metrics, "rs_ma21")
+    rs_ema21 = _metric(metrics, "rs_ema21")
     rs_ma50 = _metric(metrics, "rs_ma50")
-    days_under_rs21 = int(_metric(metrics, "days_under_rs_ma21", 0) or 0)
-    if rs_line is not None and rs_ma21 is not None and rs_ma50 is not None:
-        if rs_line >= rs_ma21 and rs_line >= rs_ma50 and days_under_rs21 == 0:
+    days_under_rs21 = int(_metric(metrics, "days_under_rs_ema21", 0) or 0)
+    if rs_line is not None and rs_ema21 is not None and rs_ma50 is not None:
+        if rs_line >= rs_ema21 and rs_line >= rs_ma50 and days_under_rs21 == 0:
             rs_trend = "hoch"
             score += 10; reasons.append("RS hoch")
-        elif rs_line < rs_ma21 or rs_line < rs_ma50 or days_under_rs21 >= 3:
+        elif rs_line < rs_ema21 or rs_line < rs_ma50 or days_under_rs21 >= 3:
             rs_trend = "runter"
             score -= 12; reasons.append("RS runter/unter MAs")
         else:
@@ -930,10 +930,10 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
             ))
 
     # LM-native watch signals (incl. pattern #11 Distribution-Tage).
-    days_under_sma21 = int(_metric(metrics, "days_under_sma21", 0) or 0)
+    days_under_ema21 = int(_metric(metrics, "days_under_ema21", 0) or 0)
     drawdown = abs(_metric(metrics, "drawdown_from_high_since_buy_pct", 0.0) or 0.0)
-    if positive_pnl and 1 <= days_under_sma21 <= 2:
-        watch_signals.append(_signal("watch_under_sma21_1_2", "Ein bis zwei Tage unter 21-MA bei positivem P&L", strategy_key="lm_watch"))
+    if positive_pnl and 1 <= days_under_ema21 <= 2:
+        watch_signals.append(_signal("watch_under_ema21_1_2", "Ein bis zwei Tage unter 21-EMA bei positivem P&L", strategy_key="lm_watch"))
     if positive_pnl and 5 <= drawdown < 8:
         watch_signals.append(_signal("watch_drawdown_5_8", "Drawdown 5-8% vom Peak bei positivem P&L", strategy_key="lm_watch"))
     if (_metric(metrics, "up_down_volume_ratio_50") is not None) and (_metric(metrics, "up_down_volume_ratio_50") < 1.0):
@@ -969,9 +969,9 @@ def evaluate_sell_decision(metrics_payload: dict, manual_data: dict | None = Non
 
     stop_price = _build_stop_price(regime, metrics, metrics_payload or {}, manual_data, buy_price)
     next_tranche_trigger, full_exit = _build_trigger_prices(regime, metrics, metrics_payload or {}, manual_data, stop_price)
-    add_again_condition = "Erst nach Rückeroberung der 21-MA/10-Wochen-Linie und nachlassendem Verkaufsvolumen wieder aufstocken."
+    add_again_condition = "Erst nach Rückeroberung der 21-EMA/10-Wochen-Linie und nachlassendem Verkaufsvolumen wieder aufstocken."
     if regime in {"Defensiv", "Schutz"}:
-        add_again_condition = "Nur bei Rückkehr über Pivot/21-MA und stabilem Marktumfeld erneut aufstocken."
+        add_again_condition = "Nur bei Rückkehr über Pivot/21-EMA und stabilem Marktumfeld erneut aufstocken."
 
     all_signals = [*killer_signals, *tranche_signals, *warning_signals, *watch_signals]
     if killer_signals:
