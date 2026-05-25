@@ -21,7 +21,8 @@ jobs:
       contents: write
 
     env:
-      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      # Fallback auf Repository Variable, falls Secret (z. B. in Forks) nicht verfügbar ist.
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || vars.SEC_USER_AGENT }}
 
     steps:
       - name: Checkout repository
@@ -50,6 +51,10 @@ jobs:
         env:
           LARGE_HOLDER_MIN_VALUE_USD: ${{ github.event.inputs.large_holder_min_value_usd || '10000000' }}
         run: |
+          if [[ -z "${SEC_USER_AGENT}" ]]; then
+            echo "SEC_USER_AGENT fehlt. Bitte in den Repository Settings als Secret ODER Variable setzen (Format: '<Projektname> <kontakt@example.com>')." >&2
+            exit 1
+          fi
           python scripts/update_institutional_13f.py \
             --large-holder-min-value-usd "${LARGE_HOLDER_MIN_VALUE_USD}"
 
