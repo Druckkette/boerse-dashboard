@@ -866,12 +866,15 @@ def _update_todo_status(todo_id: str, done: bool) -> None:
     _set_workspace_todos(todos)
 
 
-def _workspace_last_save() -> datetime:
+def _workspace_last_save() -> datetime | None:
+    """Letzter persistierter Workspace-Speicher-Zeitstempel oder ``None``,
+    falls noch nie gespeichert. ``datetime.now()`` als Fallback würde dem
+    Nutzer fälschlich „vor 0 Min." anzeigen, obwohl nichts gespeichert ist."""
     raw = _get_cache_metadata(_get_price_store(), _workspace_meta_key("updated_at"), "")
     parsed = pd.to_datetime(raw, utc=True, errors="coerce") if raw else pd.NaT
     if pd.notna(parsed):
         return parsed.to_pydatetime()
-    return datetime.now(timezone.utc)
+    return None
 
 
 def _workspace_positions_df(positions: list[dict], settings: dict | None = None) -> pd.DataFrame:
@@ -902,7 +905,10 @@ def _workspace_positions_df(positions: list[dict], settings: dict | None = None)
     return pd.DataFrame(rows, columns=["ticker", "stueck", "einstand", "kaufdatum", "status", "pnl_pct", "wert", "currency"])
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def _usd_eur_rate() -> float:
+    """USD→EUR Wechselkurs aus Yahoo. Cached, da pro P&L-Berechnung
+    ohne Cache ein Yahoo-Roundtrip ausgelöst würde."""
     try:
         fx = yf.Ticker("EURUSD=X").history(period="5d")
         if fx is not None and len(fx) > 0:
@@ -1113,11 +1119,21 @@ def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.
         state["currency"] = row.get("currency", state["currency"])
         current_date = row.get("date")
 
-        if typ in {"BUY", "SELL_CANCELLED", "TRANSFER_IN"}:
+        if typ in {"BUY", "TRANSFER_IN"}:
             if state["shares"] <= 0:
                 state["first_buy_date"] = current_date
             state["shares"] += shares
             state["cost"] += shares * price
+        elif typ == "SELL_CANCELLED":
+            # Stornierter Verkauf: vorherigen SELL umkehren, NICHT wie BUY zum
+            # Verkaufspreis verbuchen. Andernfalls würde die Cost-Basis verfälscht.
+            # Pragmatischer Ansatz: Anteile mit aktuellem Durchschnittskurs zurück­buchen,
+            # damit der bestehende cost/shares-Schnitt erhalten bleibt.
+            current_avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else float(price)
+            if state["shares"] <= 0 and current_avg <= 0:
+                current_avg = float(price)
+            state["shares"] += shares
+            state["cost"] += shares * current_avg
         elif typ in {"SELL", "TRANSFER_OUT"}:
             sell_shares = min(max(shares, 0.0), max(state["shares"], 0.0))
             avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else 0.0
@@ -2154,7 +2170,7 @@ def _beta_from_close_series(close: pd.Series, benchmark_close: pd.Series, window
         if close is None or benchmark_close is None or len(close) < 20 or len(benchmark_close) < 20:
             return np.nan
         joined = pd.concat(
-            [close.pct_change().rename("asset"), benchmark_close.pct_change().rename("bench")],
+            [close.pct_change(fill_method=None).rename("asset"), benchmark_close.pct_change(fill_method=None).rename("bench")],
             axis=1,
             join="inner",
         ).dropna()
@@ -2247,7 +2263,7 @@ def _portfolio_symbol_metrics(ticker: str) -> dict:
     latest_price = _safe_float(series.iloc[-1], np.nan) if len(series) else np.nan
     atr_pct = np.nan
     if len(series) >= 22 and not np.isnan(latest_price) and latest_price > 0:
-        atr_pct = float(series.pct_change().abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
+        atr_pct = float(series.pct_change(fill_method=None).abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
     spx = _fetch_close_history("^GSPC", datetime.now() - timedelta(days=260), datetime.now())
     beta = _beta_from_close_series(series, spx)
     name = ticker
@@ -2299,7 +2315,7 @@ def _bulk_portfolio_metrics(tickers: tuple[str, ...]) -> dict[str, dict]:
             if latest_price and not np.isnan(latest_price) and not np.isnan(atr_val):
                 atr_pct = float(atr_val / latest_price * 100)
         if np.isnan(atr_pct) and len(frame) >= 22 and latest_price and not np.isnan(latest_price):
-            atr_pct = float(pd.to_numeric(frame["Close"], errors="coerce").pct_change().abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
+            atr_pct = float(pd.to_numeric(frame["Close"], errors="coerce").pct_change(fill_method=None).abs().rolling(21).mean().iloc[-1] * 100 * 1.6)
         beta = _beta_from_close_series(pd.to_numeric(frame["Close"], errors="coerce"), spx_close)
         out[ticker] = {
             "ticker": ticker,
@@ -2390,7 +2406,10 @@ def _build_portfolio_snapshot(positions: list[dict], cash_balance: float = 0.0, 
         if not np.isnan(row["beta"]) and not np.isnan(row["atr_pct"]) and not np.isnan(spx_atr_pct) and spx_atr_pct > 0:
             score = 0.60 * row["beta"] + 0.40 * (row["atr_pct"] / spx_atr_pct)
         risk_contribution = weight * score if not np.isnan(weight) and not np.isnan(score) else np.nan
-        max_weight = (target_risk_contribution / score) if not np.isnan(score) and score > 0 else np.nan
+        # Bei sehr niedrigem Score ergäbe sich rechnerisch ein max_weight > 1, was als
+        # „mehr als das gesamte Depot" absurd ist; deshalb auf 1.0 (= 100 %) cappen.
+        max_weight_raw = (target_risk_contribution / score) if not np.isnan(score) and score > 0 else np.nan
+        max_weight = min(1.0, max_weight_raw) if not np.isnan(max_weight_raw) else np.nan
         max_position_value = total_value * max_weight if not np.isnan(total_value) and not np.isnan(max_weight) else np.nan
         stop_distance_pct = ((row["current_price"] / row["stop_price"]) - 1) * 100 if not np.isnan(row["current_price"]) and not np.isnan(row["stop_price"]) and row["stop_price"] > 0 else np.nan
         position_risk_abs = row["shares"] * max(row["current_price"] - row["stop_price"], 0) if not np.isnan(row["current_price"]) and not np.isnan(row["stop_price"]) else np.nan
@@ -3218,10 +3237,13 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                         new_stop_pct_raw = row.get("Stopp %")
                         if new_stop_pct_raw is not None and pd.notna(new_stop_pct_raw):
                             new_stop_pct = float(new_stop_pct_raw)
-                            current_stop_pct = float(_safe_float(existing.get("stop_pct"), 0.0) or 0.0)
+                            # _safe_float gibt schon einen Default (0.0); zusätzliches
+                            # ``or 0.0`` würde einen legitimen Stop-Pct von 0 als
+                            # „unset" interpretieren und nie übernehmen lassen.
+                            current_stop_pct = float(_safe_float(existing.get("stop_pct"), 0.0))
                             if abs(new_stop_pct - current_stop_pct) > 1e-6:
                                 update["stop_pct"] = new_stop_pct
-                                buy_price_existing = float(_safe_float(existing.get("buy_price"), 0.0) or 0.0)
+                                buy_price_existing = float(_safe_float(existing.get("buy_price"), 0.0))
                                 if buy_price_existing > 0:
                                     update["stop_price"] = buy_price_existing * (1 - new_stop_pct / 100)
                                 changed = True
@@ -3332,8 +3354,12 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                         "note": note,
                     })
                     if buy_delta_value > 0:
+                        # Verfügbarkeit VOR der Cash-Korrektur prüfen — sonst zeigt
+                        # die Warnung den bereits reduzierten Stand und feuert
+                        # falsch (oder gar nicht).
+                        available_cash_before = float(settings.get("cash_balance", 0.0))
                         new_cash = _adjust_cash_balance(-buy_delta_value)
-                        if buy_delta_value > float(settings.get("cash_balance", 0.0)):
+                        if buy_delta_value > available_cash_before:
                             st.warning(f"Kaufvolumen ({buy_delta_value:,.2f} €) überstieg den verfügbaren Cashbestand. Cash wurde auf {new_cash:,.2f} € begrenzt.")
                     st.success(f"{pos_ticker} gespeichert.")
                     st.rerun()
@@ -4295,7 +4321,7 @@ def _sector_period_returns(closes, mode="daily"):
     """Return daily changes or weekly average daily changes for sector ETFs."""
     if closes is None or len(closes) < 5: return None
 
-    pct = closes.pct_change() * 100
+    pct = closes.pct_change(fill_method=None) * 100
     pct = pct.dropna(how="all")
     if mode == "weekly":
         pct = pct.resample("W-FRI").mean().dropna(how="all")
@@ -4519,9 +4545,52 @@ def _fetch_quarterly_sec_companyfacts(ticker):
             ser = pd.Series({k: v[1] for k, v in by_end.items()})
             return ser.sort_index(ascending=False)
 
-        eps_series = _extract_quarters(eps_concepts, ["USD/shares"])
-        rev_series = _extract_quarters(rev_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
-        ni_series = _extract_quarters(ni_concepts, ["USD"], duration_filter=lambda d: 75 <= d <= 110)
+        quarter_duration = lambda d: 75 <= d <= 110  # noqa: E731 — kompakte Quartalsbreite
+        annual_duration = lambda d: 350 <= d <= 380  # noqa: E731 — 10-K-Annual-Filings
+
+        def _q4_from_annual(quarter_series, annual_series):
+            """Q4 wird in 10-K-Filings als YTD/Annual gemeldet; rekonstruiere
+            Q4 = Annual − (Q1 + Q2 + Q3) für jedes Jahr, in dem alle drei
+            Vorquartale + ein Annual vorliegen."""
+            if quarter_series is None or annual_series is None or annual_series.empty:
+                return quarter_series
+            updates = {}
+            existing = set(quarter_series.index)
+            quarter_by_year = quarter_series.groupby(quarter_series.index.year)
+            for year, ann_value in annual_series.items():
+                yr = pd.Timestamp(year).year
+                if yr not in quarter_by_year.groups:
+                    continue
+                rows = quarter_by_year.get_group(yr)
+                if len(rows) < 3:
+                    continue
+                # nur erstes drei Quartale heranziehen (Q1-Q3)
+                first_three = rows.sort_index().head(3)
+                q4_end = pd.Timestamp(year)
+                if q4_end in existing:
+                    continue
+                try:
+                    q4_val = float(ann_value) - float(first_three.sum())
+                except (TypeError, ValueError):
+                    continue
+                updates[q4_end] = q4_val
+            if not updates:
+                return quarter_series
+            combined = pd.concat([quarter_series, pd.Series(updates)])
+            return combined.sort_index(ascending=False)
+
+        # EPS-Concepts: ohne Duration-Filter würden YTD-Werte (Q3-YTD ~270 Tage)
+        # fälschlich als Q3-Wert akzeptiert.
+        eps_series = _extract_quarters(eps_concepts, ["USD/shares"], duration_filter=quarter_duration)
+        eps_annual = _extract_quarters(eps_concepts, ["USD/shares"], duration_filter=annual_duration)
+        rev_series = _extract_quarters(rev_concepts, ["USD"], duration_filter=quarter_duration)
+        rev_annual = _extract_quarters(rev_concepts, ["USD"], duration_filter=annual_duration)
+        ni_series = _extract_quarters(ni_concepts, ["USD"], duration_filter=quarter_duration)
+        ni_annual = _extract_quarters(ni_concepts, ["USD"], duration_filter=annual_duration)
+        # Q4 aus 10-K rekonstruieren (Annual − Q1 − Q2 − Q3).
+        eps_series = _q4_from_annual(eps_series, eps_annual)
+        rev_series = _q4_from_annual(rev_series, rev_annual)
+        ni_series = _q4_from_annual(ni_series, ni_annual)
         eq_series = _extract_balance_sheet(eq_concepts, ["USD"])
 
         out = {}
@@ -5074,6 +5143,13 @@ def _set_neon_auto_update_enabled(store, enabled: bool) -> None:
         return
     _set_cache_metadata_many(store, {"neon_auto_update_enabled": "1" if enabled else "0"})
 
+def _is_neon_conn(conn) -> bool:
+    """Echte Backend-Erkennung: ``_get_cache_conn`` kann transparent von Neon
+    auf SQLite zurückfallen. SQL-Branches müssen sich am tatsächlichen Conn-Typ
+    orientieren, nicht ausschließlich an ``store["backend"]``."""
+    return conn is not None and not isinstance(conn, sqlite3.Connection)
+
+
 def _get_cache_conn(store):
     if store["backend"] == "neon":
         if psycopg2 is None:
@@ -5101,8 +5177,11 @@ def _init_price_cache_db(store):
     # against the intended backend — so the next call retries Neon once it's back.
     actual_backend = "sqlite" if isinstance(conn, sqlite3.Connection) else "neon"
     try:
-        cur = conn.cursor() if store["backend"] == "neon" else conn
-        if store["backend"] == "neon":
+        # Auch hier Backend anhand des tatsächlichen Conn-Typs wählen, damit
+        # ein Neon→SQLite-Fallback nicht in den Neon-Pfad mit %s-Platzhaltern läuft.
+        is_neon = actual_backend == "neon"
+        cur = conn.cursor() if is_neon else conn
+        if is_neon:
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS prices (
@@ -5195,7 +5274,7 @@ def _init_price_cache_db(store):
                 """
             )
 
-        if store["backend"] == "neon":
+        if is_neon:
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS refresh_jobs (
@@ -5247,7 +5326,7 @@ def _init_price_cache_db(store):
                 """
             )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_refresh_jobs_status_requested_at ON refresh_jobs(status, requested_at DESC)")
-        if store["backend"] == "neon":
+        if is_neon:
             cur.execute("ALTER TABLE prices ADD COLUMN IF NOT EXISTS high DOUBLE PRECISION")
             cur.execute("ALTER TABLE prices ADD COLUMN IF NOT EXISTS low DOUBLE PRECISION")
         else:
@@ -5268,7 +5347,11 @@ def _set_cache_metadata(store, key, value, *, conn=None):
     conn = conn or _get_cache_conn(store)
     try:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        if store["backend"] == "neon":
+        # _get_cache_conn kann bei nicht erreichbarem Neon transparent auf SQLite
+        # zurückfallen — Backend-Wahl daher anhand des tatsächlichen Conn-Typs,
+        # nicht ausschließlich anhand store["backend"].
+        use_neon = store.get("backend") == "neon" and not isinstance(conn, sqlite3.Connection)
+        if use_neon:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -5309,7 +5392,7 @@ def _get_cache_metadata(store, key, default=None):
     try:
         conn = _get_cache_conn(store)
         is_sqlite = isinstance(conn, sqlite3.Connection)
-        if store["backend"] == "neon" and not is_sqlite:
+        if store.get("backend") == "neon" and not is_sqlite:
             with conn.cursor() as cur:
                 cur.execute("SELECT value FROM app_metadata WHERE key=%s", (key,))
                 row = cur.fetchone()
@@ -5332,7 +5415,7 @@ def _get_cache_metadata_many(store, keys):
     try:
         conn = _get_cache_conn(store)
         is_sqlite = isinstance(conn, sqlite3.Connection)
-        if store["backend"] == "neon" and not is_sqlite:
+        if store.get("backend") == "neon" and not is_sqlite:
             placeholders = ", ".join(["%s"] * len(key_list))
             sql = f"SELECT key, value FROM app_metadata WHERE key IN ({placeholders})"
             with conn.cursor() as cur:
@@ -5793,6 +5876,13 @@ def export_relative_strength_csv_for_github(lookback_days=400, batch_size=220, r
     output_path.parent.mkdir(parents=True, exist_ok=True)
     export_df.to_csv(output_path, index=False)
 
+    # @st.cache_data(ttl=1800) auf load_external_rs_ratings_map() würde sonst
+    # bis zu 30 Minuten lang die alten RS-Werte zurückgeben.
+    try:
+        load_external_rs_ratings_map.clear()
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "requested": len(tickers),
@@ -5890,7 +5980,7 @@ def _create_refresh_job(store, job_type, requested_by="streamlit", payload=None,
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
     conn = _get_cache_conn(store)
     try:
-        if store["backend"] == "neon":
+        if store.get("backend") == "neon" and not isinstance(conn, sqlite3.Connection):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -5937,7 +6027,7 @@ def _update_refresh_job(store, job_id, **fields):
         return _get_refresh_job(store, job_id)
     conn = _get_cache_conn(store)
     try:
-        if store["backend"] == "neon":
+        if store.get("backend") == "neon" and not isinstance(conn, sqlite3.Connection):
             assignments = []
             values = []
             for key, value in cleaned.items():
@@ -5968,7 +6058,7 @@ def _update_refresh_job(store, job_id, **fields):
 def _get_refresh_job(store, job_id):
     conn = _get_cache_conn(store)
     try:
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM refresh_jobs WHERE job_id=%s", (job_id,))
                 row = cur.fetchone()
@@ -5985,7 +6075,7 @@ def _get_refresh_job(store, job_id):
 def _list_recent_refresh_jobs(store, limit=8):
     conn = _get_cache_conn(store)
     try:
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 cur.execute("SELECT * FROM refresh_jobs ORDER BY requested_at DESC LIMIT %s", (limit,))
                 rows = cur.fetchall()
@@ -6002,18 +6092,23 @@ def _list_recent_refresh_jobs(store, limit=8):
 def _get_active_refresh_job(store):
     conn = _get_cache_conn(store)
     try:
+        # Statuses dynamisch mit Platzhaltern bauen, damit das Hinzufügen eines
+        # weiteren Status (z. B. "skipped") nicht zu einem schwer auffindbaren
+        # Runtime-Fehler durch falsche Platzhalter-Anzahl führt.
         statuses = ("queued", "running")
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
+            placeholders = ", ".join(["%s"] * len(statuses))
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM refresh_jobs WHERE status IN (%s, %s) ORDER BY requested_at DESC LIMIT 1",
+                    f"SELECT * FROM refresh_jobs WHERE status IN ({placeholders}) ORDER BY requested_at DESC LIMIT 1",
                     statuses,
                 )
                 row = cur.fetchone()
                 cols = [desc[0] for desc in cur.description] if cur.description else []
         else:
+            placeholders = ", ".join(["?"] * len(statuses))
             cur = conn.execute(
-                "SELECT * FROM refresh_jobs WHERE status IN (?, ?) ORDER BY requested_at DESC LIMIT 1",
+                f"SELECT * FROM refresh_jobs WHERE status IN ({placeholders}) ORDER BY requested_at DESC LIMIT 1",
                 statuses,
             )
             row = cur.fetchone()
@@ -6128,7 +6223,7 @@ def _store_universe_members(store, universe, tickers):
     conn = _get_cache_conn(store)
     try:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM universe_members WHERE universe=%s", (universe,))
                 rows = [(universe, t, now) for t in tickers]
@@ -6157,7 +6252,7 @@ def _store_universe_members(store, universe, tickers):
 def _load_cached_universe_members(store, universe):
     conn = _get_cache_conn(store)
     try:
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT symbol FROM universe_members WHERE universe=%s ORDER BY symbol",
@@ -6183,7 +6278,7 @@ def _upsert_symbol_mapping(store, universe, source_symbol, yahoo_symbol=None, st
     conn = _get_cache_conn(store)
     try:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -6217,10 +6312,11 @@ def _upsert_symbol_mapping(store, universe, source_symbol, yahoo_symbol=None, st
 def _load_symbol_mappings(store, universe, status_filter=("mapped",)):
     conn = _get_cache_conn(store)
     try:
+        is_neon = _is_neon_conn(conn)
         params = [universe]
         status_sql = ""
         if status_filter:
-            if store["backend"] == "neon":
+            if is_neon:
                 status_sql = " AND status = ANY(%s)"
                 params.append(list(status_filter))
             else:
@@ -6229,10 +6325,10 @@ def _load_symbol_mappings(store, universe, status_filter=("mapped",)):
                 params.extend(list(status_filter))
         query = (
             "SELECT source_symbol, yahoo_symbol FROM symbol_mappings "
-            "WHERE universe=" + ("%s" if store["backend"] == "neon" else "?") +
+            "WHERE universe=" + ("%s" if is_neon else "?") +
             " AND yahoo_symbol IS NOT NULL AND TRIM(yahoo_symbol) <> ''" + status_sql
         )
-        if store["backend"] == "neon":
+        if is_neon:
             with conn.cursor() as cur:
                 cur.execute(query, tuple(params))
                 rows = cur.fetchall()
@@ -6795,7 +6891,7 @@ def _write_price_bundle_to_cache(store, bundle):
         return 0
     conn = _get_cache_conn(store)
     try:
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 execute_values(
                     cur,
@@ -6839,7 +6935,7 @@ def _read_cached_price_bundle(store, tickers, start_date, end_date):
     conn = _get_cache_conn(store)
     try:
         frames = []
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 for batch in _chunked(tickers, 700):
                     cur.execute(
@@ -6901,7 +6997,7 @@ def _get_cached_last_dates(store, tickers):
     conn = _get_cache_conn(store)
     try:
         out = {}
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 for batch in _chunked(tickers, 700):
                     cur.execute(
@@ -6932,7 +7028,7 @@ def _get_cached_price_field_counts(store, tickers, start_date, end_date):
     conn = _get_cache_conn(store)
     try:
         out = {}
-        if store["backend"] == "neon":
+        if _is_neon_conn(conn):
             with conn.cursor() as cur:
                 for batch in _chunked(tickers, 700):
                     cur.execute(
@@ -7016,9 +7112,12 @@ def get_live_universe_store_status(store_backend: str, store_label: str, last_re
         })
     counts = {"mapped": 0, "not_found": 0, "no_history": 0}
     try:
-        conn = _open_store_connection(store)
+        conn = _get_cache_conn(store)
         try:
-            if store["backend"] == "neon":
+            # _get_cache_conn kann auf SQLite zurückfallen (z. B. wenn Neon nicht
+            # erreichbar ist); dann muss auch hier der SQLite-Pfad genutzt werden.
+            backend = store.get("backend") if isinstance(store, dict) else None
+            if backend == "neon" and not isinstance(conn, sqlite3.Connection):
                 with conn.cursor() as cur:
                     cur.execute("SELECT status, COUNT(*) FROM symbol_mappings WHERE universe=%s GROUP BY status", (CACHE_UNIVERSE_NAME,))
                     rows = cur.fetchall()
@@ -7142,7 +7241,11 @@ def refresh_nyse_price_store(lookback_days=550, history_batch_size=140, recent_b
             rows_written += _write_price_bundle_to_cache(store, bundle)
         recent_batches += 1
 
-    final_last_dates = refreshed_dates if missing_history else last_dates
+    # Nach den Recent-Batches neu einlesen: erst dadurch sind Symbole erfasst,
+    # die ausschließlich im inkrementellen Refresh in den Cache gelangt sind.
+    final_last_dates = _get_cached_last_dates(store, tickers) if recent_targets else (
+        refreshed_dates if missing_history else last_dates
+    )
     loaded = len(final_last_dates)
     requested = len(tickers)
     coverage = loaded / max(requested, 1)
@@ -7414,7 +7517,7 @@ def add_indicators(df):
     df["EMA21"]=_ema(df["Close"],21);df["SMA50"]=_sma(df["Close"],50);df["SMA200"]=_sma(df["Close"],200)
     df["SMA10"]=_sma(df["Close"],10)
     df["ATR21"]=_atr(df,21);df["ATR_pct"]=df["ATR21"]/df["Close"]*100
-    df["Vol_SMA50"]=_sma(df["Volume"],50);df["Pct_Change"]=df["Close"].pct_change()*100
+    df["Vol_SMA50"]=_sma(df["Volume"],50);df["Pct_Change"]=df["Close"].pct_change(fill_method=None)*100
     rng=df["High"]-df["Low"];df["Closing_Range"]=np.where(rng>0,(df["Close"]-df["Low"])/rng,0.5)
     df["Dist_21EMA"]=(df["Close"]-df["EMA21"])/df["ATR21"]
     df["Dist_50SMA_pct"]=(df["Close"]-df["SMA50"])/df["SMA50"]*100
@@ -7432,7 +7535,9 @@ def add_indicators(df):
     df["Neg_Reversals_10d"]=df["Intraday_Reversal_Down"].rolling(10,min_periods=1).sum().astype(int)
     df["Pos_Reversals_10d"]=df["Intraday_Reversal_Up"].rolling(10,min_periods=1).sum().astype(int)
     df["Low_CR"]=df["Closing_Range"]<0.25;df["Low_CR_5d"]=df["Low_CR"].rolling(5,min_periods=1).sum().astype(int)
-    df["Up_Vol_Declining"]=(df["Close"]>df["Close"].shift(5))&(df["Volume"].diff().rolling(5).max()<0)
+    # „rückläufiges Volumen": mehrheitlich negative Volumendifferenzen — Original
+    # forderte .max()<0 (ALLE 5 Tage strikt fallend), was praktisch nie eintrat.
+    df["Up_Vol_Declining"]=(df["Close"]>df["Close"].shift(5))&(df["Volume"].diff().rolling(5, min_periods=5).mean()<0)
     return df
 
 def detect_distribution_days(df):
@@ -7567,14 +7672,21 @@ def build_volatility_dashboard(spx_df, vix_df=None, vixy_df=None):
     out["SPX_Close"] = spx_df["Close"]
     out["SPX_Ret_5d"] = spx_df["Close"].pct_change(5)
 
+    def _safe_bool_col(frame, col):
+        # DataFrame.get(col, False) gibt einen rohen ``False`` zurück, wenn die
+        # Spalte fehlt — auf einem bool ist ``.fillna`` ein AttributeError.
+        if col in frame.columns:
+            return frame[col].fillna(False)
+        return pd.Series(False, index=frame.index)
+
     if vix_df is not None and len(vix_df) > 0:
         v = vix_df.reindex(out.index).ffill()
         out["VIX_Close"] = v["Close"]
         out["VIX_Ret_5d"] = v.get("Ret_5d")
         out["VIX_PctRank252"] = v.get("PctRank252")
-        out["VIX_Is_Panic"] = v.get("Is_Panic", False).fillna(False)
-        out["VIX_Is_Calm"] = v.get("Is_Calm", False).fillna(False)
-        out["VIX_Regime"] = v.get("VIX_Regime", "Neutral")
+        out["VIX_Is_Panic"] = _safe_bool_col(v, "Is_Panic")
+        out["VIX_Is_Calm"] = _safe_bool_col(v, "Is_Calm")
+        out["VIX_Regime"] = v["VIX_Regime"] if "VIX_Regime" in v.columns else "Neutral"
     else:
         out["VIX_Close"] = np.nan
         out["VIX_Ret_5d"] = np.nan
@@ -7587,9 +7699,9 @@ def build_volatility_dashboard(spx_df, vix_df=None, vixy_df=None):
         x = vixy_df.reindex(out.index).ffill()
         out["VIXY_Close"] = x["Close"]
         out["VIXY_Ret_5d"] = x.get("Ret_5d")
-        out["VIXY_Stress_Confirmation"] = x.get("Stress_Confirmation", False).fillna(False)
-        out["VIXY_Carry_Decay"] = x.get("Carry_Decay", False).fillna(False)
-        out["VIXY_State"] = x.get("VIXY_State", "Gemischt")
+        out["VIXY_Stress_Confirmation"] = _safe_bool_col(x, "Stress_Confirmation")
+        out["VIXY_Carry_Decay"] = _safe_bool_col(x, "Carry_Decay")
+        out["VIXY_State"] = x["VIXY_State"] if "VIXY_State" in x.columns else "Gemischt"
     else:
         out["VIXY_Close"] = np.nan
         out["VIXY_Ret_5d"] = np.nan
@@ -8037,7 +8149,7 @@ def compute_breadth_from_components(components):
         if lows is not None and not lows.empty:
             lows = lows[common_cols]
 
-    pct = closes.pct_change()
+    pct = closes.pct_change(fill_method=None)
     results = pd.DataFrame(index=closes.index)
 
     results["Advancers"] = (pct > 0).sum(axis=1)
@@ -8074,8 +8186,10 @@ def compute_breadth_from_components(components):
 
     sma50 = closes.rolling(50, min_periods=50).mean()
     sma200 = closes.rolling(200, min_periods=200).mean()
-    valid50 = sma50.notna().sum(axis=1).replace(0, np.nan)
-    valid200 = sma200.notna().sum(axis=1).replace(0, np.nan)
+    # Nenner symmetrisch zum Zähler: nur Ticker zählen, für die sowohl Close als
+    # auch SMA verfügbar sind. Sonst senkt ein NaN-Close den Anteil künstlich.
+    valid50 = (closes.notna() & sma50.notna()).sum(axis=1).replace(0, np.nan)
+    valid200 = (closes.notna() & sma200.notna()).sum(axis=1).replace(0, np.nan)
     results["Pct_Above_50SMA"] = (closes > sma50).sum(axis=1) / valid50 * 100
     results["Pct_Above_200SMA"] = (closes > sma200).sum(axis=1) / valid200 * 100
 
@@ -8183,7 +8297,9 @@ def _quarterly_yoy_growth(qi, field, qe=None, ed=None, qraw=None):
         if not ordered_keys:
             return []
 
-        anchor_q = ordered_keys[0][1]
+        # Anker = jüngstes (Jahr, Quartal) absolut, nicht „erstes eingelesenes".
+        # Sonst hängt der YoY-Vergleich von der Lese-Reihenfolge des Datenproviders ab.
+        _, anchor_q = max(bucket.keys(), key=lambda yq: (yq[0], yq[1]))
         same_q_points = sorted([(y, bucket[(y, q)]) for (y, q) in bucket.keys() if q == anchor_q], key=lambda t: t[0], reverse=True)
         if len(same_q_points) < 2:
             return []
@@ -8907,7 +9023,7 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
     else:
         checks.append(("Dollar-Volumen ≥ $30 Mio.", False, "Nicht verfügbar"))
 
-    pc = df["Close"].pct_change()
+    pc = df["Close"].pct_change(fill_method=None)
     uv = df["Volume"].where(pc > 0).tail(50).sum(); dv = df["Volume"].where(pc < 0).tail(50).sum()
     if dv > 0:
         udv = uv / dv
@@ -8996,9 +9112,11 @@ def evaluate_technicals(df, info, spx_df=None, rs_ctx=None, rs_universe_scores=N
         checks.append(("CMF Rating A oder B", False, "Nicht verfügbar"))
 
     e21 = df["Close"].ewm(span=21).mean().iloc[-1]
-    s10 = df["Close"].rolling(10).mean().iloc[-1]
-    s50 = df["Close"].rolling(50).mean().iloc[-1]
-    s200 = df["Close"].rolling(200).mean().iloc[-1]
+    # min_periods explizit: bei kurzer Historie liefert .rolling(200) sonst stets NaN
+    # (Default min_periods == window) und der gesamte 200er-Block bleibt unbewertet.
+    s10 = df["Close"].rolling(10, min_periods=10).mean().iloc[-1]
+    s50 = df["Close"].rolling(50, min_periods=50).mean().iloc[-1]
+    s200 = df["Close"].rolling(200, min_periods=200).mean().iloc[-1] if len(df) >= 200 else float("nan")
 
     for nm, mv in [("10-SMA", s10), ("21-EMA", e21), ("50-SMA", s50), ("200-SMA", s200)]:
         if not np.isnan(mv):
@@ -9412,7 +9530,7 @@ def evaluate_chart_signs(df, rs_ctx=None):
     signs = {"positiv": [], "negativ": [], "neutral": []}
     if len(df) < 50: return signs
     c = df["Close"]; h = df["High"]; l = df["Low"]; o = df["Open"]; v = df["Volume"]
-    pct = c.pct_change(); vol_avg = v.rolling(50).mean()
+    pct = c.pct_change(fill_method=None); vol_avg = v.rolling(50).mean()
     ema21 = c.ewm(span=21).mean(); sma50 = c.rolling(50).mean(); sma200 = c.rolling(200).mean()
     rng = h - l; cr_s = pd.Series(np.where(rng > 0, (c - l) / rng, 0.5), index=df.index)
     engulf = _detect_recent_engulfing(df, lookback=15)
@@ -9516,7 +9634,7 @@ def evaluate_chart_signs(df, rs_ctx=None):
         if d50 > 15: signs["negativ"].append(("Großer Abstand zu Durchschnitten", f"{d50:+.1f}% zur 50-SMA"))
 
     wc = c.resample("W-FRI").last().dropna()
-    if len(wc) >= 6 and (wc.pct_change().tail(5) > 0).all():
+    if len(wc) >= 6 and (wc.pct_change(fill_method=None).tail(5) > 0).all():
         signs["positiv"].append(("5 positive Wochen in Folge", ""))
 
     if not np.isnan(s50) and abs(c.iloc[-1] / s50 - 1) < 0.01: signs["neutral"].append(("Rückkehr zur 50-Tage-Linie", ""))
@@ -10332,18 +10450,19 @@ def _tab_aktienbewertung():
             date_str = next_earn["date"].strftime("%d.%m.%Y")
         except Exception:
             date_str = str(next_earn["date"])
+        when_text = "heute" if td == 0 or cd == 0 else f"in {td} Handelstagen / {cd} Kalendertagen"
         if td <= 5:
             st.error(
-                f"⚠️ Nächste Quartalszahlen am {date_str} (in {td} Handelstagen / {cd} Kalendertagen). "
+                f"⚠️ Nächste Quartalszahlen am {date_str} ({when_text}). "
                 f"Buch Kap. 5.1: Kein Einstieg kurz vor Quartalszahlen ohne Gewinnpolster."
             )
         elif td <= 14:
             st.warning(
-                f"📅 Nächste Quartalszahlen am {date_str} (in {td} Handelstagen / {cd} Kalendertagen). "
+                f"📅 Nächste Quartalszahlen am {date_str} ({when_text}). "
                 f"Buch Kap. 5.1: Risiko beim Einstieg vor Quartalszahlen erhöht."
             )
         else:
-            st.info(f"📅 Nächste Quartalszahlen am {date_str} (in {td} Handelstagen / {cd} Kalendertagen).")
+            st.info(f"📅 Nächste Quartalszahlen am {date_str} ({when_text}).")
 
     atr_s = _atr(df, 21)
     atr_val = atr_s.iloc[-1] if len(atr_s) > 0 else np.nan
@@ -10536,11 +10655,13 @@ def _tab_aktienbewertung():
     dist_21 = (price / _ema21.iloc[-1] - 1) * 100 if pd.notna(_ema21.iloc[-1]) and _ema21.iloc[-1] else np.nan
     dist_50 = (price / _sma50.iloc[-1] - 1) * 100 if pd.notna(_sma50.iloc[-1]) and _sma50.iloc[-1] else np.nan
     dist_200 = (price / _sma200.iloc[-1] - 1) * 100 if pd.notna(_sma200.iloc[-1]) and _sma200.iloc[-1] else np.nan
-    if chart_score >= 3:
+    # Verdict am angezeigten 0–100-Score ausrichten, damit Header und Karten-Tone
+    # nicht widersprechen (sonst „85/100 — Gemischt").
+    if chart_score_100 >= 75:
         chart_verdict, chart_color = "Starkes Chartbild", "#22c55e"
-    elif chart_score >= 1:
+    elif chart_score_100 >= 55:
         chart_verdict, chart_color = "Leicht positiv", "#22c55e"
-    elif chart_score >= -1:
+    elif chart_score_100 >= 45:
         chart_verdict, chart_color = "Gemischt", "#f59e0b"
     else:
         chart_verdict, chart_color = "Schwaches Chartbild", "#ef4444"
@@ -10588,7 +10709,9 @@ def _tab_aktienbewertung():
                 f'10-SMA: {"ja" if pd.notna(_sma10.iloc[-1]) and price > _sma10.iloc[-1] else "nein"} · '
                 f'Ordnung 21>50>200: {"ja" if pd.notna(_ema21.iloc[-1]) and pd.notna(_sma50.iloc[-1]) and pd.notna(_sma200.iloc[-1]) and _ema21.iloc[-1] > _sma50.iloc[-1] > _sma200.iloc[-1] else "nein"}'
             ),
-            tone="good" if ma_score_single_i >= 75 else "warn" if ma_score_single_i >= 45 else "bad",
+            # Schwelle 70 statt 75: konsistent mit Verdict-Header („Trend stark" ab 70),
+            # damit Karte nicht „warn" zeigt während Header bereits „stark" meldet.
+            tone="good" if ma_score_single_i >= 70 else "warn" if ma_score_single_i >= 45 else "bad",
             help_text="Gewichteter MA-Teilscore mit Schwerpunkt auf 200-SMA, danach 50-SMA, 21-EMA, MA-Ordnung und 10-SMA.",
             why_important="Der Score zeigt auf einen Blick, ob die Trendstruktur über mehrere Zeithorizonte konstruktiv ausgerichtet ist.",
             rule_note="Gewichtung: 200-SMA 30, 50-SMA 24, 21-EMA 18, MA-Ordnung 20, 10-SMA 8 Punkte.",
@@ -10598,10 +10721,10 @@ def _tab_aktienbewertung():
             label="Chartverhalten",
             value=f"{chart_score_100_i}/100",
             interpretation=chart_verdict,
-            tone="good" if chart_score >= 1 else "warn" if chart_score >= -1 else "bad",
+            tone="good" if chart_score_100 >= 55 else "warn" if chart_score_100 >= 45 else "bad",
             help_text=f"{np_} Positiv · {nn} Negativ · {nu} Neutral · Netto {chart_score:+d}",
             why_important="Verdichtet die Chartsignale zu einer schnellen Einordnung des aktuellen Chartbilds.",
-            rule_note="0–100 aus Maximalsignalen (17/17) und Pos/Neg-Verhältnis; die verbale Einordnung folgt dem Netto-Score.",
+            rule_note="0–100 aus Maximalsignalen (19 positive / 18 negative) und Pos/Neg-Verhältnis; die verbale Einordnung folgt dem Netto-Score.",
         )
 
     # --- Trennlinie: Zusatzindikatoren (kein Bestandteil des Gesamtscores) ---
@@ -11070,6 +11193,33 @@ def _render_sell_monitor_setup_panel(ticker: str, manual_data: dict) -> dict:
         if st.button("💾 Setup für diesen Ticker speichern", key=f"lm_setup_save_{ticker}", type="secondary"):
             new_manual = dict(get_position_manual_sell_data(ticker) or {})
             persistable = {k: v for k, v in active.items() if not isinstance(v, pd.Timestamp)}
+            # Monotonie analog Strategien-Hub erzwingen, damit User keine
+            # widersprüchlichen Schwellen persistieren können (z. B. „Stark"
+            # < „Start" beim ATR oder „Stufe2" < „Stufe1" beim Drawdown).
+            def _ensure_monotone(d, lower_key, upper_key):
+                if lower_key in d and upper_key in d:
+                    try:
+                        d[upper_key] = float(max(float(d[upper_key]), float(d[lower_key])))
+                    except (TypeError, ValueError):
+                        pass
+            _ensure_monotone(persistable, "ueberdehnung_atr_start", "ueberdehnung_atr_stark")
+            _ensure_monotone(persistable, "verlust_stufe_1", "verlust_stufe_2")
+            _ensure_monotone(persistable, "verlust_stufe_2", "verlust_stufe_3")
+            _ensure_monotone(persistable, "drawdown_stufe1_min_pct", "drawdown_stufe2_min_pct")
+            _ensure_monotone(persistable, "drawdown_stufe2_min_pct", "drawdown_stufe3_min_pct")
+            _ensure_monotone(persistable, "drawdown_tranche_stufe3_ohne_trendbruch_pct", "drawdown_tranche_stufe3_mit_trendbruch_pct")
+            _ensure_monotone(persistable, "gewinn_nachdenken_schwelle_bull_pct", "gewinn_teilverkauf_unten_bull_pct")
+            _ensure_monotone(persistable, "gewinn_teilverkauf_unten_bull_pct", "gewinn_teilverkauf_oben_bull_pct")
+            _ensure_monotone(persistable, "gewinn_nachdenken_schwelle_bear_pct", "gewinn_teilverkauf_unten_bear_pct")
+            _ensure_monotone(persistable, "gewinn_teilverkauf_unten_bear_pct", "gewinn_teilverkauf_oben_bear_pct")
+            _ensure_monotone(persistable, "ma_seq_unter_ma10_tranche_pct", "ma_seq_pendel_tranche_pct")
+            _ensure_monotone(persistable, "ma_seq_gewinnzone_min_pct", "ma_seq_gewinnzone_max_pct")
+            _ensure_monotone(persistable, "ma_abstand_schwelle_ma10_pct", "ma_abstand_schwelle_ma21_pct")
+            _ensure_monotone(persistable, "ma_abstand_schwelle_ma21_pct", "ma_abstand_schwelle_ma50_pct")
+            _ensure_monotone(persistable, "ma_abstand_schwelle_ma50_pct", "ma_abstand_schwelle_ma200_pct")
+            _ensure_monotone(persistable, "ma_abstand_schwelle_ma200_pct", "ma_abstand_klimax_ma200_vollausstieg_pct")
+            _ensure_monotone(persistable, "rs_pnl_tag_zu_woche", "rs_pnl_woche_zu_monat")
+            _ensure_monotone(persistable, "split_signal_schwelle_pct", "split_starke_schwelle_pct")
             new_manual["sell_setup"] = persistable
             save_position_manual_sell_data(ticker, new_manual)
             st.success("Setup gespeichert.")
@@ -11620,7 +11770,15 @@ def _render_sell_decision_live_monitor() -> None:
     rs21 = _safe_float(metrics.get("rs_ma21"), np.nan)
     rs50 = _safe_float(metrics.get("rs_ma50"), np.nan)
     if not np.isnan(rs_line) and not np.isnan(rs21) and not np.isnan(rs50):
-        rs_status = "Stark" if rs_line > rs21 > rs50 else "Schwach" if rs_line < rs21 or rs_line < rs50 else "Neutral"
+        # Klar disjunkte Klassifikation: STARK = über beiden MAs, SCHWACH = unter beiden,
+        # sonst NEUTRAL. Die Original-Bedingung („rs_line > rs21 > rs50") schloss
+        # Konstellationen wie rs_line>rs21 aber rs21<rs50 fälschlich aus „Stark" aus.
+        if rs_line > rs21 and rs_line > rs50:
+            rs_status = "Stark"
+        elif rs_line < rs21 and rs_line < rs50:
+            rs_status = "Schwach"
+        else:
+            rs_status = "Neutral"
     kpis = [
         {"title": "P&L", "value": _fmt_pct(metrics.get("pnl_pct")), "detail": "seit Einstieg"},
         {"title": "Drawdown", "value": _fmt_pct(metrics.get("drawdown_from_high_since_buy_pct")), "detail": "vom Hoch nach Kauf"},
@@ -11693,17 +11851,19 @@ def _render_sell_decision_live_monitor() -> None:
             )
             saved = st.form_submit_button("💾 Selbsteinschätzung speichern", type="primary", use_container_width=True)
             if saved:
-                save_position_manual_sell_data(selected_ticker, {
+                # Bestehende Daten (insb. sell_setup-Parameter aus dem LM-Hub)
+                # erhalten — sonst überschreibt save_position_manual_sell_data
+                # den kompletten Eintrag und löscht die zuvor gespeicherte
+                # Strategie-Konfiguration.
+                existing_manual = get_position_manual_sell_data(selected_ticker) or {}
+                merged = dict(existing_manual)
+                merged.update({
                     "ticker": selected_ticker,
-                    "pivot": None,
-                    "low_day_1": None,
-                    "low_day_0": None,
                     "market_environment": market_environment,
                     "industry_group_status": industry_status,
                     "personality_changed": personality_changed,
-                    "strength_checkboxes": {},
-                    "warning_checkboxes": {},
                 })
+                save_position_manual_sell_data(selected_ticker, merged)
                 st.success("Selbsteinschätzung gespeichert.")
                 st.rerun()
 
@@ -12088,11 +12248,21 @@ def _render_sell_decision_post_mortem() -> None:
         )
     trade = {"ticker": ticker, "buy_date": str(buy_date), "buy_price": buy_price, "sell_date": str(sell_date), "sell_price": sell_price, "shares": shares or None, "pivot": pivot or None, "planned_stop": planned_stop or None}
     analysis = _analyze_post_mortem(trade, checks, metrics)
-    metric_cols = st.columns(2 if _is_mobile_client() else 4)
-    metric_cols[0].metric("Realisierter G/V", _fmt_pct(metrics.get("realized_pnl_percent")))
-    metric_cols[1 % len(metric_cols)].metric("Max. Gewinn", _fmt_pct(metrics.get("max_gain_percent")))
-    metric_cols[2 % len(metric_cols)].metric("Max. Drawdown", _fmt_pct(-abs(metrics.get("max_drawdown_percent") or 0)))
-    metric_cols[3 % len(metric_cols)].metric("Haltedauer", f"{int(metrics.get('holding_days') or 0)} Tage")
+    # Saubere 2x2- bzw. 1x4-Aufteilung: auf Mobile zwei Zeilen à zwei Spalten,
+    # statt die Metriken via Modulo-Index doppelt in Spalte 0/1 zu rendern.
+    if _is_mobile_client():
+        row1 = st.columns(2)
+        row1[0].metric("Realisierter G/V", _fmt_pct(metrics.get("realized_pnl_percent")))
+        row1[1].metric("Max. Gewinn", _fmt_pct(metrics.get("max_gain_percent")))
+        row2 = st.columns(2)
+        row2[0].metric("Max. Drawdown", _fmt_pct(-abs(metrics.get("max_drawdown_percent") or 0)))
+        row2[1].metric("Haltedauer", f"{int(metrics.get('holding_days') or 0)} Tage")
+    else:
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Realisierter G/V", _fmt_pct(metrics.get("realized_pnl_percent")))
+        metric_cols[1].metric("Max. Gewinn", _fmt_pct(metrics.get("max_gain_percent")))
+        metric_cols[2].metric("Max. Drawdown", _fmt_pct(-abs(metrics.get("max_drawdown_percent") or 0)))
+        metric_cols[3].metric("Haltedauer", f"{int(metrics.get('holding_days') or 0)} Tage")
 
     if _is_mobile_client():
         _render_post_mortem_list("Was gut lief", analysis["good"], "#16a34a")
@@ -12200,7 +12370,15 @@ def _render_sell_strategy_hub() -> None:
     effective_tief_tag_0 = manual_low_day_0 if not np.isnan(manual_low_day_0) and manual_low_day_0 > 0 else auto_tief_tag_0
     tief_tag_1_value = None if np.isnan(effective_tief_tag_1) else float(effective_tief_tag_1)
     tief_tag_0_value = None if np.isnan(effective_tief_tag_0) else float(effective_tief_tag_0)
-    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=tief_tag_1_value,tief_tag_0=tief_tag_0_value,peak=float(daily["high"].max()),realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
+    # Peak-Fallback: bei leerem daily-Frame (z. B. Kaufdatum in Zukunft / kein Kurs)
+    # liefert .max() NaN. Position.peak=NaN bricht später Drawdown-Berechnungen — daher None.
+    if daily is not None and not daily.empty and "high" in daily.columns:
+        _peak_value = float(daily["high"].max())
+        if np.isnan(_peak_value):
+            _peak_value = None
+    else:
+        _peak_value = None
+    p = Position(ticker=t,einstiegspreis=float(_safe_float(pos.get("buy_price"),0) or 0.0),einstiegsdatum=buy_date,stueckzahl=float(_safe_float(pos.get("shares"),0) or 0.0),pivot=_safe_float(effective_pivot),tief_tag_1=tief_tag_1_value,tief_tag_0=tief_tag_0_value,peak=_peak_value,realisierte_tranchen=[float(x.get("tranche_percent",0) or 0) for x in get_position_tranche_log(t)])
     alle = ["notbremse_verlust","gewinn_in_stufen","ma21_bruch","drawdown_vom_peak","ma_abstand","verlusttage_haeufung","groesster_anstieg_volumen","split_anstieg","erschoepfungsluecke","downside_reversal","stau_tage","rueckkehr_pivot","ma_bruch_defensiv","drei_verlustwochen","groesster_einbruch","rs_linie","ma_basierte_sequenz","einfach_halbe_position","misslungener_ausbruch_5stufen","einfache_verluststufen","atr_basiert"]
     strategie_info = {
         "notbremse_verlust": "Strategie 2 (Kap. 6.1): Marktabhängige Notbremse nach Verlusthöhe, die immer parallel zu allen anderen Regeln aktiv ist. Sobald die positionsbezogene P&L die Schwelle erreicht oder unterschreitet, wird ein Intraday-Vollausstieg (100%) ausgelöst. Standard-Schwellen: Bärisch 4%, Unsicher 5%, Bullisch 7%. Zusätzlich wird unterhalb der Schwelle eine konkrete Notbremse-Marke als kritischer Kurs angezeigt.",
@@ -12244,6 +12422,13 @@ def _render_sell_strategy_hub() -> None:
     ziel_atr = float(_ss(f"strat_hub_atr_mult_{t}", 3.0))
     atr_ueberdehnung_start = float(_ss(f"strat_hub_atr_ext_start_{t}", 3.0))
     atr_ueberdehnung_stark = float(_ss(f"strat_hub_atr_ext_strong_{t}", 4.0))
+    drawdown_stufe1_min_pct = float(_ss(f"strat_hub_dd_stage1_{t}", 8.0))
+    drawdown_stufe2_min_pct = float(_ss(f"strat_hub_dd_stage2_{t}", 12.0))
+    drawdown_stufe3_min_pct = float(_ss(f"strat_hub_dd_stage3_{t}", 15.0))
+    drawdown_tranche_stufe1_pct = float(_ss(f"strat_hub_dd_tranche1_{t}", 25.0))
+    drawdown_tranche_stufe2_pct = float(_ss(f"strat_hub_dd_tranche2_{t}", 33.0))
+    drawdown_tranche_stufe3_ohne_pct = float(_ss(f"strat_hub_dd_tranche3a_{t}", 50.0))
+    drawdown_tranche_stufe3_mit_pct = float(_ss(f"strat_hub_dd_tranche3b_{t}", 100.0))
     verlust_stufe_1 = float(_ss(f"strat_hub_loss_stage1_{t}", 3.0))
     verlust_stufe_2 = float(_ss(f"strat_hub_loss_stage2_{t}", 5.0))
     verlust_stufe_3 = float(_ss(f"strat_hub_loss_stage3_{t}", 7.0))
@@ -12431,6 +12616,14 @@ def _render_sell_strategy_hub() -> None:
             "ma_abstand_tranche_ma21_pct": float(ma_abstand_tranche_ma21_pct),
             "ma_abstand_tranche_ma50_pct": float(ma_abstand_tranche_ma50_pct),
             "ma_abstand_tranche_ma200_basis_pct": float(ma_abstand_tranche_ma200_basis_pct),
+            # Strategie 5 (drawdown_vom_peak): Schwellen werden monoton durchgereicht.
+            "drawdown_stufe1_min_pct": float(drawdown_stufe1_min_pct),
+            "drawdown_stufe2_min_pct": float(max(drawdown_stufe2_min_pct, drawdown_stufe1_min_pct)),
+            "drawdown_stufe3_min_pct": float(max(drawdown_stufe3_min_pct, max(drawdown_stufe2_min_pct, drawdown_stufe1_min_pct))),
+            "tranche_stufe1_pct": float(drawdown_tranche_stufe1_pct),
+            "tranche_stufe2_pct": float(drawdown_tranche_stufe2_pct),
+            "tranche_stufe3_ohne_trendbruch_pct": float(drawdown_tranche_stufe3_ohne_pct),
+            "tranche_stufe3_mit_trendbruch_pct": float(max(drawdown_tranche_stufe3_mit_pct, drawdown_tranche_stufe3_ohne_pct)),
     }
     res = verkaufs_empfehlung_gesamt(
         p,
@@ -12606,6 +12799,28 @@ def _render_sell_strategy_hub() -> None:
                         gewinn_nachdenken_schwelle_bear_pct = st.number_input("Nachdenkschwelle Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_think_bear_{t}")
                         gewinn_teilverkauf_unten_bear_pct = st.number_input("Gewinnzone unten Bärisch (%)", min_value=0.0, max_value=200.0, value=10.0, step=0.5, key=f"strat_hub_gainstep_lo_bear_{t}")
                         gewinn_teilverkauf_oben_bear_pct = st.number_input("Gewinnzone oben Bärisch (%)", min_value=0.0, max_value=300.0, value=15.0, step=0.5, key=f"strat_hub_gainstep_hi_bear_{t}")
+                elif key == "drawdown_vom_peak":
+                    st.markdown(
+                        """
+**Strategie 5 – Drawdown vom Peak (Kap. 6.2):**
+- **Stufe 1**: Erstes Sicherungssignal bei moderatem Rücksetzer vom Peak.
+- **Stufe 2**: Deutliche Reduktion bei fortgeschrittenem Drawdown.
+- **Stufe 3**: Harte Reduktion; bei zusätzlichem Trendbruch (Schluss unter 21-EMA) vollständiger Ausstieg.
+
+Die Schwellen werden monoton durchgereicht: `Stufe2 ≥ Stufe1`, `Stufe3 ≥ Stufe2`.
+                        """
+                    )
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.number_input("Stufe 1 ab (%)", min_value=1.0, max_value=50.0, value=8.0, step=0.5, key=f"strat_hub_dd_stage1_{t}", help="Drawdown vom Peak, ab dem die erste Tranche ausgelöst wird.")
+                        st.number_input("Tranche Stufe 1 (%)", min_value=1.0, max_value=100.0, value=25.0, step=1.0, key=f"strat_hub_dd_tranche1_{t}")
+                    with c2:
+                        st.number_input("Stufe 2 ab (%)", min_value=1.0, max_value=80.0, value=12.0, step=0.5, key=f"strat_hub_dd_stage2_{t}", help="Drawdown, ab dem die zweite Tranche zwingend ausgelöst wird.")
+                        st.number_input("Tranche Stufe 2 (%)", min_value=1.0, max_value=100.0, value=33.0, step=1.0, key=f"strat_hub_dd_tranche2_{t}")
+                    with c3:
+                        st.number_input("Stufe 3 ab (%)", min_value=1.0, max_value=100.0, value=15.0, step=0.5, key=f"strat_hub_dd_stage3_{t}", help="Drawdown, ab dem die harte Reduktion greift.")
+                        st.number_input("Tranche Stufe 3 ohne Trendbruch (%)", min_value=1.0, max_value=100.0, value=50.0, step=1.0, key=f"strat_hub_dd_tranche3a_{t}")
+                        st.number_input("Tranche Stufe 3 mit Trendbruch (%)", min_value=1.0, max_value=100.0, value=100.0, step=1.0, key=f"strat_hub_dd_tranche3b_{t}", help="Bei zusätzlichem Schluss unter 21-EMA – Komplettausstieg.")
                 elif key == "rueckkehr_pivot":
                     st.markdown(
                         """
@@ -13147,7 +13362,10 @@ def _tab_sektoranalyse():
 
     # Determine the last trading date from the data
     last_date = sector_closes.index[-1].strftime("%d.%m.%Y")
-    today = datetime.now().strftime("%d.%m.%Y")
+    # UTC, da sector_closes-Index ebenfalls tz-naive UTC ist; sonst meldet ein
+    # Server in einer Zeitzone vor UTC fälschlich „letzter Handelstag" obwohl
+    # gleicher Tag.
+    today = datetime.now(timezone.utc).strftime("%d.%m.%Y")
     date_note = f"Stand: {last_date}" + ("" if last_date == today else " (letzter Handelstag)")
     st.caption(date_note)
 
@@ -13640,9 +13858,13 @@ def _render_arbeitsbereich() -> None:
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.markdown("#### ⭐ Watchlist")
+        save_info = (
+            f"Letzte Speicherung {last_save.strftime('%d.%m.%Y · %H:%M UTC')}."
+            if last_save is not None
+            else "Noch nicht gespeichert."
+        )
         st.caption(
-            f"Letzte Speicherung {last_save.strftime('%d.%m.%Y · %H:%M UTC')}. "
-            "Die Tabelle nutzt dieselbe Logik wie „Aktienbewertung → Vergleich & Ranking“."
+            save_info + " Die Tabelle nutzt dieselbe Logik wie „Aktienbewertung → Vergleich & Ranking“."
         )
     with col_h2:
         if st.button("🔒 Sperren", key="ws_lock", use_container_width=True):

@@ -53,7 +53,12 @@ def _is_scheduled_request(requested_by: str) -> bool:
 
 
 def _is_neon_auto_update_allowed(store) -> bool:
-    if not isinstance(store, dict) or store.get("backend") != "neon":
+    # Fail-closed: ohne gültigen Store keine geplanten Auto-Updates ausführen.
+    if store is None:
+        return False
+    if not isinstance(store, dict):
+        return False
+    if store.get("backend") != "neon":
         return True
     return bool(app._is_neon_auto_update_enabled(store))
 
@@ -93,6 +98,18 @@ def main():
     scheduled_request = _is_scheduled_request(requested_by)
     if scheduled_request and not _is_neon_auto_update_allowed(store):
         print("Neon Auto-Update deaktiviert: geplanter GitHub-Lauf wird übersprungen.")
+        # Falls bereits ein konkreter Job übergeben wurde, status sauber auf
+        # „skipped" setzen, damit er nicht ewig in „queued" hängt.
+        if job_id:
+            try:
+                _mark_failed(
+                    store,
+                    job_id,
+                    "Neon Auto-Update deaktiviert — geplanter Lauf übersprungen.",
+                    {"skipped": True, "reason": "neon_auto_update_disabled"},
+                )
+            except Exception as cleanup_exc:
+                print(f"[warn] Job-Status konnte nicht aktualisiert werden: {cleanup_exc}")
         return
 
     if job_id:
@@ -144,8 +161,16 @@ def main():
         raise SystemExit(1)
     except Exception as exc:
         tb = traceback.format_exc()
-        result = {"error": f"{type(exc).__name__}: {exc}", "traceback": tb[-4000:]}
-        _mark_failed(store, job_id, result["error"], result)
+        # Truncation an UTF-8-Grenze, damit kein Multi-Byte-Zeichen mitten
+        # durchgeschnitten wird (würde bei JSON-Serialisierung sonst fehlschlagen).
+        tb_safe = tb.encode("utf-8")[-4000:].decode("utf-8", errors="ignore")
+        result = {"error": f"{type(exc).__name__}: {exc}", "traceback": tb_safe}
+        # Inner try/except: bei Folge-Fehler im Status-Update darf die
+        # Original-Exception nicht überdeckt werden.
+        try:
+            _mark_failed(store, job_id, result["error"], result)
+        except Exception as cleanup_exc:
+            print(f"[warn] _mark_failed konnte den Job nicht aktualisieren: {cleanup_exc}")
         raise
 
 

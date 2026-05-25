@@ -554,7 +554,11 @@ def _event_note(*parts) -> str:
 
 def _floor_allowed(value: float) -> int:
     value = max(0.0, min(100.0, float(value or 0.0)))
-    return max(level for level in ALLOWED_RECOMMENDATION_LEVELS if level <= value)
+    candidates = [level for level in ALLOWED_RECOMMENDATION_LEVELS if level <= value]
+    if not candidates:
+        # ALLOWED_RECOMMENDATION_LEVELS sollte stets 0 enthalten; defensiver Fallback.
+        return min(ALLOWED_RECOMMENDATION_LEVELS) if ALLOWED_RECOMMENDATION_LEVELS else 0
+    return max(candidates)
 
 
 def _next_allowed(value: int) -> int:
