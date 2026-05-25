@@ -500,7 +500,10 @@ def strategie_ma_bruch_defensiv(position,daten,wochen_daten):
         if dist>=max(2,atrp) and vr>=1.3: out.append(_signal("Klarer 50-MA-Bruch mit Volumen",50,"schluss",True,ma200,"Kap. 6.3 50-MA","Deutlich unter 50-MA bei erhöhtem Volumen — schrittweise reduzieren"))
         elif tage_unter_ma(daten,sma(daten["close"],50))>=3: out.append(_signal("3 Tage unter 50-MA ohne Rückeroberung",33,"schluss",True,ma200,"Kap. 6.3 50-MA","Drei-Tage-Frist verstrichen"))
     if len(wochen_daten)>=10 and tage_unter_ma(wochen_daten, sma(wochen_daten["close"],10))>=8: out.append(_signal("8+ Wochen unter 10-Wochen-Linie",100,"schluss",True,None,"Kap. 6.3 10-Wochen-Linie","Acht oder mehr Wochen ohne Rückeroberung — klares Schwächesignal"))
-    if ma200 and s<ma200: out.append(_signal("200-MA-Bruch" + (" mit hohem Volumen" if vr>=1.5 else " ohne Volumen"),100 if vr>=1.5 else 75,"schluss",True,None,"Kap. 6.3 200-MA","Langfristiger Aufwärtszyklus beendet — Kapitalerhalt" if vr>=1.5 else "200-MA gebrochen — auf sehr kleinen Rest reduzieren"))
+    # 200-MA-Bruch: Volumen-Schwelle bewusst weicher (1.3) — der 50-MA-Bruch nutzt
+    # bereits 1.3, und in volatilen Phasen wäre 1.5 zu restriktiv, um das
+    # 100%-Killer-Signal noch auszulösen.
+    if ma200 and s<ma200: out.append(_signal("200-MA-Bruch" + (" mit hohem Volumen" if vr>=1.3 else " ohne Volumen"),100 if vr>=1.3 else 75,"schluss",True,None,"Kap. 6.3 200-MA","Langfristiger Aufwärtszyklus beendet — Kapitalerhalt" if vr>=1.3 else "200-MA gebrochen — auf sehr kleinen Rest reduzieren"))
     ma200_valid = ma200_series.dropna()
     if len(ma200_valid) >= 20:
         ma200_richtung = float(ma200_valid.iloc[-1] - ma200_valid.iloc[-20])
@@ -539,7 +542,11 @@ def strategie_groesster_einbruch(
         else:
             out.append(_signal("Größter Tagesverlust seit Beginn",33,"schluss",True,tagestief(daten_seit),"Kap. 6.3","Defensive Reduktion"))
     if wochen_seit is not None and len(wochen_seit)>=12:
-        w=(wochen_seit["close"].shift(1)-wochen_seit["close"])/wochen_seit["close"].shift(1)*100; cur=float(w.iloc[-1]); mxw=float(w.iloc[1:-1].max()) if len(w)>3 else 0; wr=float(wochen_seit["volume"].iloc[-1]/wochen_seit["volume"].tail(12).mean())
+        w=(wochen_seit["close"].shift(1)-wochen_seit["close"])/wochen_seit["close"].shift(1)*100; cur=float(w.iloc[-1]); mxw=float(w.iloc[1:-1].max()) if len(w)>3 else 0
+        # Volumen relativ zur gesamten Historie (analog vol_verhaeltnis im Tagespfad),
+        # damit die Volumen-Bewertung nicht von der Halteperiode abhängt.
+        wochen_vol_basis = wochen_daten if wochen_daten is not None and len(wochen_daten) >= 12 else wochen_seit
+        wr=float(wochen_vol_basis["volume"].iloc[-1]/wochen_vol_basis["volume"].tail(12).mean())
         if cur>=mxw and wr>=float(wochenvol_ratio_schwelle): out.append(_signal("Größte Verlustwoche seit Beginn",66,"schluss",True,None,"Kap. 6.3","Wahrscheinliches Rally-Ende"))
     return out
 
