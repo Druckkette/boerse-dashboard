@@ -1468,12 +1468,18 @@ def _suggest_yahoo_ticker(isin: str, name: str, asset_class: str) -> str:
         return mapped
     if str(asset_class or "").upper() not in {"STOCK", "FUND"}:
         return ""
-    try:
-        candidates = search_symbol_candidates(name)
-        if candidates:
-            return _normalize_single_ticker(candidates[0].get("symbol", ""))
-    except Exception:
-        return ""
+
+    # Yahoo's search endpoint can resolve many TR ISINs directly.
+    # Prefer ISIN query over free-text names to avoid ambiguous matches.
+    for query in (str(isin or "").strip(), str(name or "").strip()):
+        if not query:
+            continue
+        try:
+            candidates = search_symbol_candidates(query)
+            if candidates:
+                return _normalize_single_ticker(candidates[0].get("symbol", ""))
+        except Exception:
+            continue
     return ""
 
 
