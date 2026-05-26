@@ -2742,8 +2742,8 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
             day_return = adjusted_profit / prev_value
         index_values.append(index_values[-1] * (1 + day_return))
     curve["portfolio_index"] = index_values
-    curve["portfolio_index_sma10"] = curve["portfolio_index"].rolling(10, min_periods=1).mean()
-    curve["portfolio_index_sma21"] = curve["portfolio_index"].rolling(21, min_periods=1).mean()
+    curve["portfolio_index_sma10"] = curve["portfolio_index"].rolling(10, min_periods=10).mean()
+    curve["portfolio_index_sma21"] = curve["portfolio_index"].rolling(21, min_periods=21).mean()
     if len(bench):
         aligned = bench.reindex(curve["date"].dt.normalize(), method="ffill")
         curve["sp500_close"] = aligned.values
@@ -2756,6 +2756,152 @@ def _build_reconstructed_portfolio_curve(positions: list[dict], cash_balance: fl
     else:
         curve["sp500_index"] = np.nan
     return curve
+
+
+def _resolve_isin_ticker_map(tx_df: pd.DataFrame, overrides: dict | None = None) -> tuple[dict[str, str], list[dict]]:
+    """Map ISINs from a Trade Republic transactions frame to Yahoo tickers.
+
+    Returns (isin → ticker) plus a per-ISIN diagnostics list with name/asset_class
+    for the UI. Overrides take precedence over ISIN_TO_YAHOO and the Yahoo search.
+    """
+    overrides = {str(k).upper().strip(): _normalize_single_ticker(str(v)) for k, v in (overrides or {}).items() if str(v or "").strip()}
+    if tx_df is None or tx_df.empty or "symbol" not in tx_df.columns:
+        return {}, []
+    df = tx_df.copy()
+    df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+    df = df[df["symbol"].ne("") & df["asset_class"].astype(str).str.upper().isin({"STOCK", "FUND"})]
+    if df.empty:
+        return {}, []
+    ticker_for: dict[str, str] = {}
+    diagnostics: list[dict] = []
+    for isin, group in df.groupby("symbol"):
+        name = str(group["name"].iloc[0] or "")
+        asset_class = str(group["asset_class"].iloc[0] or "").upper()
+        ticker = overrides.get(isin) or _suggest_yahoo_ticker(isin, name, asset_class)
+        ticker = _normalize_single_ticker(ticker)
+        if ticker:
+            ticker_for[isin] = ticker
+        diagnostics.append({
+            "isin": isin,
+            "name": name,
+            "asset_class": asset_class,
+            "ticker": ticker,
+        })
+    return ticker_for, diagnostics
+
+
+def _build_curve_from_transactions(
+    tx_df: pd.DataFrame,
+    current_cash: float,
+    isin_to_ticker: dict[str, str] | None = None,
+    end_date=None,
+) -> pd.DataFrame:
+    """Build a daily equity curve from a Trade Republic transactions CSV.
+
+    Walks transactions chronologically per ISIN to reconstruct daily shares,
+    multiplies by Yahoo close, adds a constant cash component supplied by the
+    user. Returns the same column shape as ``_build_reconstructed_portfolio_curve``
+    (date, depot_value, portfolio_index, portfolio_index_sma10/sma21, sp500_index).
+    """
+    if tx_df is None or tx_df.empty:
+        return pd.DataFrame()
+
+    df = tx_df.copy()
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
+    df["type"] = df["type"].astype(str).str.upper().str.strip()
+    df["asset_class"] = df["asset_class"].astype(str).str.upper().str.strip()
+    df["shares_num"] = pd.to_numeric(df.get("shares_num", df.get("shares")), errors="coerce").fillna(0.0)
+    df = df[df["asset_class"].isin({"STOCK", "FUND"})]
+    if df.empty:
+        return pd.DataFrame()
+
+    start_ts = pd.Timestamp(df["date"].min()).normalize()
+    end_ts = pd.Timestamp(end_date or datetime.now(timezone.utc).date()).normalize()
+    if end_ts < start_ts:
+        return pd.DataFrame()
+
+    bench = _fetch_close_history("^GSPC", start_ts, end_ts)
+    if len(bench):
+        calendar = pd.DatetimeIndex(bench.index).normalize().unique().sort_values()
+    else:
+        calendar = pd.DatetimeIndex(pd.date_range(start_ts, end_ts, freq="B"))
+    if len(calendar) == 0:
+        return pd.DataFrame()
+
+    isin_to_ticker = {str(k).upper().strip(): _normalize_single_ticker(v) for k, v in (isin_to_ticker or {}).items() if _normalize_single_ticker(v)}
+    ticker_tuple = tuple(dict.fromkeys(t for t in isin_to_ticker.values() if t))
+    close_map = _bulk_close_history_map(ticker_tuple, start_ts, end_ts) if ticker_tuple else {}
+
+    positions_value = pd.Series(0.0, index=calendar)
+    resolved_isins: list[str] = []
+    unresolved_isins: list[str] = []
+    for isin, group in df.groupby("symbol"):
+        ticker = isin_to_ticker.get(isin)
+        if not ticker:
+            unresolved_isins.append(isin)
+            continue
+        close = close_map.get(ticker)
+        if close is None or len(close) == 0:
+            close = _fetch_close_history(ticker, start_ts, end_ts)
+        if close is None or len(close) == 0:
+            unresolved_isins.append(isin)
+            continue
+        # Reconstruct cumulative shares from this ISIN's events.
+        shares_series = pd.Series(0.0, index=calendar)
+        running = 0.0
+        for row in group.sort_values("date").itertuples():
+            shares = abs(float(row.shares_num or 0.0))
+            typ = str(row.type or "").upper()
+            if typ in {"BUY", "TRANSFER_IN", "SPLIT", "SELL_CANCELLED"}:
+                running += shares
+            elif typ in {"SELL", "TRANSFER_OUT", "WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS", "DELISTED", "EXPIRATION"}:
+                running = max(running - shares, 0.0)
+            # DIVIDEND / unknown: no share change.
+            day = pd.Timestamp(row.date).normalize()
+            shares_series.loc[shares_series.index >= day] = running
+        aligned = close.reindex(calendar, method="ffill").ffill().bfill().fillna(0.0)
+        positions_value = positions_value.add(shares_series.values * aligned.values, fill_value=0.0)
+        resolved_isins.append(isin)
+
+    cash_value = max(float(current_cash or 0.0), 0.0)
+    curve = pd.DataFrame({
+        "date": calendar,
+        "positions_value": positions_value.values,
+        "cash": cash_value,
+    })
+    curve["depot_value"] = curve["positions_value"] + curve["cash"]
+
+    # Drop leading rows where there were no holdings yet (e.g., dates before any
+    # share was bought). Without this the index would normalize against a
+    # cash-only baseline and miss the entire first invested period.
+    first_invested = curve["positions_value"].gt(0).idxmax() if (curve["positions_value"] > 0).any() else None
+    if first_invested is not None and first_invested > 0:
+        curve = curve.loc[first_invested:].reset_index(drop=True)
+
+    if curve.empty or float(curve["depot_value"].iloc[0]) <= 0:
+        return pd.DataFrame()
+    base = float(curve["depot_value"].iloc[0])
+    curve["portfolio_index"] = curve["depot_value"] / base * 100
+    curve["portfolio_index_sma10"] = curve["portfolio_index"].rolling(10, min_periods=10).mean()
+    curve["portfolio_index_sma21"] = curve["portfolio_index"].rolling(21, min_periods=21).mean()
+
+    if len(bench):
+        bench_aligned = bench.reindex(curve["date"], method="ffill")
+        curve["sp500_close"] = bench_aligned.values
+        valid = curve["sp500_close"].dropna()
+        if len(valid):
+            curve["sp500_index"] = curve["sp500_close"] / float(valid.iloc[0]) * 100
+        else:
+            curve["sp500_index"] = np.nan
+    else:
+        curve["sp500_index"] = np.nan
+
+    curve.attrs["resolved_isins"] = resolved_isins
+    curve.attrs["unresolved_isins"] = unresolved_isins
+    return curve
+
 
 def _evaluate_position_engine(
     position: dict,
@@ -3479,11 +3625,192 @@ def _render_depot_positions_manager(state: dict | None = None) -> None:
                 st.info("Noch keine Cash-Flows erfasst.")
 
 
+def _render_depot_curve_chart(curve: pd.DataFrame, *, key: str, include_flow_cols: bool) -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=curve["date"], y=curve["portfolio_index"], mode="lines", name="Depotindex"))
+    fig.add_trace(go.Scatter(x=curve["date"], y=curve["portfolio_index_sma10"], mode="lines", name="10-Tage SMA", line=dict(width=1.6, dash="dot")))
+    fig.add_trace(go.Scatter(x=curve["date"], y=curve["portfolio_index_sma21"], mode="lines", name="21-Tage SMA", line=dict(width=1.6, dash="dash")))
+    if "sp500_index" in curve and curve["sp500_index"].notna().any():
+        fig.add_trace(go.Scatter(x=curve["date"], y=curve["sp500_index"], mode="lines", name="S&P 500 Index"))
+    apply_consistent_layout(fig, height=380, top_margin=20)
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=20, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        yaxis=dict(title="Index (Start = 100)", gridcolor=CHART_COLORS["grid"]),
+        xaxis=dict(title="", gridcolor=CHART_COLORS["grid"]),
+    )
+    st.plotly_chart(fig, width="stretch", key=key)
+
+    if include_flow_cols:
+        cols = ["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]
+        rename_map = {
+            "date": "Datum", "depot_value": "Depotwert", "deposit": "Einzahlung", "withdrawal": "Auszahlung",
+            "portfolio_index": "Depotindex", "portfolio_index_sma10": "SMA 10", "portfolio_index_sma21": "SMA 21", "sp500_index": "S&P 500",
+        }
+        column_config = {
+            "Datum": st.column_config.TextColumn("Datum", width="small"),
+            "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"),
+            "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f €"),
+            "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f €"),
+            "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f"),
+        }
+    else:
+        cols = ["date", "depot_value", "positions_value", "cash", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]
+        rename_map = {
+            "date": "Datum", "depot_value": "Depotwert", "positions_value": "Positionen", "cash": "Cash",
+            "portfolio_index": "Depotindex", "portfolio_index_sma10": "SMA 10", "portfolio_index_sma21": "SMA 21", "sp500_index": "S&P 500",
+        }
+        column_config = {
+            "Datum": st.column_config.TextColumn("Datum", width="small"),
+            "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"),
+            "Positionen": st.column_config.NumberColumn("Positionen", format="%.2f"),
+            "Cash": st.column_config.NumberColumn("Cash", format="%.2f €"),
+            "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f"),
+        }
+    available = [c for c in cols if c in curve.columns]
+    display = curve[available].copy()
+    display["date"] = pd.to_datetime(display["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    display = display.rename(columns=rename_map).round(2)
+    st.dataframe(display, width="stretch", hide_index=True, column_config=column_config)
+
+
+def _render_csv_curve_section(settings: dict) -> bool:
+    """CSV-basierte Depotkurve: TR-Transaktionsexport + Yahoo + separat erfragtes Cash.
+
+    Returns True if a curve was rendered (so the fallback can skip).
+    """
+    st.markdown("##### 📥 Trade-Republic-CSV als Datenbasis")
+    st.caption(
+        "Lade den Trade-Republic-Transaktionsexport hoch. Aus den BUY/SELL/Transfer-Ereignissen "
+        "rekonstruiert die App pro Handelstag den Bestand je Position, multipliziert mit den "
+        "Yahoo-Schlusskursen und kombiniert das Ergebnis mit dem unten erfragten Cash-Bestand. "
+        "Der Cash-Wert ist im Trade-Republic-Trade-CSV nicht enthalten und muss separat angegeben werden."
+    )
+
+    uploaded = st.file_uploader(
+        "Trade-Republic-Transaktionsexport (CSV)",
+        type=["csv"], key="pf_depot_curve_csv_upload",
+        help="Selbe Datei wie unter Positionen → CSV-Import. Wird nur für die Kurve verwendet, keine Positionen werden überschrieben.",
+    )
+    if uploaded is not None:
+        try:
+            parsed = _parse_transaction_export_csv(uploaded)
+            st.session_state["pf_depot_curve_tx_df"] = parsed
+            st.session_state["pf_depot_curve_tx_filename"] = uploaded.name
+        except ValueError as exc:
+            st.error(str(exc))
+
+    tx_df = st.session_state.get("pf_depot_curve_tx_df")
+    if not isinstance(tx_df, pd.DataFrame) or tx_df.empty:
+        st.info("Noch keine Trade-Republic-CSV geladen — die Depotkurve unten fällt auf die manuell gepflegten Positionen zurück.")
+        return False
+
+    filename = st.session_state.get("pf_depot_curve_tx_filename", "")
+    info_cols = st.columns([3, 1])
+    with info_cols[0]:
+        st.caption(f"Aktive Datei: **{filename or 'Transaktionen'}** · {len(tx_df):,} Buchungen")
+    with info_cols[1]:
+        if st.button("Datei verwerfen", key="pf_depot_curve_csv_reset", width="stretch"):
+            st.session_state.pop("pf_depot_curve_tx_df", None)
+            st.session_state.pop("pf_depot_curve_tx_filename", None)
+            st.session_state.pop("pf_depot_curve_isin_overrides", None)
+            st.rerun()
+
+    cash_default = _safe_float(settings.get("cash_balance"), 0.0)
+    end_default = datetime.now(timezone.utc).date()
+    ctrl_cash, ctrl_end = st.columns([1, 1])
+    with ctrl_cash:
+        cash_value = st.number_input(
+            "Aktueller Cash-Bestand (EUR)", min_value=0.0,
+            value=float(cash_default), step=100.0,
+            key="pf_depot_curve_cash_input",
+            help="Im TR-Trade-CSV ist der Cash-Bestand nicht enthalten. Trage hier deinen aktuellen Cash-Saldo ein — er wird als Konstante auf die Kurve addiert.",
+        )
+    with ctrl_end:
+        end_date = st.date_input(
+            "Enddatum", value=end_default,
+            key="pf_depot_curve_end_date",
+            help="Letzter Tag der Kurve. Standard: heute.",
+        )
+
+    overrides = st.session_state.get("pf_depot_curve_isin_overrides", {}) or {}
+    ticker_map, diagnostics = _resolve_isin_ticker_map(tx_df, overrides=overrides)
+
+    with st.expander("Ticker-Zuordnung prüfen / anpassen", expanded=False):
+        if not diagnostics:
+            st.info("Keine STOCK/FUND-Positionen in der CSV gefunden.")
+        else:
+            edit_rows = []
+            for row in diagnostics:
+                edit_rows.append({
+                    "ISIN": row["isin"],
+                    "Name": row["name"],
+                    "Anlageklasse": row["asset_class"],
+                    "Yahoo-Ticker": row["ticker"],
+                })
+            edit_df = pd.DataFrame(edit_rows)
+            edited = st.data_editor(
+                edit_df, width="stretch", hide_index=True, key="pf_depot_curve_isin_editor",
+                column_config={
+                    "ISIN": st.column_config.TextColumn("ISIN", disabled=True),
+                    "Name": st.column_config.TextColumn("Name", disabled=True),
+                    "Anlageklasse": st.column_config.TextColumn("Anlageklasse", disabled=True),
+                    "Yahoo-Ticker": st.column_config.TextColumn("Yahoo-Ticker", help="Leer lassen, um diese ISIN aus der Kurve auszuschließen."),
+                },
+            )
+            if st.button("Ticker-Zuordnung übernehmen", key="pf_depot_curve_isin_apply"):
+                new_overrides = {}
+                for _, row in edited.iterrows():
+                    isin = str(row.get("ISIN", "")).upper().strip()
+                    ticker = _normalize_single_ticker(str(row.get("Yahoo-Ticker", "")))
+                    if isin and ticker:
+                        new_overrides[isin] = ticker
+                st.session_state["pf_depot_curve_isin_overrides"] = new_overrides
+                st.success("Ticker-Zuordnung gespeichert. Kurve wird neu berechnet.")
+                st.rerun()
+
+    with st.spinner("Berechne Depotkurve aus Transaktionen …"):
+        curve = _build_curve_from_transactions(
+            tx_df, current_cash=float(cash_value),
+            isin_to_ticker=ticker_map, end_date=end_date,
+        )
+    if curve.empty:
+        st.warning(
+            "Aus der CSV konnte keine Kurve gebildet werden. Prüfe die Ticker-Zuordnung und "
+            "stelle sicher, dass Yahoo Finance Kursdaten für deine Positionen liefert."
+        )
+        return True
+
+    unresolved = curve.attrs.get("unresolved_isins") or []
+    if unresolved:
+        st.warning(
+            "Diese ISINs konnten nicht aufgelöst werden und sind aus der Kurve ausgenommen: "
+            + ", ".join(sorted(unresolved))
+        )
+
+    _render_depot_curve_chart(curve, key="pf_curve_chart_csv", include_flow_cols=False)
+    return True
+
+
 def _render_depot_curve_only(state: dict | None = None) -> None:
     state = state or _depot_state()
     settings = state["settings"]
     all_positions = state["positions"]
-    st.caption("Die Kurve startet erst mit Klick auf „Kurve starten“. Danach läuft sie dauerhaft ab diesem Starttag weiter.")
+    st.markdown("#### 📈 Depotkurve")
+    st.caption(
+        "Equity-Kurve gegen den S&P 500 mit 10- und 21-Tage-SMA. Primäre Datenquelle: "
+        "Trade-Republic-Transaktionsexport (CSV). Kursdaten kommen live von Yahoo Finance."
+    )
+
+    rendered_csv = _render_csv_curve_section(settings)
+
+    st.markdown("---")
+    st.markdown("##### 🧮 Fallback: Kurve aus gepflegten Positionen")
+    st.caption(
+        "Wenn keine TR-CSV vorliegt, kann die Kurve aus den manuell gepflegten Depot-Positionen "
+        "rekonstruiert werden. Sie startet beim Klick auf „Kurve starten“ und nutzt den im "
+        "Depot-Workspace hinterlegten Cash-Saldo plus erfasste Cash-Flows."
+    )
     saved_curve_start = None
     try:
         raw_curve_start = str(settings.get("curve_start_date", "") or "").strip()
@@ -3517,48 +3844,19 @@ def _render_depot_curve_only(state: dict | None = None) -> None:
 
     auto_start = saved_curve_start
     cash_flows = st.session_state.get("portfolio_cash_flows", []) if isinstance(st.session_state.get("portfolio_cash_flows", []), list) else []
-    auto_curve = pd.DataFrame()
-    if auto_start is not None:
+    if auto_start is None:
+        if not rendered_csv:
+            st.info("Depotkurve ist noch nicht gestartet. Klicke auf „Kurve starten“, um den ersten Starttag festzulegen.")
+        return
+    with st.spinner("Berechne Depotkurve aus Positionen …"):
         auto_curve = _build_reconstructed_portfolio_curve(
             all_positions, float(settings.get("cash_balance", 0.0)), auto_start, auto_end, cash_flows=cash_flows,
         )
-    if auto_start is None:
-        st.info("Depotkurve ist noch nicht gestartet. Klicke auf „Kurve starten“, um den ersten Starttag festzulegen.")
-        return
     if auto_curve.empty:
         st.info("Für die Depotkurve fehlen aktuell verwertbare Kursdaten oder Positionen mit Stückzahl.")
         return
 
-    fig_auto = go.Figure()
-    fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index"], mode="lines", name="Depotindex"))
-    fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma10"], mode="lines", name="10-Tage SMA", line=dict(width=1.6, dash="dot")))
-    fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["portfolio_index_sma21"], mode="lines", name="21-Tage SMA", line=dict(width=1.6, dash="dash")))
-    if "sp500_index" in auto_curve and auto_curve["sp500_index"].notna().any():
-        fig_auto.add_trace(go.Scatter(x=auto_curve["date"], y=auto_curve["sp500_index"], mode="lines", name="S&P 500 Index"))
-    apply_consistent_layout(fig_auto, height=380, top_margin=20)
-    fig_auto.update_layout(
-        margin=dict(l=10, r=10, t=20, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-        yaxis=dict(title="Index (Start = 100)", gridcolor=CHART_COLORS["grid"]),
-        xaxis=dict(title="", gridcolor=CHART_COLORS["grid"]),
-    )
-    st.plotly_chart(fig_auto, width="stretch", key="pf_curve_chart_auto")
-    auto_display = auto_curve[["date", "depot_value", "deposit", "withdrawal", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]].copy()
-    auto_display["date"] = auto_display["date"].dt.strftime("%Y-%m-%d")
-    auto_display = auto_display.rename(columns={
-        "date": "Datum", "depot_value": "Depotwert", "deposit": "Einzahlung", "withdrawal": "Auszahlung",
-        "portfolio_index": "Depotindex", "portfolio_index_sma10": "SMA 10", "portfolio_index_sma21": "SMA 21", "sp500_index": "S&P 500",
-    })
-    st.dataframe(
-        auto_display.round(2), width="stretch", hide_index=True,
-        column_config={
-            "Datum": st.column_config.TextColumn("Datum", width="small"),
-            "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"),
-            "Einzahlung": st.column_config.NumberColumn("Einzahlung", format="%.2f €"),
-            "Auszahlung": st.column_config.NumberColumn("Auszahlung", format="%.2f €"),
-            "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f"),
-        },
-    )
+    _render_depot_curve_chart(auto_curve, key="pf_curve_chart_auto", include_flow_cols=True)
 
 
 def _render_stueckzahl_rechner_page() -> None:
