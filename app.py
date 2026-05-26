@@ -1330,6 +1330,32 @@ def _build_cash_trajectory_from_pdf(pdf_df: pd.DataFrame, calendar: pd.DatetimeI
     return series
 
 
+def _build_cash_trajectory_from_csv(tx_df: pd.DataFrame, calendar: pd.DatetimeIndex) -> pd.Series:
+    """Reconstruct the daily EUR cash balance from a TR transactions export.
+
+    Each booking's signed EUR cash impact is ``amount + fee + tax``. The standard
+    Trade Republic export already encodes deposits (CUSTOMER_INBOUND), withdrawals
+    (CUSTOMER_OUTBOUND_REQUEST), tax optimisations, dividends, interest and trade
+    fees this way — accumulating these values yields the exact end-of-period cash
+    balance shown on the official Kontoauszug. No PDF needed.
+    """
+    if tx_df is None or tx_df.empty or len(calendar) == 0:
+        return pd.Series(0.0, index=calendar)
+    df = tx_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).sort_values("date")
+    if df.empty:
+        return pd.Series(0.0, index=calendar)
+    for col in ("amount_num", "fee_num", "tax_num"):
+        if col not in df.columns:
+            df[col] = pd.to_numeric(df.get(col.split("_")[0], 0), errors="coerce").fillna(0.0)
+    df["cash_delta"] = df["amount_num"] + df["fee_num"] + df["tax_num"]
+    daily = df.groupby("date")["cash_delta"].sum()
+    cumulative = daily.cumsum()
+    series = cumulative.reindex(calendar, method="ffill").fillna(0.0)
+    return series
+
+
 def _parse_transaction_export_csv(uploaded_file) -> pd.DataFrame:
     required = {"date", "type", "asset_class", "name", "symbol", "shares", "price", "currency"}
     try:
@@ -1351,6 +1377,14 @@ def _parse_transaction_export_csv(uploaded_file) -> pd.DataFrame:
     df["event_ts"] = df["event_ts"].fillna(df["date"])
     df["shares_num"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0.0)
     df["price_num"] = pd.to_numeric(df["price"], errors="coerce").fillna(0.0)
+    # `amount`, `fee`, `tax` carry the signed EUR cash impact per booking and are
+    # the basis for the cash-trajectory reconstruction. They are present in the
+    # standard Trade Republic export but are optional for backwards compatibility.
+    for col in ("amount", "fee", "tax"):
+        if col in df.columns:
+            df[f"{col}_num"] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        else:
+            df[f"{col}_num"] = 0.0
     df["type"] = df["type"].astype(str).str.upper().str.strip()
     df["asset_class"] = df["asset_class"].astype(str).str.upper().str.strip()
     df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
@@ -3045,19 +3079,28 @@ def _resolve_isin_ticker_map(tx_df: pd.DataFrame, overrides: dict | None = None)
 
 def _build_curve_from_transactions(
     tx_df: pd.DataFrame,
-    current_cash: float,
     isin_to_ticker: dict[str, str] | None = None,
     end_date=None,
+    start_date=None,
     cash_series: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Build a daily equity curve from a Trade Republic transactions CSV.
 
-    Walks transactions chronologically per ISIN to reconstruct daily shares,
-    multiplies by Yahoo close, then adds a cash component. ``cash_series``
-    (per-day index over the same calendar) takes precedence over the constant
-    ``current_cash`` and is the way to feed the cash trajectory extracted from
-    a Trade Republic Kontoauszug PDF. Returns the same column shape as
-    ``_build_reconstructed_portfolio_curve``.
+    Data flow:
+    * Per-ISIN share trajectories from signed `shares` values (TR encodes
+      buy/sell direction in the sign; DIVIDEND rows carry shares for reporting
+      only and are skipped).
+    * Position value per day = Σ shares × Yahoo close.
+    * Cash trajectory by default rebuilt from the CSV itself via
+      ``amount + fee + tax`` cumulative — TR's export contains every cash
+      event (deposits, withdrawals, tax optimisation, dividends, interest,
+      trade fees), so the running sum reproduces the official Kontoauszug
+      end balance to the cent. ``cash_series`` can override this (e.g. for
+      tests).
+    * ``start_date`` (optional) — the day from which the equity index is
+      normalized to 100. Rows before this date are dropped from the output;
+      share holdings and cash up to that day are still correctly carried
+      forward via the running totals.
     """
     if tx_df is None or tx_df.empty:
         return pd.DataFrame()
@@ -3069,66 +3112,69 @@ def _build_curve_from_transactions(
     df["type"] = df["type"].astype(str).str.upper().str.strip()
     df["asset_class"] = df["asset_class"].astype(str).str.upper().str.strip()
     df["shares_num"] = pd.to_numeric(df.get("shares_num", df.get("shares")), errors="coerce").fillna(0.0)
-    df = df[df["asset_class"].isin({"STOCK", "FUND"})]
-    if df.empty:
-        return pd.DataFrame()
 
-    start_ts = pd.Timestamp(df["date"].min()).normalize()
+    tx_start_ts = pd.Timestamp(df["date"].min()).normalize()
     end_ts = pd.Timestamp(end_date or datetime.now(timezone.utc).date()).normalize()
-    if end_ts < start_ts:
+    if end_ts < tx_start_ts:
         return pd.DataFrame()
 
-    bench = _fetch_close_history("^GSPC", start_ts, end_ts)
+    bench = _fetch_close_history("^GSPC", tx_start_ts, end_ts)
     if len(bench):
         calendar = pd.DatetimeIndex(bench.index).normalize().unique().sort_values()
     else:
-        calendar = pd.DatetimeIndex(pd.date_range(start_ts, end_ts, freq="B"))
+        calendar = pd.DatetimeIndex(pd.date_range(tx_start_ts, end_ts, freq="B"))
     if len(calendar) == 0:
         return pd.DataFrame()
 
+    # ---- Positions side ----
     isin_to_ticker = {str(k).upper().strip(): _normalize_single_ticker(v) for k, v in (isin_to_ticker or {}).items() if _normalize_single_ticker(v)}
+    df_pos = df[df["asset_class"].isin({"STOCK", "FUND"})]
     ticker_tuple = tuple(dict.fromkeys(t for t in isin_to_ticker.values() if t))
-    close_map = _bulk_close_history_map(ticker_tuple, start_ts, end_ts) if ticker_tuple else {}
+    close_map = _bulk_close_history_map(ticker_tuple, tx_start_ts, end_ts) if ticker_tuple else {}
 
     positions_value = pd.Series(0.0, index=calendar)
     resolved_isins: list[str] = []
     unresolved_isins: list[str] = []
-    for isin, group in df.groupby("symbol"):
+    # Events that don't move share counts (cash-side or reporting only).
+    NON_SHARE_EVENTS = {"DIVIDEND", "INTEREST_PAYMENT", "TAX_OPTIMIZATION", "SEC_ACCOUNT"}
+    for isin, group in df_pos.groupby("symbol"):
+        if not isin:
+            continue
         ticker = isin_to_ticker.get(isin)
         if not ticker:
             unresolved_isins.append(isin)
             continue
         close = close_map.get(ticker)
         if close is None or len(close) == 0:
-            close = _fetch_close_history(ticker, start_ts, end_ts)
+            close = _fetch_close_history(ticker, tx_start_ts, end_ts)
         if close is None or len(close) == 0:
             unresolved_isins.append(isin)
             continue
-        # Reconstruct cumulative shares from this ISIN's events.
         shares_series = pd.Series(0.0, index=calendar)
         running = 0.0
         for row in group.sort_values("date").itertuples():
-            shares = abs(float(row.shares_num or 0.0))
-            typ = str(row.type or "").upper()
-            if typ in {"BUY", "TRANSFER_IN", "SPLIT", "SELL_CANCELLED"}:
-                running += shares
-            elif typ in {"SELL", "TRANSFER_OUT", "WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS", "DELISTED", "EXPIRATION"}:
-                running = max(running - shares, 0.0)
-            # DIVIDEND / unknown: no share change.
+            typ = str(getattr(row, "type", "") or "").upper()
+            if typ in NON_SHARE_EVENTS:
+                continue
+            signed_shares = float(getattr(row, "shares_num", 0.0) or 0.0)
+            if signed_shares == 0.0:
+                continue
+            running = max(running + signed_shares, 0.0)
             day = pd.Timestamp(row.date).normalize()
             shares_series.loc[shares_series.index >= day] = running
         aligned = close.reindex(calendar, method="ffill").ffill().bfill().fillna(0.0)
         positions_value = positions_value.add(shares_series.values * aligned.values, fill_value=0.0)
         resolved_isins.append(isin)
 
+    # ---- Cash side ----
     if cash_series is not None and len(cash_series):
         cash_aligned = pd.Series(cash_series).copy()
         cash_aligned.index = pd.to_datetime(cash_aligned.index, errors="coerce").normalize()
         cash_aligned = cash_aligned[~cash_aligned.index.isna()]
-        cash_aligned = cash_aligned.reindex(calendar, method="ffill").fillna(0.0)
-        cash_values = cash_aligned.values
+        cash_values = cash_aligned.reindex(calendar, method="ffill").fillna(0.0).values
     else:
-        cash_values = float(max(float(current_cash or 0.0), 0.0))
+        cash_values = _build_cash_trajectory_from_csv(df, calendar).values
+
     curve = pd.DataFrame({
         "date": calendar,
         "positions_value": positions_value.values,
@@ -3136,17 +3182,65 @@ def _build_curve_from_transactions(
     })
     curve["depot_value"] = curve["positions_value"] + curve["cash"]
 
-    # Drop leading rows where there were no holdings yet (e.g., dates before any
-    # share was bought). Without this the index would normalize against a
-    # cash-only baseline and miss the entire first invested period.
-    first_invested = curve["positions_value"].gt(0).idxmax() if (curve["positions_value"] > 0).any() else None
-    if first_invested is not None and first_invested > 0:
-        curve = curve.loc[first_invested:].reset_index(drop=True)
+    # ---- External cash flows (TWR-neutral) ----
+    # Deposits, withdrawals, tax optimisations move the depot value without being
+    # the result of investment performance — they must be removed from the equity
+    # index so the curve only reflects P&L (price moves, dividends, interest,
+    # realized gains/losses, fees). Dividends/interest stay P&L-positive and
+    # therefore are NOT in this set.
+    EXTERNAL_FLOW_TYPES = {
+        "CUSTOMER_INBOUND", "CUSTOMER_OUTBOUND_REQUEST", "CUSTOMER_INPAYMENT",
+        "TRANSFER_INBOUND", "TRANSFER_INSTANT_INBOUND", "GIFT",
+        "TAX_OPTIMIZATION",
+    }
+    ext_mask = df["type"].isin(EXTERNAL_FLOW_TYPES)
+    if ext_mask.any():
+        ext = df[ext_mask].copy()
+        for col in ("amount_num", "fee_num", "tax_num"):
+            if col not in ext.columns:
+                ext[col] = pd.to_numeric(ext.get(col.split("_")[0], 0), errors="coerce").fillna(0.0)
+        ext["delta"] = ext["amount_num"] + ext["fee_num"] + ext["tax_num"]
+        ext_daily = ext.groupby(ext["date"].dt.normalize())["delta"].sum()
+        ext_series = ext_daily.reindex(calendar, fill_value=0.0)
+    else:
+        ext_series = pd.Series(0.0, index=calendar)
+    curve["external_flow"] = ext_series.values
+
+    # ---- Start-date filter & TWR normalization ----
+    if start_date is not None:
+        try:
+            start_ts = pd.Timestamp(start_date).normalize()
+        except Exception:
+            start_ts = None
+    else:
+        start_ts = None
+    if start_ts is not None:
+        curve = curve[curve["date"] >= start_ts].reset_index(drop=True)
+    else:
+        # Default: start at first day with non-zero positions.
+        first_invested = curve["positions_value"].gt(0).idxmax() if (curve["positions_value"] > 0).any() else None
+        if first_invested is not None and first_invested > 0:
+            curve = curve.loc[first_invested:].reset_index(drop=True)
 
     if curve.empty or float(curve["depot_value"].iloc[0]) <= 0:
         return pd.DataFrame()
-    base = float(curve["depot_value"].iloc[0])
-    curve["portfolio_index"] = curve["depot_value"] / base * 100
+
+    # Time-weighted return: each day's return is the depot change MINUS the
+    # external flow that came in/out that day, divided by yesterday's depot value.
+    # Compounded → index starts at 100 on the first day.
+    index_values = [100.0]
+    depot_vals = curve["depot_value"].tolist()
+    ext_vals = curve["external_flow"].tolist()
+    for i in range(1, len(curve)):
+        prev = float(depot_vals[i - 1])
+        curr = float(depot_vals[i])
+        ext = float(ext_vals[i])
+        if prev > 0:
+            day_return = (curr - prev - ext) / prev
+        else:
+            day_return = 0.0
+        index_values.append(index_values[-1] * (1.0 + day_return))
+    curve["portfolio_index"] = index_values
     curve["portfolio_index_sma10"] = curve["portfolio_index"].rolling(10, min_periods=10).mean()
     curve["portfolio_index_sma21"] = curve["portfolio_index"].rolling(21, min_periods=21).mean()
 
@@ -3918,9 +4012,10 @@ def _render_depot_curve_chart(curve: pd.DataFrame, *, key: str, include_flow_col
             "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f"),
         }
     else:
-        cols = ["date", "depot_value", "positions_value", "cash", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]
+        cols = ["date", "depot_value", "positions_value", "cash", "external_flow", "portfolio_index", "portfolio_index_sma10", "portfolio_index_sma21", "sp500_index"]
         rename_map = {
             "date": "Datum", "depot_value": "Depotwert", "positions_value": "Positionen", "cash": "Cash",
+            "external_flow": "Ein-/Auszahlung",
             "portfolio_index": "Depotindex", "portfolio_index_sma10": "SMA 10", "portfolio_index_sma21": "SMA 21", "sp500_index": "S&P 500",
         }
         column_config = {
@@ -3928,6 +4023,7 @@ def _render_depot_curve_chart(curve: pd.DataFrame, *, key: str, include_flow_col
             "Depotwert": st.column_config.NumberColumn("Depotwert", format="%.2f"),
             "Positionen": st.column_config.NumberColumn("Positionen", format="%.2f"),
             "Cash": st.column_config.NumberColumn("Cash", format="%.2f €"),
+            "Ein-/Auszahlung": st.column_config.NumberColumn("Ein-/Auszahlung", format="%.2f €", help="TWR-neutralisierte externe Cash-Bewegung an diesem Tag (Überweisung/Steueroptimierung)."),
             "Depotindex": st.column_config.NumberColumn("Depotindex", format="%.2f"),
         }
     available = [c for c in cols if c in curve.columns]
@@ -3943,100 +4039,94 @@ def _parse_tr_kontoauszug_pdf_cached(pdf_bytes: bytes) -> pd.DataFrame:
 
 
 def _render_csv_curve_section(settings: dict) -> bool:
-    """CSV-basierte Depotkurve: TR-Transaktionsexport (Stückzahlen) plus optional TR-Kontoauszug-PDF
-    für die exakte Cash-Trajektorie. Yahoo liefert die Live-Kursdaten.
+    """Depotkurve aus dem Trade-Republic-Transaktionsexport (CSV).
+
+    Stückzahlen, Trade-Preise und Cash-Bewegungen kommen alle aus der CSV
+    (``amount + fee + tax`` rekonstruiert den Cash-Saldo aufs Cent zum offiziellen
+    Kontoauszug). Yahoo Finance liefert die täglichen Schlusskurse.
 
     Returns True if a curve was rendered (so the fallback can skip).
     """
-    st.markdown("##### 📥 Trade-Republic-Daten als Basis")
+    st.markdown("##### 📥 Trade-Republic-Transaktionsexport (CSV)")
     st.caption(
-        "Lade den Trade-Republic-Transaktionsexport (CSV) für die Stückzahlen hoch — optional "
-        "zusätzlich den TR-Kontoauszug (PDF) für die Cash-Trajektorie. Mit beiden Dateien "
-        "wird der tägliche Depotwert vollautomatisch rekonstruiert (Yahoo-Close × Stückzahl "
-        "+ Saldo aus PDF). Ohne PDF musst du den aktuellen Cash-Bestand selbst eingeben."
+        "Lade den TR-Transaktionsexport hoch — er enthält Stückzahlen, Trade-Preise und "
+        "alle Cash-Bewegungen (Einzahlungen, Auszahlungen, Steueroptimierung, Dividenden, "
+        "Zinsen, Gebühren). Daraus wird Tag für Tag der Depotwert rekonstruiert "
+        "(Yahoo-Close × Stückzahl + Cash aus CSV)."
     )
 
-    file_cols = st.columns([1, 1])
-    with file_cols[0]:
-        uploaded_csv = st.file_uploader(
-            "Transaktionsexport (CSV) — Stückzahlen",
-            type=["csv"], key="pf_depot_curve_csv_upload",
-            help="Selbe Datei wie unter Positionen → CSV-Import. Liefert die Stückzahlen pro Trade.",
-        )
-        if uploaded_csv is not None:
-            try:
-                parsed = _parse_transaction_export_csv(uploaded_csv)
-                st.session_state["pf_depot_curve_tx_df"] = parsed
-                st.session_state["pf_depot_curve_tx_filename"] = uploaded_csv.name
-            except ValueError as exc:
-                st.error(str(exc))
-    with file_cols[1]:
-        uploaded_pdf = st.file_uploader(
-            "Kontoauszug (PDF) — Cash & Ein-/Auszahlungen",
-            type=["pdf"], key="pf_depot_curve_pdf_upload",
-            help="TR-App → Profil → Kontoauszug. Liefert tägliche Cash-Salden, Einzahlungen, "
-                 "Auszahlungen und Dividenden — du musst dann kein Cash mehr von Hand pflegen.",
-        )
-        if uploaded_pdf is not None:
-            try:
-                with st.spinner("Parse Kontoauszug-PDF …"):
-                    pdf_bytes = uploaded_pdf.read()
-                    parsed_pdf = _parse_tr_kontoauszug_pdf_cached(pdf_bytes)
-                st.session_state["pf_depot_curve_pdf_df"] = parsed_pdf
-                st.session_state["pf_depot_curve_pdf_filename"] = uploaded_pdf.name
-            except Exception as exc:  # pragma: no cover - defensive UI handler
-                st.error(f"PDF konnte nicht gelesen werden: {exc}")
+    uploaded_csv = st.file_uploader(
+        "Trade-Republic-Transaktionsexport (CSV)",
+        type=["csv"], key="pf_depot_curve_csv_upload",
+        help="Wird nur für die Kurve verwendet, keine Positionen werden überschrieben.",
+    )
+    if uploaded_csv is not None:
+        try:
+            parsed = _parse_transaction_export_csv(uploaded_csv)
+            st.session_state["pf_depot_curve_tx_df"] = parsed
+            st.session_state["pf_depot_curve_tx_filename"] = uploaded_csv.name
+        except ValueError as exc:
+            st.error(str(exc))
 
     tx_df = st.session_state.get("pf_depot_curve_tx_df")
-    pdf_df = st.session_state.get("pf_depot_curve_pdf_df")
-    has_csv = isinstance(tx_df, pd.DataFrame) and not tx_df.empty
-    has_pdf = isinstance(pdf_df, pd.DataFrame) and not pdf_df.empty
-
-    if not has_csv:
+    if not isinstance(tx_df, pd.DataFrame) or tx_df.empty:
         st.info("Noch keine Trade-Republic-CSV geladen — die Depotkurve unten fällt auf die manuell gepflegten Positionen zurück.")
         return False
 
-    csv_name = st.session_state.get("pf_depot_curve_tx_filename", "")
-    pdf_name = st.session_state.get("pf_depot_curve_pdf_filename", "")
-    status_lines = [f"CSV: **{csv_name or 'Transaktionen'}** · {len(tx_df):,} Buchungen"]
-    if has_pdf:
-        status_lines.append(f"PDF: **{pdf_name or 'Kontoauszug'}** · {len(pdf_df):,} Cash-Bewegungen")
-    info_cols = st.columns([3, 1, 1])
+    # Cash-Endsaldo aus CSV — gleicher Wert wie auf dem offiziellen TR-Kontoauszug.
+    tx_amount = pd.to_numeric(tx_df.get("amount_num", tx_df.get("amount", 0)), errors="coerce").fillna(0.0)
+    tx_fee = pd.to_numeric(tx_df.get("fee_num", tx_df.get("fee", 0)), errors="coerce").fillna(0.0)
+    tx_tax = pd.to_numeric(tx_df.get("tax_num", tx_df.get("tax", 0)), errors="coerce").fillna(0.0)
+    csv_end_cash = float((tx_amount + tx_fee + tx_tax).sum())
+    csv_first_date = pd.to_datetime(tx_df["date"], errors="coerce").min()
+    csv_last_date = pd.to_datetime(tx_df["date"], errors="coerce").max()
+
+    filename = st.session_state.get("pf_depot_curve_tx_filename", "")
+    info_cols = st.columns([3, 1])
     with info_cols[0]:
-        st.caption(" · ".join(status_lines))
+        st.caption(
+            f"Aktive Datei: **{filename or 'Transaktionen'}** · {len(tx_df):,} Buchungen · "
+            f"{csv_first_date:%Y-%m-%d} → {csv_last_date:%Y-%m-%d} · "
+            f"Cash-Endsaldo (rekonstruiert): **{_format_eur(csv_end_cash)}**"
+        )
     with info_cols[1]:
-        if st.button("CSV verwerfen", key="pf_depot_curve_csv_reset", width="stretch"):
+        if st.button("Datei verwerfen", key="pf_depot_curve_csv_reset", width="stretch"):
             st.session_state.pop("pf_depot_curve_tx_df", None)
             st.session_state.pop("pf_depot_curve_tx_filename", None)
             st.session_state.pop("pf_depot_curve_isin_overrides", None)
             st.rerun()
-    with info_cols[2]:
-        if has_pdf and st.button("PDF verwerfen", key="pf_depot_curve_pdf_reset", width="stretch"):
-            st.session_state.pop("pf_depot_curve_pdf_df", None)
-            st.session_state.pop("pf_depot_curve_pdf_filename", None)
-            st.rerun()
 
-    end_default = datetime.now(timezone.utc).date()
-    ctrl_cash, ctrl_end = st.columns([1, 1])
-    if has_pdf:
-        with ctrl_cash:
-            latest_balance = float(pdf_df["balance_eur"].iloc[-1]) if not pdf_df.empty else 0.0
-            st.metric("Cash (Endsaldo aus PDF)", _format_eur(latest_balance))
-            st.caption("Cash-Trajektorie kommt automatisch aus dem Kontoauszug.")
-        cash_value = latest_balance
-    else:
-        cash_default = _safe_float(settings.get("cash_balance"), 0.0)
-        with ctrl_cash:
-            cash_value = st.number_input(
-                "Aktueller Cash-Bestand (EUR)", min_value=0.0,
-                value=float(cash_default), step=100.0,
-                key="pf_depot_curve_cash_input",
-                help="Im TR-Trade-CSV ist der Cash-Bestand nicht enthalten. Lade alternativ den "
-                     "Kontoauszug-PDF hoch, dann wird der Cash-Verlauf täglich automatisch gerechnet.",
-            )
+    # Date controls.
+    today = datetime.now(timezone.utc).date()
+    tx_first = csv_first_date.date() if pd.notna(csv_first_date) else today
+    tx_last = csv_last_date.date() if pd.notna(csv_last_date) else today
+
+    saved_start = None
+    try:
+        raw_start = str(settings.get("curve_start_date", "") or "").strip()
+        if raw_start:
+            saved_start = pd.Timestamp(raw_start).date()
+    except Exception:
+        saved_start = None
+    start_default = saved_start or tx_first
+    # Clamp the default into the valid range.
+    start_default = max(tx_first, min(start_default, today))
+
+    ctrl_start, ctrl_end = st.columns([1, 1])
+    with ctrl_start:
+        start_date = st.date_input(
+            "Startdatum (Index = 100)",
+            value=start_default,
+            min_value=tx_first,
+            max_value=today,
+            key="pf_depot_curve_start_date",
+            help="Tag, ab dem die Equity-Kurve auf 100 normiert wird. Stückzahlen und Cash "
+                 "bis zu diesem Datum werden korrekt aus den vorhergehenden Buchungen kumuliert.",
+        )
     with ctrl_end:
         end_date = st.date_input(
-            "Enddatum", value=end_default,
+            "Enddatum", value=today,
+            min_value=start_date, max_value=today,
             key="pf_depot_curve_end_date",
             help="Letzter Tag der Kurve. Standard: heute.",
         )
@@ -4077,42 +4167,12 @@ def _render_csv_curve_section(settings: dict) -> bool:
                 st.success("Ticker-Zuordnung gespeichert. Kurve wird neu berechnet.")
                 st.rerun()
 
-    if has_pdf:
-        with st.expander("Kontoauszug-Buchungen (geparst aus PDF)", expanded=False):
-            preview = pdf_df.copy()
-            preview["date"] = pd.to_datetime(preview["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-            preview = preview.rename(columns={
-                "date": "Datum", "type": "Typ", "description": "Beschreibung",
-                "isin": "ISIN", "event_kind": "Kategorie",
-                "inflow_eur": "Eingang", "outflow_eur": "Ausgang", "balance_eur": "Saldo",
-            })
-            kind_counts = pdf_df["event_kind"].value_counts().to_dict()
-            kind_summary = ", ".join(f"{k}: {v}" for k, v in kind_counts.items())
-            st.caption(f"{len(preview):,} Buchungen · {kind_summary}")
-            st.dataframe(
-                preview.round(2), width="stretch", hide_index=True,
-                column_config={
-                    "Datum": st.column_config.TextColumn("Datum", width="small"),
-                    "Eingang": st.column_config.NumberColumn("Eingang", format="%.2f €"),
-                    "Ausgang": st.column_config.NumberColumn("Ausgang", format="%.2f €"),
-                    "Saldo": st.column_config.NumberColumn("Saldo", format="%.2f €"),
-                },
-            )
-
-    cash_series = None
-    if has_pdf:
-        bench = _fetch_close_history("^GSPC", pd.Timestamp(pdf_df["date"].min()), pd.Timestamp(end_date))
-        if len(bench):
-            cal = pd.DatetimeIndex(bench.index).normalize().unique().sort_values()
-        else:
-            cal = pd.DatetimeIndex(pd.date_range(pd.Timestamp(pdf_df["date"].min()), pd.Timestamp(end_date), freq="B"))
-        cash_series = _build_cash_trajectory_from_pdf(pdf_df, cal)
-
     with st.spinner("Berechne Depotkurve aus Transaktionen …"):
         curve = _build_curve_from_transactions(
-            tx_df, current_cash=float(cash_value),
-            isin_to_ticker=ticker_map, end_date=end_date,
-            cash_series=cash_series,
+            tx_df,
+            isin_to_ticker=ticker_map,
+            start_date=start_date,
+            end_date=end_date,
         )
     if curve.empty:
         st.warning(
@@ -4138,8 +4198,11 @@ def _render_depot_curve_only(state: dict | None = None) -> None:
     all_positions = state["positions"]
     st.markdown("#### 📈 Depotkurve")
     st.caption(
-        "Equity-Kurve gegen den S&P 500 mit 10- und 21-Tage-SMA. Primäre Datenquelle: "
-        "Trade-Republic-Transaktionsexport (CSV). Kursdaten kommen live von Yahoo Finance."
+        "Zeitgewichtete Equity-Kurve (TWR) gegen den S&P 500 mit 10- und 21-Tage-SMA. "
+        "Datenquelle: Trade-Republic-Transaktionsexport (CSV) — Stückzahlen, Trade-Cash, "
+        "Dividenden, Zinsen, Gebühren. Yahoo Finance liefert die täglichen Schlusskurse. "
+        "Externe Ein-/Auszahlungen und Steueroptimierungen werden aus dem Index "
+        "neutralisiert, damit die Kurve nur die Investment-Performance zeigt."
     )
 
     rendered_csv = _render_csv_curve_section(settings)
