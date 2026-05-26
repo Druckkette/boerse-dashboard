@@ -1077,6 +1077,259 @@ ISIN_TO_YAHOO: dict[str, str] = {
 }
 
 
+_TR_KONTOAUSZUG_MONTHS = {
+    "Jan.": 1, "Feb.": 2, "März": 3, "Mar.": 3, "Apr.": 4, "Mai": 5, "Juni": 6,
+    "Juli": 7, "Aug.": 8, "Sept.": 9, "Sep.": 9, "Okt.": 10, "Nov.": 11, "Dez.": 12,
+}
+_TR_KONTOAUSZUG_TYPES = {
+    "Überweisung", "Handel", "Ertrag", "Steuern", "Gebühren", "Zinsen", "Sparplan", "Karte",
+}
+_TR_KONTOAUSZUG_AMOUNT_RE = re.compile(r"^-?\d{1,3}(?:\.\d{3})*,\d{2}$")
+_TR_KONTOAUSZUG_ISIN_RE = re.compile(r"\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b")
+
+
+def _tr_kontoauszug_amount_to_float(raw: str) -> float | None:
+    s = str(raw or "").replace("€", "").strip()
+    if not s:
+        return None
+    sign = -1.0 if s.startswith("-") else 1.0
+    s = s.lstrip("-").lstrip("+")
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return sign * float(s)
+    except ValueError:
+        return None
+
+
+def _parse_tr_kontoauszug_pdf(file_or_bytes) -> pd.DataFrame:
+    """Parse a Trade Republic Kontoauszug PDF.
+
+    Returns a DataFrame with one row per cash booking, columns:
+        date (Timestamp), type (str), description (str),
+        isin (str, may be empty), event_kind (str: deposit/withdrawal/buy/sell/dividend/tax/other),
+        inflow_eur (float|nan), outflow_eur (float|nan), balance_eur (float).
+
+    Inflow/outflow are derived from the running SALDO delta, which is the
+    most reliable column in the statement and avoids fragile x-position
+    classification of the two amount columns.
+    """
+    try:
+        import pdfplumber
+    except Exception as exc:  # pragma: no cover - dependency hint
+        raise RuntimeError("pdfplumber ist nicht installiert. Bitte requirements aktualisieren.") from exc
+
+    if hasattr(file_or_bytes, "read"):
+        raw = file_or_bytes.read()
+        try:
+            file_or_bytes.seek(0)
+        except Exception:
+            pass
+    elif isinstance(file_or_bytes, (bytes, bytearray)):
+        raw = bytes(file_or_bytes)
+    else:
+        raise ValueError("Erwartet PDF-Datei oder bytes.")
+
+    raw_rows: list[dict] = []
+    seq = 0
+
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            try:
+                words = page.extract_words(use_text_flow=True) or []
+            except Exception:
+                words = []
+            if not words:
+                continue
+            words.sort(key=lambda w: (round(float(w["top"]), 1), float(w["x0"])))
+            lines: list[list[dict]] = []
+            current: list[dict] = []
+            current_top: float | None = None
+            for w in words:
+                top = float(w["top"])
+                if current_top is None or abs(top - current_top) <= 3.0:
+                    current.append(w)
+                    current_top = top if current_top is None else (current_top + top) / 2.0
+                else:
+                    lines.append(current)
+                    current = [w]
+                    current_top = top
+            if current:
+                lines.append(current)
+
+            active: dict | None = None
+            for line_words in lines:
+                line_words.sort(key=lambda w: float(w["x0"]))
+                tokens = [w["text"] for w in line_words]
+                if not tokens:
+                    continue
+
+                # Detect "DD MMM. YYYY" date at the start of a row.
+                date = None
+                date_end = None
+                for i in range(len(tokens) - 2):
+                    day_t, mon_t, yr_t = tokens[i], tokens[i + 1], tokens[i + 2]
+                    if (
+                        day_t.isdigit() and 1 <= int(day_t) <= 31
+                        and mon_t in _TR_KONTOAUSZUG_MONTHS
+                        and yr_t.isdigit() and len(yr_t) == 4
+                    ):
+                        try:
+                            date = pd.Timestamp(int(yr_t), _TR_KONTOAUSZUG_MONTHS[mon_t], int(day_t))
+                            date_end = i + 3
+                            break
+                        except Exception:
+                            continue
+
+                if date is not None and date_end is not None:
+                    if active is not None:
+                        raw_rows.append(active)
+                    type_label = ""
+                    type_idx: int | None = None
+                    for j in range(date_end, min(date_end + 4, len(tokens))):
+                        if tokens[j] in _TR_KONTOAUSZUG_TYPES:
+                            type_label = tokens[j]
+                            type_idx = j
+                            break
+                    amount_words = [w for w in line_words if _TR_KONTOAUSZUG_AMOUNT_RE.match(str(w["text"]).strip())]
+                    amount_words.sort(key=lambda w: float(w["x0"]))
+                    amount_ids = {id(w) for w in amount_words}
+                    desc_start = (type_idx + 1) if type_idx is not None else date_end
+                    desc_tokens = [
+                        w["text"] for w in line_words[desc_start:]
+                        if id(w) not in amount_ids and w["text"] not in {"€", "EUR"}
+                    ]
+                    amounts = [_tr_kontoauszug_amount_to_float(w["text"]) for w in amount_words]
+                    seq += 1
+                    active = {
+                        "_seq": seq,
+                        "date": date,
+                        "type": type_label,
+                        "description": " ".join(desc_tokens).strip(),
+                        "amounts": [a for a in amounts if a is not None],
+                    }
+                else:
+                    if active is None:
+                        continue
+                    joined = " ".join(tokens).strip()
+                    # Skip footers, headers, page numbers etc.
+                    if not joined:
+                        continue
+                    if "Seite" in tokens and "von" in tokens:
+                        continue
+                    if joined.startswith(("Erstellt am", "Trade Republic Bank", "Geschäftsführer",
+                                          "Brunnenstraße", "10119 Berlin", "www.traderepublic",
+                                          "Sitz der Gesellschaft", "AG Charlottenburg",
+                                          "Umsatzsteuer", "Andreas Torner", "Gernot Mittendorfer",
+                                          "Christian Hecker", "Thomas Pischke")):
+                        continue
+                    if "DATUM" in tokens and "TYP" in tokens:
+                        continue
+                    if joined.upper().startswith(("TRADE REPUBLIC", "KONTOÜBERSICHT", "UMSATZÜBERSICHT")):
+                        continue
+                    active["description"] = (active["description"] + " " + joined).strip()
+            if active is not None:
+                raw_rows.append(active)
+                active = None
+
+    if not raw_rows:
+        return pd.DataFrame(columns=["date", "type", "description", "isin", "event_kind", "inflow_eur", "outflow_eur", "balance_eur"])
+
+    cleaned: list[dict] = []
+    for r in raw_rows:
+        amounts = r.get("amounts") or []
+        if not amounts:
+            continue
+        balance = float(amounts[-1])
+        # Movement (if separate column existed); we re-derive from SALDO delta below.
+        cleaned.append({
+            "_seq": r["_seq"],
+            "date": r["date"],
+            "type": r["type"],
+            "description": r["description"],
+            "balance_eur": balance,
+        })
+
+    if not cleaned:
+        return pd.DataFrame(columns=["date", "type", "description", "isin", "event_kind", "inflow_eur", "outflow_eur", "balance_eur"])
+
+    df = pd.DataFrame(cleaned).sort_values("_seq").reset_index(drop=True)
+
+    prev = 0.0
+    inflows: list[float] = []
+    outflows: list[float] = []
+    for bal in df["balance_eur"].tolist():
+        bal = float(bal)
+        delta = bal - prev
+        if delta > 1e-6:
+            inflows.append(delta)
+            outflows.append(float("nan"))
+        elif delta < -1e-6:
+            inflows.append(float("nan"))
+            outflows.append(-delta)
+        else:
+            inflows.append(float("nan"))
+            outflows.append(float("nan"))
+        prev = bal
+    df["inflow_eur"] = inflows
+    df["outflow_eur"] = outflows
+
+    def _classify(row) -> str:
+        typ = str(row["type"] or "")
+        desc = str(row["description"] or "")
+        if typ == "Überweisung":
+            if "PayOut" in desc or "Auszahlung" in desc:
+                return "withdrawal"
+            return "deposit"
+        if typ == "Handel":
+            if "Direktverkauf" in desc or "Verkauf" in desc:
+                return "sell"
+            if "Direktkauf" in desc or "Kauf" in desc:
+                return "buy"
+            return "trade"
+        if typ == "Ertrag":
+            return "dividend"
+        if typ == "Steuern":
+            return "tax"
+        if typ == "Gebühren":
+            return "fee"
+        if typ == "Zinsen":
+            return "interest"
+        return "other"
+
+    df["event_kind"] = df.apply(_classify, axis=1)
+
+    # Only extract ISIN for security-related events; deposit/withdrawal descriptions
+    # contain IBAN references that can look superficially like ISINs.
+    security_kinds = {"buy", "sell", "dividend", "tax", "trade"}
+
+    def _extract_isin(row) -> str:
+        if row["event_kind"] not in security_kinds:
+            return ""
+        m = _TR_KONTOAUSZUG_ISIN_RE.search(str(row.get("description", "") or ""))
+        return m.group(1) if m else ""
+
+    df["isin"] = df.apply(_extract_isin, axis=1)
+    return df[["date", "type", "description", "isin", "event_kind", "inflow_eur", "outflow_eur", "balance_eur"]]
+
+
+def _build_cash_trajectory_from_pdf(pdf_df: pd.DataFrame, calendar: pd.DatetimeIndex) -> pd.Series:
+    """Per-day cash balance series, forward-filled across calendar days.
+
+    Uses the LAST balance per day from the Kontoauszug; days before the first
+    booking inherit 0; days after the last booking keep the latest balance.
+    """
+    if pdf_df is None or pdf_df.empty or len(calendar) == 0:
+        return pd.Series(0.0, index=calendar)
+    df = pdf_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).sort_values("date")
+    if df.empty:
+        return pd.Series(0.0, index=calendar)
+    end_of_day = df.groupby("date")["balance_eur"].last()
+    series = end_of_day.reindex(calendar, method="ffill").fillna(0.0)
+    return series
+
+
 def _parse_transaction_export_csv(uploaded_file) -> pd.DataFrame:
     required = {"date", "type", "asset_class", "name", "symbol", "shares", "price", "currency"}
     try:
@@ -2795,13 +3048,16 @@ def _build_curve_from_transactions(
     current_cash: float,
     isin_to_ticker: dict[str, str] | None = None,
     end_date=None,
+    cash_series: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Build a daily equity curve from a Trade Republic transactions CSV.
 
     Walks transactions chronologically per ISIN to reconstruct daily shares,
-    multiplies by Yahoo close, adds a constant cash component supplied by the
-    user. Returns the same column shape as ``_build_reconstructed_portfolio_curve``
-    (date, depot_value, portfolio_index, portfolio_index_sma10/sma21, sp500_index).
+    multiplies by Yahoo close, then adds a cash component. ``cash_series``
+    (per-day index over the same calendar) takes precedence over the constant
+    ``current_cash`` and is the way to feed the cash trajectory extracted from
+    a Trade Republic Kontoauszug PDF. Returns the same column shape as
+    ``_build_reconstructed_portfolio_curve``.
     """
     if tx_df is None or tx_df.empty:
         return pd.DataFrame()
@@ -2865,11 +3121,18 @@ def _build_curve_from_transactions(
         positions_value = positions_value.add(shares_series.values * aligned.values, fill_value=0.0)
         resolved_isins.append(isin)
 
-    cash_value = max(float(current_cash or 0.0), 0.0)
+    if cash_series is not None and len(cash_series):
+        cash_aligned = pd.Series(cash_series).copy()
+        cash_aligned.index = pd.to_datetime(cash_aligned.index, errors="coerce").normalize()
+        cash_aligned = cash_aligned[~cash_aligned.index.isna()]
+        cash_aligned = cash_aligned.reindex(calendar, method="ffill").fillna(0.0)
+        cash_values = cash_aligned.values
+    else:
+        cash_values = float(max(float(current_cash or 0.0), 0.0))
     curve = pd.DataFrame({
         "date": calendar,
         "positions_value": positions_value.values,
-        "cash": cash_value,
+        "cash": cash_values,
     })
     curve["depot_value"] = curve["positions_value"] + curve["cash"]
 
@@ -3674,58 +3937,103 @@ def _render_depot_curve_chart(curve: pd.DataFrame, *, key: str, include_flow_col
     st.dataframe(display, width="stretch", hide_index=True, column_config=column_config)
 
 
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=4)
+def _parse_tr_kontoauszug_pdf_cached(pdf_bytes: bytes) -> pd.DataFrame:
+    return _parse_tr_kontoauszug_pdf(pdf_bytes)
+
+
 def _render_csv_curve_section(settings: dict) -> bool:
-    """CSV-basierte Depotkurve: TR-Transaktionsexport + Yahoo + separat erfragtes Cash.
+    """CSV-basierte Depotkurve: TR-Transaktionsexport (Stückzahlen) plus optional TR-Kontoauszug-PDF
+    für die exakte Cash-Trajektorie. Yahoo liefert die Live-Kursdaten.
 
     Returns True if a curve was rendered (so the fallback can skip).
     """
-    st.markdown("##### 📥 Trade-Republic-CSV als Datenbasis")
+    st.markdown("##### 📥 Trade-Republic-Daten als Basis")
     st.caption(
-        "Lade den Trade-Republic-Transaktionsexport hoch. Aus den BUY/SELL/Transfer-Ereignissen "
-        "rekonstruiert die App pro Handelstag den Bestand je Position, multipliziert mit den "
-        "Yahoo-Schlusskursen und kombiniert das Ergebnis mit dem unten erfragten Cash-Bestand. "
-        "Der Cash-Wert ist im Trade-Republic-Trade-CSV nicht enthalten und muss separat angegeben werden."
+        "Lade den Trade-Republic-Transaktionsexport (CSV) für die Stückzahlen hoch — optional "
+        "zusätzlich den TR-Kontoauszug (PDF) für die Cash-Trajektorie. Mit beiden Dateien "
+        "wird der tägliche Depotwert vollautomatisch rekonstruiert (Yahoo-Close × Stückzahl "
+        "+ Saldo aus PDF). Ohne PDF musst du den aktuellen Cash-Bestand selbst eingeben."
     )
 
-    uploaded = st.file_uploader(
-        "Trade-Republic-Transaktionsexport (CSV)",
-        type=["csv"], key="pf_depot_curve_csv_upload",
-        help="Selbe Datei wie unter Positionen → CSV-Import. Wird nur für die Kurve verwendet, keine Positionen werden überschrieben.",
-    )
-    if uploaded is not None:
-        try:
-            parsed = _parse_transaction_export_csv(uploaded)
-            st.session_state["pf_depot_curve_tx_df"] = parsed
-            st.session_state["pf_depot_curve_tx_filename"] = uploaded.name
-        except ValueError as exc:
-            st.error(str(exc))
+    file_cols = st.columns([1, 1])
+    with file_cols[0]:
+        uploaded_csv = st.file_uploader(
+            "Transaktionsexport (CSV) — Stückzahlen",
+            type=["csv"], key="pf_depot_curve_csv_upload",
+            help="Selbe Datei wie unter Positionen → CSV-Import. Liefert die Stückzahlen pro Trade.",
+        )
+        if uploaded_csv is not None:
+            try:
+                parsed = _parse_transaction_export_csv(uploaded_csv)
+                st.session_state["pf_depot_curve_tx_df"] = parsed
+                st.session_state["pf_depot_curve_tx_filename"] = uploaded_csv.name
+            except ValueError as exc:
+                st.error(str(exc))
+    with file_cols[1]:
+        uploaded_pdf = st.file_uploader(
+            "Kontoauszug (PDF) — Cash & Ein-/Auszahlungen",
+            type=["pdf"], key="pf_depot_curve_pdf_upload",
+            help="TR-App → Profil → Kontoauszug. Liefert tägliche Cash-Salden, Einzahlungen, "
+                 "Auszahlungen und Dividenden — du musst dann kein Cash mehr von Hand pflegen.",
+        )
+        if uploaded_pdf is not None:
+            try:
+                with st.spinner("Parse Kontoauszug-PDF …"):
+                    pdf_bytes = uploaded_pdf.read()
+                    parsed_pdf = _parse_tr_kontoauszug_pdf_cached(pdf_bytes)
+                st.session_state["pf_depot_curve_pdf_df"] = parsed_pdf
+                st.session_state["pf_depot_curve_pdf_filename"] = uploaded_pdf.name
+            except Exception as exc:  # pragma: no cover - defensive UI handler
+                st.error(f"PDF konnte nicht gelesen werden: {exc}")
 
     tx_df = st.session_state.get("pf_depot_curve_tx_df")
-    if not isinstance(tx_df, pd.DataFrame) or tx_df.empty:
+    pdf_df = st.session_state.get("pf_depot_curve_pdf_df")
+    has_csv = isinstance(tx_df, pd.DataFrame) and not tx_df.empty
+    has_pdf = isinstance(pdf_df, pd.DataFrame) and not pdf_df.empty
+
+    if not has_csv:
         st.info("Noch keine Trade-Republic-CSV geladen — die Depotkurve unten fällt auf die manuell gepflegten Positionen zurück.")
         return False
 
-    filename = st.session_state.get("pf_depot_curve_tx_filename", "")
-    info_cols = st.columns([3, 1])
+    csv_name = st.session_state.get("pf_depot_curve_tx_filename", "")
+    pdf_name = st.session_state.get("pf_depot_curve_pdf_filename", "")
+    status_lines = [f"CSV: **{csv_name or 'Transaktionen'}** · {len(tx_df):,} Buchungen"]
+    if has_pdf:
+        status_lines.append(f"PDF: **{pdf_name or 'Kontoauszug'}** · {len(pdf_df):,} Cash-Bewegungen")
+    info_cols = st.columns([3, 1, 1])
     with info_cols[0]:
-        st.caption(f"Aktive Datei: **{filename or 'Transaktionen'}** · {len(tx_df):,} Buchungen")
+        st.caption(" · ".join(status_lines))
     with info_cols[1]:
-        if st.button("Datei verwerfen", key="pf_depot_curve_csv_reset", width="stretch"):
+        if st.button("CSV verwerfen", key="pf_depot_curve_csv_reset", width="stretch"):
             st.session_state.pop("pf_depot_curve_tx_df", None)
             st.session_state.pop("pf_depot_curve_tx_filename", None)
             st.session_state.pop("pf_depot_curve_isin_overrides", None)
             st.rerun()
+    with info_cols[2]:
+        if has_pdf and st.button("PDF verwerfen", key="pf_depot_curve_pdf_reset", width="stretch"):
+            st.session_state.pop("pf_depot_curve_pdf_df", None)
+            st.session_state.pop("pf_depot_curve_pdf_filename", None)
+            st.rerun()
 
-    cash_default = _safe_float(settings.get("cash_balance"), 0.0)
     end_default = datetime.now(timezone.utc).date()
     ctrl_cash, ctrl_end = st.columns([1, 1])
-    with ctrl_cash:
-        cash_value = st.number_input(
-            "Aktueller Cash-Bestand (EUR)", min_value=0.0,
-            value=float(cash_default), step=100.0,
-            key="pf_depot_curve_cash_input",
-            help="Im TR-Trade-CSV ist der Cash-Bestand nicht enthalten. Trage hier deinen aktuellen Cash-Saldo ein — er wird als Konstante auf die Kurve addiert.",
-        )
+    if has_pdf:
+        with ctrl_cash:
+            latest_balance = float(pdf_df["balance_eur"].iloc[-1]) if not pdf_df.empty else 0.0
+            st.metric("Cash (Endsaldo aus PDF)", _format_eur(latest_balance))
+            st.caption("Cash-Trajektorie kommt automatisch aus dem Kontoauszug.")
+        cash_value = latest_balance
+    else:
+        cash_default = _safe_float(settings.get("cash_balance"), 0.0)
+        with ctrl_cash:
+            cash_value = st.number_input(
+                "Aktueller Cash-Bestand (EUR)", min_value=0.0,
+                value=float(cash_default), step=100.0,
+                key="pf_depot_curve_cash_input",
+                help="Im TR-Trade-CSV ist der Cash-Bestand nicht enthalten. Lade alternativ den "
+                     "Kontoauszug-PDF hoch, dann wird der Cash-Verlauf täglich automatisch gerechnet.",
+            )
     with ctrl_end:
         end_date = st.date_input(
             "Enddatum", value=end_default,
@@ -3769,10 +4077,42 @@ def _render_csv_curve_section(settings: dict) -> bool:
                 st.success("Ticker-Zuordnung gespeichert. Kurve wird neu berechnet.")
                 st.rerun()
 
+    if has_pdf:
+        with st.expander("Kontoauszug-Buchungen (geparst aus PDF)", expanded=False):
+            preview = pdf_df.copy()
+            preview["date"] = pd.to_datetime(preview["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+            preview = preview.rename(columns={
+                "date": "Datum", "type": "Typ", "description": "Beschreibung",
+                "isin": "ISIN", "event_kind": "Kategorie",
+                "inflow_eur": "Eingang", "outflow_eur": "Ausgang", "balance_eur": "Saldo",
+            })
+            kind_counts = pdf_df["event_kind"].value_counts().to_dict()
+            kind_summary = ", ".join(f"{k}: {v}" for k, v in kind_counts.items())
+            st.caption(f"{len(preview):,} Buchungen · {kind_summary}")
+            st.dataframe(
+                preview.round(2), width="stretch", hide_index=True,
+                column_config={
+                    "Datum": st.column_config.TextColumn("Datum", width="small"),
+                    "Eingang": st.column_config.NumberColumn("Eingang", format="%.2f €"),
+                    "Ausgang": st.column_config.NumberColumn("Ausgang", format="%.2f €"),
+                    "Saldo": st.column_config.NumberColumn("Saldo", format="%.2f €"),
+                },
+            )
+
+    cash_series = None
+    if has_pdf:
+        bench = _fetch_close_history("^GSPC", pd.Timestamp(pdf_df["date"].min()), pd.Timestamp(end_date))
+        if len(bench):
+            cal = pd.DatetimeIndex(bench.index).normalize().unique().sort_values()
+        else:
+            cal = pd.DatetimeIndex(pd.date_range(pd.Timestamp(pdf_df["date"].min()), pd.Timestamp(end_date), freq="B"))
+        cash_series = _build_cash_trajectory_from_pdf(pdf_df, cal)
+
     with st.spinner("Berechne Depotkurve aus Transaktionen …"):
         curve = _build_curve_from_transactions(
             tx_df, current_cash=float(cash_value),
             isin_to_ticker=ticker_map, end_date=end_date,
+            cash_series=cash_series,
         )
     if curve.empty:
         st.warning(
