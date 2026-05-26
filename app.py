@@ -2371,7 +2371,13 @@ def _bulk_close_history_map(symbols: tuple[str, ...], start_date, end_date) -> d
         close = pd.to_numeric(frame["Close"], errors="coerce").dropna()
         if close.empty:
             continue
-        close.index = pd.to_datetime(close.index).normalize()
+        idx = pd.to_datetime(close.index, errors="coerce")
+        # yfinance can return tz-aware DatetimeIndex (e.g. UTC). For date-only
+        # filtering we compare normalized, tz-naive timestamps to avoid
+        # "Invalid comparison" between tz-aware and tz-naive values.
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        close.index = idx.normalize()
         close = close[~close.index.duplicated(keep="last")].sort_index()
         close = close[(close.index >= start_ts) & (close.index <= end_ts)]
         if close.empty:
