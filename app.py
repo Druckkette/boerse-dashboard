@@ -3165,7 +3165,13 @@ def _build_curve_from_transactions(
             signed_shares = float(getattr(row, "shares_num", 0.0) or 0.0)
             if signed_shares == 0.0:
                 continue
-            running = max(running + signed_shares, 0.0)
+            # TR exports SPLIT rows with the *post-split total holding* in
+            # `shares` (not a buy/sell delta). Treating it as delta would
+            # overstate holdings and inflate the reconstructed depot value.
+            if typ == "SPLIT":
+                running = max(abs(signed_shares), 0.0)
+            else:
+                running = max(running + signed_shares, 0.0)
             day = pd.Timestamp(row.date).normalize()
             shares_series.loc[shares_series.index >= day] = running
         aligned = close.reindex(calendar, method="ffill").ffill().bfill().fillna(0.0)
