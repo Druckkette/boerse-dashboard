@@ -1398,7 +1398,8 @@ def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.
         if not isin:
             continue
         typ = str(row.get("type", "") or "").strip().upper()
-        shares = abs(float(_safe_float(row.get("shares_num"), 0.0)))
+        raw_shares = float(_safe_float(row.get("shares_num"), 0.0))
+        shares = abs(raw_shares)
         price = float(_safe_float(row.get("price_num"), 0.0))
         state = states.setdefault(isin, {"shares": 0.0, "cost": 0.0, "first_buy_date": None, "name": row.get("name", ""), "asset_class": row.get("asset_class", ""), "currency": row.get("currency", "EUR")})
         state["name"] = row.get("name", state["name"])
@@ -1427,7 +1428,9 @@ def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.
             state["shares"] -= sell_shares
             state["cost"] -= sell_shares * avg
         elif typ == "SPLIT":
-            state["shares"] += shares
+            # TR encodes split bookings as the *post-split total holding*.
+            # Treating this as additive delta inflates positions (often ~x3/x4).
+            state["shares"] = max(shares, 0.0)
         elif typ in {"WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS", "DELISTED", "EXPIRATION"}:
             red = min(max(shares, 0.0), max(state["shares"], 0.0))
             avg = (state["cost"] / state["shares"]) if state["shares"] > 0 else 0.0
@@ -3162,14 +3165,22 @@ def _build_curve_from_transactions(
             typ = str(getattr(row, "type", "") or "").upper()
             if typ in NON_SHARE_EVENTS:
                 continue
-            signed_shares = float(getattr(row, "shares_num", 0.0) or 0.0)
-            if signed_shares == 0.0:
+            raw_shares = float(getattr(row, "shares_num", 0.0) or 0.0)
+            if raw_shares == 0.0:
                 continue
+            # Handle both TR variants: some exports encode SELL as negative shares,
+            # others as positive shares with direction coming from `type`.
+            if typ in {"SELL", "TRANSFER_OUT", "WARRANT_EXERCISE", "INSOLVENCY_PROCEEDINGS", "DELISTED", "EXPIRATION"}:
+                signed_shares = -abs(raw_shares)
+            elif typ in {"BUY", "TRANSFER_IN", "SELL_CANCELLED"}:
+                signed_shares = abs(raw_shares)
+            else:
+                signed_shares = raw_shares
             # TR exports SPLIT rows with the *post-split total holding* in
             # `shares` (not a buy/sell delta). Treating it as delta would
             # overstate holdings and inflate the reconstructed depot value.
             if typ == "SPLIT":
-                running = max(abs(signed_shares), 0.0)
+                running = max(abs(raw_shares), 0.0)
             else:
                 running = max(running + signed_shares, 0.0)
             day = pd.Timestamp(row.date).normalize()
