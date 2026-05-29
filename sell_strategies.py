@@ -564,22 +564,54 @@ def _rs_linie_context(
     pnl = pnl_pct(position, daten)
     schwelle_tag_woche = float(pnl_tag_zu_woche)
     schwelle_woche_monat = float(max(pnl_woche_zu_monat, schwelle_tag_woche))
-    if pnl < schwelle_tag_woche:
-        zeitebene = "tag"; basis = daten; basis_spy = daten_spy; sp, lp = 21, 50
-    elif pnl < schwelle_woche_monat:
-        if wochen_daten is None or wochen_daten_spy is None or len(wochen_daten) == 0 or len(wochen_daten_spy) == 0:
-            return {"error": "Keine ausreichenden Wochen-/Benchmark-Daten für die RS-Wochenebene verfügbar.", "pnl": pnl}
-        zeitebene = "woche"; basis = wochen_daten; basis_spy = wochen_daten_spy; sp, lp = 10, 25
-    else:
-        zeitebene = "monat"; basis = daten.resample("ME").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-        basis_spy = daten_spy.resample("ME").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}); sp, lp = 12, 24
-    joined = pd.concat([basis["close"].rename("a"), basis_spy["close"].rename("b")], axis=1, join="inner").dropna()
-    if joined.empty:
-        return {"error": "Keine überlappenden Kursdaten für Aktie und Benchmark — RS-Linie kann nicht berechnet werden.", "pnl": pnl, "zeitebene": zeitebene}
-    rs = (joined["a"] / joined["b"]).dropna()
-    required = max(lp + 1, 4)
-    if len(rs) < required:
-        return {"error": f"Zu wenige RS-Datenpunkte für {lp}-MA ({len(rs)}/{required}).", "pnl": pnl, "zeitebene": zeitebene, "sp": sp, "lp": lp}
+
+    def _monthly_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
+        if frame is None or len(frame) == 0:
+            return None
+        if not isinstance(frame.index, pd.DatetimeIndex):
+            return None
+        return frame.resample("ME").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna(subset=["close"])
+
+    def _timeframe_candidates() -> list[tuple[str, pd.DataFrame | None, pd.DataFrame | None, int, int]]:
+        daily = ("tag", daten, daten_spy, 21, 50)
+        weekly = ("woche", wochen_daten, wochen_daten_spy, 10, 25)
+        monthly = ("monat", _monthly_frame(daten), _monthly_frame(daten_spy), 12, 24)
+        if pnl < schwelle_tag_woche:
+            return [daily]
+        if pnl < schwelle_woche_monat:
+            return [weekly, daily]
+        # Bei hohen Gewinnen ist die Monatsebene fachlich bevorzugt. Wenn aber
+        # noch keine 25 Monats-RS-Punkte vorliegen (z. B. 17/25), soll die
+        # Strategie nicht komplett ausfallen, sondern auf die nächstschnellere
+        # Ebene mit ausreichend Daten zurückfallen.
+        return [monthly, weekly, daily]
+
+    fehlversuche: list[str] = []
+    intended_zeitebene = _timeframe_candidates()[0][0]
+    fallback_from: str | None = None
+    selected = None
+    for zeitebene, basis, basis_spy, sp, lp in _timeframe_candidates():
+        required = max(lp + 1, 4)
+        if basis is None or basis_spy is None or len(basis) == 0 or len(basis_spy) == 0:
+            fehlversuche.append(f"{zeitebene}: keine ausreichenden Kurs-/Benchmark-Daten")
+            continue
+        joined = pd.concat([basis["close"].rename("a"), basis_spy["close"].rename("b")], axis=1, join="inner").dropna()
+        if joined.empty:
+            fehlversuche.append(f"{zeitebene}: keine überlappenden Kursdaten")
+            continue
+        rs = (joined["a"] / joined["b"]).dropna()
+        if len(rs) < required:
+            fehlversuche.append(f"{zeitebene}: {len(rs)}/{required} RS-Datenpunkte für {lp}-MA")
+            continue
+        selected = (zeitebene, sp, lp, rs)
+        fallback_from = intended_zeitebene if zeitebene != intended_zeitebene else None
+        break
+
+    if selected is None:
+        detail = "; ".join(fehlversuche) if fehlversuche else "keine auswertbaren RS-Daten"
+        return {"error": f"Zu wenige RS-Datenpunkte für die RS-Linie ({detail}).", "pnl": pnl, "zeitebene": intended_zeitebene}
+
+    zeitebene, sp, lp, rs = selected
     rsf = sma(rs, sp)
     rsl = sma(rs, lp)
     latest_rs = _none_if_nan(rs.iloc[-1])
@@ -602,8 +634,8 @@ def _rs_linie_context(
         "latest_fast": latest_fast,
         "latest_slow": latest_slow,
         "days_under_fast": cnt,
+        "fallback_from": fallback_from,
     }
-
 
 def strategie_rs_linie(
     position,
@@ -980,12 +1012,14 @@ def diagnose_strategie_kein_signal(
         lp = ctx.get("lp")
         zeitebene = ctx.get("zeitebene")
         tage_unter_fast = int(ctx.get("days_under_fast") or 0)
+        fallback_from = ctx.get("fallback_from")
+        fallback_text = f"; Fallback von {fallback_from} auf {zeitebene} wegen zu kurzer RS-Historie" if fallback_from else ""
         fast_lage = "über" if rs_wert is not None and fast is not None and rs_wert >= fast else "unter"
         slow_lage = "über" if rs_wert is not None and slow is not None and rs_wert >= slow else "unter"
         return (
             f"RS-Linie ({zeitebene}) liegt aktuell {fast_lage} dem {sp}-MA und {slow_lage} dem {lp}-MA "
             f"(RS {rs_wert:.4f}, {sp}-MA {fast:.4f}, {lp}-MA {slow:.4f}; "
-            f"{tage_unter_fast} Perioden in Folge unter schnellem MA; P&L {pnl:.1f}% bestimmt die Zeitebene)."
+            f"{tage_unter_fast} Perioden in Folge unter schnellem MA; P&L {pnl:.1f}% bestimmt die Zeitebene{fallback_text})."
         )
 
     if strategie_key == "ma_basierte_sequenz":
