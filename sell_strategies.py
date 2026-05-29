@@ -660,6 +660,7 @@ def _rs_linie_context(
         "basis_detail": basis_details[zeitebene],
         "actual_points": len(rs),
         "required_points": required_points,
+        "failed_attempts": fehlversuche,
     }
 
 def _rs_zeitraum_label(zeitebene: str, count: int | None = None) -> str:
@@ -673,6 +674,37 @@ def _rs_zeitraum_label(zeitebene: str, count: int | None = None) -> str:
         return singular
     return singular if count == 1 else plural
 
+
+def _rs_ma_label(perioden: int, zeitebene: str) -> str:
+    labels = {
+        "tag": "Tage",
+        "woche": "Wochen",
+        "monat": "Monats",
+    }
+    return f"{perioden}-{labels.get(zeitebene, zeitebene)}-MA"
+
+
+def _rs_datencheck_text(ctx: dict[str, Any], zeitebene: str) -> str:
+    actual = ctx.get("actual_points")
+    required = ctx.get("required_points")
+    basis = ctx.get("basis_detail")
+    fallback_from = ctx.get("fallback_from")
+    failed_attempts = ctx.get("failed_attempts") or []
+    basis_labels = {"tag": "Tagesbasis", "woche": "Wochenbasis", "monat": "Monatsbasis"}
+    parts = [f"Datencheck: {actual}/{required} RS-Punkte auf {basis_labels.get(zeitebene, zeitebene)} vorhanden — ausreichend für schnellen und langsamen Durchschnitt"]
+    if basis:
+        parts.append(f"Basis: {basis}")
+    if fallback_from and failed_attempts:
+        parts.append(f"Fallback von {fallback_from} auf {zeitebene}, weil die bevorzugte Ebene nicht genug Daten hatte ({failed_attempts[0]})")
+    return "; ".join(parts) + "."
+
+
+def _rs_langsamer_ma_text(latest_rs: float | None, latest_slow: float | None, slow_ma: str) -> str:
+    if latest_rs is None or latest_slow is None:
+        return f"Langsamer Durchschnitt: {slow_ma} kann noch nicht zuverlässig beurteilt werden."
+    lage = "auch unter" if latest_rs < latest_slow else "noch nicht unter"
+    folge = "Damit ist zusätzlich RS-Stufe 3 aktiv." if latest_rs < latest_slow else "Deshalb ist nur die schnelle RS-Schwäche aktiv, nicht die langsame Stufe 3."
+    return f"Langsamer Durchschnitt: RS liegt {lage} dem {slow_ma} (RS {latest_rs:.4f} vs. {slow_ma} {latest_slow:.4f}). {folge}"
 
 def _rs_ma_label(perioden: int, zeitebene: str) -> str:
     labels = {
@@ -698,10 +730,14 @@ def strategie_rs_linie(
     sp = ctx["sp"]; lp = ctx["lp"]; zeitebene = ctx["zeitebene"]
     fast_ma = _rs_ma_label(sp, zeitebene)
     slow_ma = _rs_ma_label(lp, zeitebene)
+    latest_rs = ctx.get("latest_rs")
+    latest_slow = ctx.get("latest_slow")
+    datencheck = _rs_datencheck_text(ctx, zeitebene)
+    slow_status = _rs_langsamer_ma_text(latest_rs, latest_slow, slow_ma)
     out=[]
-    if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS-Linie bricht {fast_ma}",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1",f"Erstes Warnsignal — die relative Stärke fällt auf {zeitebene}-Basis unter den schnellen Durchschnitt ({fast_ma})."))
-    if ctx["days_under_fast"]>=3: out.append(_signal(f"RS-Linie seit 3 {_rs_zeitraum_label(zeitebene, 3)} unter {fast_ma}",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2",f"Bestätigte relative Schwäche — die Aktie läuft seit 3 {_rs_zeitraum_label(zeitebene, 3).lower()} schwächer als die Benchmark und bleibt unter dem schnellen RS-Durchschnitt; zweite Tranche prüfen."))
-    if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS-Linie bricht {slow_ma}",50,"schluss",True,None,"Kap. 6.4 RS-Stufe 3",f"Endgültiges RS-Schwächesignal — die relative Stärke liegt unter dem langsamen Durchschnitt ({slow_ma}); Restverkauf prüfen."))
+    if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS-Linie bricht {fast_ma}",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1",f"Erstes Warnsignal — die relative Stärke fällt auf {zeitebene}-Basis unter den schnellen Durchschnitt ({fast_ma}). {slow_status} {datencheck}"))
+    if ctx["days_under_fast"]>=3: out.append(_signal(f"RS-Linie seit 3 {_rs_zeitraum_label(zeitebene, 3)} unter {fast_ma}",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2",f"Bestätigte relative Schwäche — die Aktie läuft seit 3 {_rs_zeitraum_label(zeitebene, 3)} schwächer als die Benchmark und bleibt unter dem schnellen RS-Durchschnitt; zweite Tranche prüfen. {slow_status} {datencheck}"))
+    if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS-Linie bricht {slow_ma}",50,"schluss",True,None,"Kap. 6.4 RS-Stufe 3",f"Endgültiges RS-Schwächesignal — die relative Stärke liegt unter dem langsamen Durchschnitt ({slow_ma}); Restverkauf prüfen. {datencheck}"))
     return out
 
 def strategie_ma_basierte_sequenz(
