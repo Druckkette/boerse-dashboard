@@ -564,6 +564,20 @@ def _rs_linie_context(
     pnl = pnl_pct(position, daten)
     schwelle_tag_woche = float(pnl_tag_zu_woche)
     schwelle_woche_monat = float(max(pnl_woche_zu_monat, schwelle_tag_woche))
+    if pnl < schwelle_tag_woche:
+        intended_zeitebene = "tag"
+        intended_reason = f"P&L {pnl:.1f}% liegt unter der Tag→Woche-Schwelle {schwelle_tag_woche:g}%"
+    elif pnl < schwelle_woche_monat:
+        intended_zeitebene = "woche"
+        intended_reason = f"P&L {pnl:.1f}% liegt zwischen Tag→Woche {schwelle_tag_woche:g}% und Woche→Monat {schwelle_woche_monat:g}%"
+    else:
+        intended_zeitebene = "monat"
+        intended_reason = f"P&L {pnl:.1f}% liegt ab der Woche→Monat-Schwelle {schwelle_woche_monat:g}%"
+    basis_details = {
+        "tag": "Tages-Schlusskurse aus Aktie und Benchmark",
+        "woche": "W-FRI-Wochen-Schlusskurse aus Aktie und Benchmark",
+        "monat": "Monats-Schlusskurse (ME) aus Aktie und Benchmark",
+    }
 
     def _monthly_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
         if frame is None or len(frame) == 0:
@@ -576,9 +590,9 @@ def _rs_linie_context(
         daily = ("tag", daten, daten_spy, 21, 50)
         weekly = ("woche", wochen_daten, wochen_daten_spy, 10, 25)
         monthly = ("monat", _monthly_frame(daten), _monthly_frame(daten_spy), 12, 24)
-        if pnl < schwelle_tag_woche:
+        if intended_zeitebene == "tag":
             return [daily]
-        if pnl < schwelle_woche_monat:
+        if intended_zeitebene == "woche":
             return [weekly, daily]
         # Bei hohen Gewinnen ist die Monatsebene fachlich bevorzugt. Wenn aber
         # noch keine 25 Monats-RS-Punkte vorliegen (z. B. 17/25), soll die
@@ -587,21 +601,20 @@ def _rs_linie_context(
         return [monthly, weekly, daily]
 
     fehlversuche: list[str] = []
-    intended_zeitebene = _timeframe_candidates()[0][0]
     fallback_from: str | None = None
     selected = None
     for zeitebene, basis, basis_spy, sp, lp in _timeframe_candidates():
         required = max(lp + 1, 4)
         if basis is None or basis_spy is None or len(basis) == 0 or len(basis_spy) == 0:
-            fehlversuche.append(f"{zeitebene}: keine ausreichenden Kurs-/Benchmark-Daten")
+            fehlversuche.append(f"{zeitebene}: keine ausreichenden Kurs-/Benchmark-Daten ({basis_details[zeitebene]})")
             continue
         joined = pd.concat([basis["close"].rename("a"), basis_spy["close"].rename("b")], axis=1, join="inner").dropna()
         if joined.empty:
-            fehlversuche.append(f"{zeitebene}: keine überlappenden Kursdaten")
+            fehlversuche.append(f"{zeitebene}: keine überlappenden Kursdaten ({basis_details[zeitebene]})")
             continue
         rs = (joined["a"] / joined["b"]).dropna()
         if len(rs) < required:
-            fehlversuche.append(f"{zeitebene}: {len(rs)}/{required} RS-Datenpunkte für {lp}-MA")
+            fehlversuche.append(f"{zeitebene}: {len(rs)}/{required} RS-Datenpunkte für {lp}-MA ({basis_details[zeitebene]})")
             continue
         selected = (zeitebene, sp, lp, rs)
         fallback_from = intended_zeitebene if zeitebene != intended_zeitebene else None
@@ -609,9 +622,16 @@ def _rs_linie_context(
 
     if selected is None:
         detail = "; ".join(fehlversuche) if fehlversuche else "keine auswertbaren RS-Daten"
-        return {"error": f"Zu wenige RS-Datenpunkte für die RS-Linie ({detail}).", "pnl": pnl, "zeitebene": intended_zeitebene}
+        return {
+            "error": f"Zu wenige RS-Datenpunkte für die RS-Linie ({detail}). Bevorzugte Zeitebene: {intended_zeitebene} — {intended_reason}.",
+            "pnl": pnl,
+            "zeitebene": intended_zeitebene,
+            "intended_zeitebene": intended_zeitebene,
+            "intended_reason": intended_reason,
+        }
 
     zeitebene, sp, lp, rs = selected
+    required_points = max(lp + 1, 4)
     rsf = sma(rs, sp)
     rsl = sma(rs, lp)
     latest_rs = _none_if_nan(rs.iloc[-1])
@@ -635,7 +655,32 @@ def _rs_linie_context(
         "latest_slow": latest_slow,
         "days_under_fast": cnt,
         "fallback_from": fallback_from,
+        "intended_zeitebene": intended_zeitebene,
+        "intended_reason": intended_reason,
+        "basis_detail": basis_details[zeitebene],
+        "actual_points": len(rs),
+        "required_points": required_points,
     }
+
+def _rs_zeitraum_label(zeitebene: str, count: int | None = None) -> str:
+    labels = {
+        "tag": ("Tag", "Tage"),
+        "woche": ("Woche", "Wochen"),
+        "monat": ("Monat", "Monate"),
+    }
+    singular, plural = labels.get(zeitebene, (zeitebene, zeitebene))
+    if count is None:
+        return singular
+    return singular if count == 1 else plural
+
+
+def _rs_ma_label(perioden: int, zeitebene: str) -> str:
+    labels = {
+        "tag": "Tage",
+        "woche": "Wochen",
+        "monat": "Monats",
+    }
+    return f"{perioden}-{labels.get(zeitebene, zeitebene)}-MA"
 
 def strategie_rs_linie(
     position,
@@ -651,10 +696,12 @@ def strategie_rs_linie(
         return []
     rs = ctx["rs"]; rsf = ctx["rsf"]; rsl = ctx["rsl"]
     sp = ctx["sp"]; lp = ctx["lp"]; zeitebene = ctx["zeitebene"]
+    fast_ma = _rs_ma_label(sp, zeitebene)
+    slow_ma = _rs_ma_label(lp, zeitebene)
     out=[]
-    if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS bricht {sp}-MA ({zeitebene})",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1","Erstes Warnsignal — RS-Linie bricht schnellen MA"))
-    if ctx["days_under_fast"]>=3: out.append(_signal(f"RS 3 {zeitebene} unter {sp}-MA",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2","Bestätigte Schwäche — zweite Tranche"))
-    if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS bricht {lp}-MA ({zeitebene})",50,"schluss",True,None,"Kap. 6.4 RS-Stufe 3","Endgültiger Ausstieg — Rest verkaufen"))
+    if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS-Linie bricht {fast_ma}",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1",f"Erstes Warnsignal — die relative Stärke fällt auf {zeitebene}-Basis unter den schnellen Durchschnitt ({fast_ma})."))
+    if ctx["days_under_fast"]>=3: out.append(_signal(f"RS-Linie seit 3 {_rs_zeitraum_label(zeitebene, 3)} unter {fast_ma}",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2",f"Bestätigte relative Schwäche — die Aktie läuft seit 3 {_rs_zeitraum_label(zeitebene, 3).lower()} schwächer als die Benchmark und bleibt unter dem schnellen RS-Durchschnitt; zweite Tranche prüfen."))
+    if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS-Linie bricht {slow_ma}",50,"schluss",True,None,"Kap. 6.4 RS-Stufe 3",f"Endgültiges RS-Schwächesignal — die relative Stärke liegt unter dem langsamen Durchschnitt ({slow_ma}); Restverkauf prüfen."))
     return out
 
 def strategie_ma_basierte_sequenz(
@@ -1013,13 +1060,19 @@ def diagnose_strategie_kein_signal(
         zeitebene = ctx.get("zeitebene")
         tage_unter_fast = int(ctx.get("days_under_fast") or 0)
         fallback_from = ctx.get("fallback_from")
+        intended_reason = ctx.get("intended_reason")
+        basis_detail = ctx.get("basis_detail")
+        actual_points = ctx.get("actual_points")
+        required_points = ctx.get("required_points")
         fallback_text = f"; Fallback von {fallback_from} auf {zeitebene} wegen zu kurzer RS-Historie" if fallback_from else ""
         fast_lage = "über" if rs_wert is not None and fast is not None and rs_wert >= fast else "unter"
         slow_lage = "über" if rs_wert is not None and slow is not None and rs_wert >= slow else "unter"
         return (
             f"RS-Linie ({zeitebene}) liegt aktuell {fast_lage} dem {sp}-MA und {slow_lage} dem {lp}-MA "
             f"(RS {rs_wert:.4f}, {sp}-MA {fast:.4f}, {lp}-MA {slow:.4f}; "
-            f"{tage_unter_fast} Perioden in Folge unter schnellem MA; P&L {pnl:.1f}% bestimmt die Zeitebene{fallback_text})."
+            f"{tage_unter_fast} Perioden in Folge unter schnellem MA; "
+            f"Basis: {basis_detail} mit {actual_points}/{required_points} Datenpunkten; "
+            f"Zeitebene wegen {intended_reason}{fallback_text})."
         )
 
     if strategie_key == "ma_basierte_sequenz":

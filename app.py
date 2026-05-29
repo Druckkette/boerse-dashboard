@@ -13387,11 +13387,19 @@ def _render_sell_strategy_hub() -> None:
         k = str(s.get("strategy_key") or "")
         signals_by_key.setdefault(k, []).append(s)
 
+    def _format_trigger_label(trigger_typ: str) -> str:
+        labels = {
+            "schluss": "Schlusskurs",
+            "intraday": "Intraday",
+            "info": "Info",
+        }
+        return labels.get(str(trigger_typ or "").lower(), str(trigger_typ or ""))
+
     def _render_signal_card(sig: dict) -> None:
         name = str(sig.get("name") or "Signal")
         tranche = sig.get("tranche_pct", 0)
         aktiv = bool(sig.get("aktuell_aktiv"))
-        trigger = str(sig.get("trigger_typ") or "")
+        trigger = _format_trigger_label(str(sig.get("trigger_typ") or ""))
         marke = sig.get("naechste_marke")
         ref = str(sig.get("buch_verweis") or "")
         grund = str(sig.get("begruendung") or "")
