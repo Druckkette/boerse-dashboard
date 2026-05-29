@@ -682,7 +682,6 @@ def _rs_ma_label(perioden: int, zeitebene: str) -> str:
     }
     return f"{perioden}-{labels.get(zeitebene, zeitebene)}-MA"
 
-
 def strategie_rs_linie(
     position,
     daten,
