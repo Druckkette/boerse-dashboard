@@ -706,6 +706,13 @@ def _rs_langsamer_ma_text(latest_rs: float | None, latest_slow: float | None, sl
     folge = "Damit ist zusätzlich RS-Stufe 3 aktiv." if latest_rs < latest_slow else "Deshalb ist nur die schnelle RS-Schwäche aktiv, nicht die langsame Stufe 3."
     return f"Langsamer Durchschnitt: RS liegt {lage} dem {slow_ma} (RS {latest_rs:.4f} vs. {slow_ma} {latest_slow:.4f}). {folge}"
 
+def _rs_ma_label(perioden: int, zeitebene: str) -> str:
+    labels = {
+        "tag": "Tage",
+        "woche": "Wochen",
+        "monat": "Monats",
+    }
+    return f"{perioden}-{labels.get(zeitebene, zeitebene)}-MA"
 
 def strategie_rs_linie(
     position,
