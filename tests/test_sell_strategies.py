@@ -280,6 +280,26 @@ def test_rs_linie_uses_monthly_above_80_pct():
     assert any("(monat)" in s["name"] for s in sigs)
 
 
+
+
+def test_diagnose_rs_linie_reports_actual_ma_position():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df(([100] * 55) + ([90] * 5))
+    spy = make_df([100] * len(d))
+    grund = diagnose_strategie_kein_signal("rs_linie", p, d, d, spy, d, "Bullisch", {})
+    assert "unter dem 21-MA" in grund
+    assert "unter dem 50-MA" in grund
+    assert "RS 0.9000" in grund
+
+
+def test_rs_linie_below_both_mas_triggers_slow_ma_signal():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df(([100] * 55) + ([90] * 5))
+    spy = make_df([100] * len(d))
+    sigs = strategie_rs_linie(p, d, spy, d, d)
+    names = [s["name"] for s in sigs]
+    assert "RS bricht 50-MA (tag)" in names
+
 def test_ma_bruch_defensiv_adds_downward_ma200_confirmation_signal():
     p = Position("T", 100, "2026-01-01", 10)
     daily = pd.DataFrame({
