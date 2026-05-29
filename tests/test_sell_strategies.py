@@ -266,7 +266,34 @@ def test_rs_linie_uses_weekly_between_20_and_80_pct():
     w = make_df(([100] * 10) + ([140] * 15) + [90])
     w_spy = make_df([100] * len(w))
     sigs = strategie_rs_linie(p, d, spy, w, w_spy)
-    assert any("(woche)" in s["name"] for s in sigs)
+    assert any("Wochen-MA" in s["name"] for s in sigs)
+
+
+def test_rs_linie_three_period_signal_uses_readable_weekly_label():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100 + i for i in range(60)] + [130])  # +30%, therefore weekly RS timeframe
+    spy = make_df([100] * len(d))
+    w = make_df(([100] * 10) + ([140] * 20) + ([90] * 3))
+    w_spy = make_df([100] * len(w))
+
+    sigs = strategie_rs_linie(p, d, spy, w, w_spy)
+
+    assert any("RS-Linie seit 3 Wochen unter 10-Wochen-MA" == s["name"] for s in sigs)
+
+
+def test_rs_linie_three_period_signal_explains_slow_ma_and_data_check():
+    p = Position("T", 100, "2026-01-01", 10)
+    d = make_df([100 + i for i in range(60)] + [130])  # +30%, therefore weekly RS timeframe
+    spy = make_df([100] * len(d))
+    w = make_df(([100] * 23) + ([200] * 7) + ([170] * 3))
+    w_spy = make_df([100] * len(w))
+
+    sigs = strategie_rs_linie(p, d, spy, w, w_spy)
+    signal = next(s for s in sigs if s["name"] == "RS-Linie seit 3 Wochen unter 10-Wochen-MA")
+
+    assert "Langsamer Durchschnitt: RS liegt noch nicht unter dem 25-Wochen-MA" in signal["begruendung"]
+    assert "nur die schnelle RS-Schwäche aktiv" in signal["begruendung"]
+    assert "Datencheck: 33/26 RS-Punkte auf Wochenbasis vorhanden" in signal["begruendung"]
 
 
 def test_rs_linie_uses_monthly_above_80_pct():
@@ -277,7 +304,41 @@ def test_rs_linie_uses_monthly_above_80_pct():
     spy = pd.DataFrame({"open": [100] * 30, "high": [100] * 30, "low": [100] * 30, "close": [100] * 30, "volume": [1000] * 30}, index=idx)
     w = make_df([100] * 30)
     sigs = strategie_rs_linie(p, d, spy, w, w)
-    assert any("(monat)" in s["name"] for s in sigs)
+    assert any("Monats-MA" in s["name"] for s in sigs)
+
+
+def test_rs_linie_falls_back_to_weekly_when_monthly_history_is_short():
+    p = Position("T", 100, "2026-01-01", 10)
+    month_idx = pd.date_range("2025-01-31", periods=17, freq="ME")
+    month_closes = ([300] * 16) + [190]
+    d = pd.DataFrame({"open": month_closes, "high": month_closes, "low": month_closes, "close": month_closes, "volume": [1000] * 17}, index=month_idx)
+    spy = pd.DataFrame({"open": [100] * 17, "high": [100] * 17, "low": [100] * 17, "close": [100] * 17, "volume": [1000] * 17}, index=month_idx)
+    week_idx = pd.date_range("2024-01-05", periods=80, freq="W-FRI")
+    week_closes = ([300] * 79) + [190]
+    w = pd.DataFrame({"open": week_closes, "high": week_closes, "low": week_closes, "close": week_closes, "volume": [1000] * 80}, index=week_idx)
+    w_spy = pd.DataFrame({"open": [100] * 80, "high": [100] * 80, "low": [100] * 80, "close": [100] * 80, "volume": [1000] * 80}, index=week_idx)
+
+    sigs = strategie_rs_linie(p, d, spy, w, w_spy)
+
+    assert any("RS-Linie bricht 25-Wochen-MA" == s["name"] for s in sigs)
+
+
+def test_diagnose_rs_linie_mentions_weekly_fallback_for_short_monthly_history():
+    p = Position("T", 100, "2026-01-01", 10)
+    month_idx = pd.date_range("2025-01-31", periods=17, freq="ME")
+    month_closes = ([300] * 16) + [190]
+    d = pd.DataFrame({"open": month_closes, "high": month_closes, "low": month_closes, "close": month_closes, "volume": [1000] * 17}, index=month_idx)
+    spy = pd.DataFrame({"open": [100] * 17, "high": [100] * 17, "low": [100] * 17, "close": [100] * 17, "volume": [1000] * 17}, index=month_idx)
+    week_idx = pd.date_range("2024-01-05", periods=80, freq="W-FRI")
+    week_closes = ([300] * 79) + [190]
+    w = pd.DataFrame({"open": week_closes, "high": week_closes, "low": week_closes, "close": week_closes, "volume": [1000] * 80}, index=week_idx)
+    w_spy = pd.DataFrame({"open": [100] * 80, "high": [100] * 80, "low": [100] * 80, "close": [100] * 80, "volume": [1000] * 80}, index=week_idx)
+
+    grund = diagnose_strategie_kein_signal("rs_linie", p, d, w, spy, w_spy, "Bullisch", {})
+
+    assert "Fallback von monat auf woche" in grund
+    assert "Basis: W-FRI-Wochen-Schlusskurse" in grund
+    assert "Zeitebene wegen P&L" in grund
 
 
 
@@ -298,7 +359,7 @@ def test_rs_linie_below_both_mas_triggers_slow_ma_signal():
     spy = make_df([100] * len(d))
     sigs = strategie_rs_linie(p, d, spy, d, d)
     names = [s["name"] for s in sigs]
-    assert "RS bricht 50-MA (tag)" in names
+    assert "RS-Linie bricht 50-Tage-MA" in names
 
 def test_ma_bruch_defensiv_adds_downward_ma200_confirmation_signal():
     p = Position("T", 100, "2026-01-01", 10)
