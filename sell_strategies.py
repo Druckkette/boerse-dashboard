@@ -550,6 +550,61 @@ def strategie_groesster_einbruch(
         if cur>=mxw and wr>=float(wochenvol_ratio_schwelle): out.append(_signal("Größte Verlustwoche seit Beginn",66,"schluss",True,None,"Kap. 6.3","Wahrscheinliches Rally-Ende"))
     return out
 
+def _rs_linie_context(
+    position,
+    daten,
+    daten_spy,
+    wochen_daten,
+    wochen_daten_spy,
+    pnl_tag_zu_woche=20.0,
+    pnl_woche_zu_monat=80.0,
+):
+    if daten_spy is None or len(daten_spy) == 0:
+        return {"error": "Keine Benchmark-Daten (SPY) verfügbar — RS-Linie kann nicht berechnet werden."}
+    pnl = pnl_pct(position, daten)
+    schwelle_tag_woche = float(pnl_tag_zu_woche)
+    schwelle_woche_monat = float(max(pnl_woche_zu_monat, schwelle_tag_woche))
+    if pnl < schwelle_tag_woche:
+        zeitebene = "tag"; basis = daten; basis_spy = daten_spy; sp, lp = 21, 50
+    elif pnl < schwelle_woche_monat:
+        if wochen_daten is None or wochen_daten_spy is None or len(wochen_daten) == 0 or len(wochen_daten_spy) == 0:
+            return {"error": "Keine ausreichenden Wochen-/Benchmark-Daten für die RS-Wochenebene verfügbar.", "pnl": pnl}
+        zeitebene = "woche"; basis = wochen_daten; basis_spy = wochen_daten_spy; sp, lp = 10, 25
+    else:
+        zeitebene = "monat"; basis = daten.resample("ME").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        basis_spy = daten_spy.resample("ME").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}); sp, lp = 12, 24
+    joined = pd.concat([basis["close"].rename("a"), basis_spy["close"].rename("b")], axis=1, join="inner").dropna()
+    if joined.empty:
+        return {"error": "Keine überlappenden Kursdaten für Aktie und Benchmark — RS-Linie kann nicht berechnet werden.", "pnl": pnl, "zeitebene": zeitebene}
+    rs = (joined["a"] / joined["b"]).dropna()
+    required = max(lp + 1, 4)
+    if len(rs) < required:
+        return {"error": f"Zu wenige RS-Datenpunkte für {lp}-MA ({len(rs)}/{required}).", "pnl": pnl, "zeitebene": zeitebene, "sp": sp, "lp": lp}
+    rsf = sma(rs, sp)
+    rsl = sma(rs, lp)
+    latest_rs = _none_if_nan(rs.iloc[-1])
+    latest_fast = _none_if_nan(rsf.iloc[-1])
+    latest_slow = _none_if_nan(rsl.iloc[-1])
+    cnt = 0
+    for a, b in zip(rs.iloc[::-1], rsf.iloc[::-1]):
+        if pd.isna(b) or a >= b:
+            break
+        cnt += 1
+    return {
+        "pnl": pnl,
+        "zeitebene": zeitebene,
+        "sp": sp,
+        "lp": lp,
+        "rs": rs,
+        "rsf": rsf,
+        "rsl": rsl,
+        "latest_rs": latest_rs,
+        "latest_fast": latest_fast,
+        "latest_slow": latest_slow,
+        "days_under_fast": cnt,
+    }
+
+
 def strategie_rs_linie(
     position,
     daten,
@@ -559,30 +614,14 @@ def strategie_rs_linie(
     pnl_tag_zu_woche=20.0,
     pnl_woche_zu_monat=80.0,
 ):
-    if daten_spy is None or len(daten_spy)==0:return []
-    pnl=pnl_pct(position,daten)
-    schwelle_tag_woche=float(pnl_tag_zu_woche)
-    schwelle_woche_monat=float(max(pnl_woche_zu_monat, schwelle_tag_woche))
-    if pnl < schwelle_tag_woche:
-        zeitebene="tag"; basis=daten; basis_spy=daten_spy; sp,lp=21,50
-    elif pnl < schwelle_woche_monat:
-        if wochen_daten is None or wochen_daten_spy is None or len(wochen_daten)==0 or len(wochen_daten_spy)==0:return []
-        zeitebene="woche"; basis=wochen_daten; basis_spy=wochen_daten_spy; sp,lp=10,25
-    else:
-        zeitebene="monat"; basis=daten.resample("ME").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"})
-        basis_spy=daten_spy.resample("ME").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}); sp,lp=12,24
-    joined = pd.concat([basis["close"].rename("a"), basis_spy["close"].rename("b")], axis=1, join="inner").dropna()
-    if joined.empty:
+    ctx = _rs_linie_context(position, daten, daten_spy, wochen_daten, wochen_daten_spy, pnl_tag_zu_woche, pnl_woche_zu_monat)
+    if ctx.get("error"):
         return []
-    rs = (joined["a"] / joined["b"]).dropna()
-    if len(rs)<max(lp+1,4):return []
-    rsf=sma(rs,sp); rsl=sma(rs,lp); out=[]
+    rs = ctx["rs"]; rsf = ctx["rsf"]; rsl = ctx["rsl"]
+    sp = ctx["sp"]; lp = ctx["lp"]; zeitebene = ctx["zeitebene"]
+    out=[]
     if len(rs)>=2 and rs.iloc[-1] < rsf.iloc[-1] and rs.iloc[-2] >= rsf.iloc[-2]: out.append(_signal(f"RS bricht {sp}-MA ({zeitebene})",20,"schluss",True,None,"Kap. 6.4 RS-Stufe 1","Erstes Warnsignal — RS-Linie bricht schnellen MA"))
-    cnt=0
-    for a,b in zip(rs.iloc[::-1], rsf.iloc[::-1]):
-        if pd.isna(b) or a>=b: break
-        cnt+=1
-    if cnt>=3: out.append(_signal(f"RS 3 {zeitebene} unter {sp}-MA",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2","Bestätigte Schwäche — zweite Tranche"))
+    if ctx["days_under_fast"]>=3: out.append(_signal(f"RS 3 {zeitebene} unter {sp}-MA",30,"schluss",True,_none_if_nan(rsl.iloc[-1]),"Kap. 6.4 RS-Stufe 2","Bestätigte Schwäche — zweite Tranche"))
     if rs.iloc[-1] < rsl.iloc[-1]: out.append(_signal(f"RS bricht {lp}-MA ({zeitebene})",50,"schluss",True,None,"Kap. 6.4 RS-Stufe 3","Endgültiger Ausstieg — Rest verkaufen"))
     return out
 
@@ -923,9 +962,31 @@ def diagnose_strategie_kein_signal(
         return f"Heutiger Tagesverlust {h:.2f}% ist nicht der größte seit Einstieg (bisher max. {mx:.2f}%)."
 
     if strategie_key == "rs_linie":
-        if daten_spy is None or len(daten_spy) == 0:
-            return "Keine Benchmark-Daten (SPY) verfügbar — RS-Linie kann nicht berechnet werden."
-        return f"RS-Linie liegt aktuell über den relevanten gleitenden Durchschnitten (P&L {pnl:.1f}% bestimmt die Zeitebene tag/woche/monat)."
+        ctx = _rs_linie_context(
+            position,
+            daten,
+            daten_spy,
+            wochen_daten,
+            wochen_daten_spy,
+            o.get("rs_pnl_tag_zu_woche", 20.0),
+            o.get("rs_pnl_woche_zu_monat", 80.0),
+        )
+        if ctx.get("error"):
+            return ctx["error"]
+        rs_wert = ctx.get("latest_rs")
+        fast = ctx.get("latest_fast")
+        slow = ctx.get("latest_slow")
+        sp = ctx.get("sp")
+        lp = ctx.get("lp")
+        zeitebene = ctx.get("zeitebene")
+        tage_unter_fast = int(ctx.get("days_under_fast") or 0)
+        fast_lage = "über" if rs_wert is not None and fast is not None and rs_wert >= fast else "unter"
+        slow_lage = "über" if rs_wert is not None and slow is not None and rs_wert >= slow else "unter"
+        return (
+            f"RS-Linie ({zeitebene}) liegt aktuell {fast_lage} dem {sp}-MA und {slow_lage} dem {lp}-MA "
+            f"(RS {rs_wert:.4f}, {sp}-MA {fast:.4f}, {lp}-MA {slow:.4f}; "
+            f"{tage_unter_fast} Perioden in Folge unter schnellem MA; P&L {pnl:.1f}% bestimmt die Zeitebene)."
+        )
 
     if strategie_key == "ma_basierte_sequenz":
         ma10 = _none_if_nan(sma(daten["close"], 10).iloc[-1])
