@@ -60,3 +60,21 @@ def test_transaction_curve_uses_intraday_event_order_for_same_day_roundtrip(monk
     assert not curve.empty
     assert curve["positions_value"].tolist() == [0.0, 0.0]
     assert curve["depot_value"].tolist() == [100.0, 100.0]
+
+
+def test_suggest_yahoo_ticker_uses_local_german_isin_mapping():
+    assert app._suggest_yahoo_ticker("DE0007030009", "Rheinmetall", "STOCK") == "RHM-DE"
+
+
+def test_suggest_yahoo_ticker_prefers_german_fallback_and_ignores_raw_isin(monkeypatch):
+    def fake_search(query):
+        if query == "DE000TEST001":
+            return [{"symbol": "DE000TEST001", "name": "", "exchange": "", "type": "MANUAL"}]
+        return [
+            {"symbol": "TEST", "name": "Test AG ADR", "exchange": "NYQ", "type": "EQUITY"},
+            {"symbol": "TST.DE", "name": "Test AG", "exchange": "GER", "type": "EQUITY"},
+        ]
+
+    monkeypatch.setattr(app, "search_symbol_candidates", fake_search)
+
+    assert app._suggest_yahoo_ticker("DE000TEST001", "Test AG", "STOCK") == "TST-DE"
