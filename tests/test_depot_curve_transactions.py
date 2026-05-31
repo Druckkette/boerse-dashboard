@@ -66,6 +66,12 @@ def test_suggest_yahoo_ticker_uses_local_german_isin_mapping():
     assert app._suggest_yahoo_ticker("DE0007030009", "Rheinmetall", "STOCK") == "RHM-DE"
 
 
+def test_suggest_yahoo_ticker_uses_local_non_german_isin_mapping():
+    assert app._suggest_yahoo_ticker("US20717M1036", "Confluent", "STOCK") == "CFLT"
+    assert app._suggest_yahoo_ticker("US4878361082", "Kellanova", "STOCK") == "K"
+    assert app._suggest_yahoo_ticker("KYG7397A1067", "Razer", "STOCK") == "1337-HK"
+
+
 def test_suggest_yahoo_ticker_prefers_german_fallback_and_ignores_raw_isin(monkeypatch):
     def fake_search(query):
         if query == "DE000TEST001":
@@ -78,3 +84,22 @@ def test_suggest_yahoo_ticker_prefers_german_fallback_and_ignores_raw_isin(monke
     monkeypatch.setattr(app, "search_symbol_candidates", fake_search)
 
     assert app._suggest_yahoo_ticker("DE000TEST001", "Test AG", "STOCK") == "TST-DE"
+
+
+def test_symbol_variants_try_yahoo_dotted_exchange_suffixes():
+    assert "RHM.DE" in app._symbol_variants("RHM-DE")
+    assert "AGI.TO" in app._symbol_variants("AGI-TO")
+    assert "1211.HK" in app._symbol_variants("1211-HK")
+
+
+def test_symbol_variants_do_not_add_fx_or_index_search_candidates(monkeypatch):
+    monkeypatch.setattr(
+        app,
+        "_search_yahoo_symbol_candidates",
+        lambda symbol: {"candidates": ["KRW=X", "^GSPC", "K"]},
+    )
+
+    variants = app._symbol_variants("K")
+
+    assert "KRW=X" not in variants
+    assert "^GSPC" not in variants
