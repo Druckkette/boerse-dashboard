@@ -1074,6 +1074,21 @@ ISIN_TO_YAHOO: dict[str, str] = {
     "DE0007236101": "SIE.DE",
     "DE0007164600": "SAP.DE",
     "DE000BAY0017": "BAYN.DE",
+    "DE0007030009": "RHM.DE",
+    "DE000ENER6Y0": "ENR.DE",
+    "DE0007664039": "VOW3.DE",
+    "DE000HLAG475": "HLAG.DE",
+    "DE000A0WMPJ6": "AIXA.DE",
+    "DE000A0Z1JH9": "PSAN.DE",
+    "DE000RENK730": "R3NK.DE",
+    "DE000A2N4H07": "WEW.DE",
+}
+
+_ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+_YAHOO_GERMAN_SUFFIXES = (".DE", ".F", ".SG", ".DU", ".MU", ".BE", ".HM", ".HA")
+_YAHOO_GERMAN_EXCHANGES = {
+    "GER", "XETRA", "FRANKFURT", "STUTTGART", "DUSSELDORF",
+    "DÜSSELDORF", "MUNICH", "BERLIN", "HAMBURG", "HANOVER",
 }
 
 
@@ -1465,22 +1480,70 @@ def _reconstruct_open_positions_from_transactions(df: pd.DataFrame) -> tuple[pd.
     return pd.DataFrame(rows), pd.DataFrame(deriv_rows)
 
 
+def _looks_like_isin(value: str) -> bool:
+    return bool(_ISIN_RE.match(str(value or "").strip().upper()))
+
+
+def _is_german_yahoo_candidate(candidate: dict) -> bool:
+    symbol = str((candidate or {}).get("symbol", "") or "").strip().upper()
+    exchange = str((candidate or {}).get("exchange", "") or "").strip().upper()
+    dotted_symbol = symbol.replace("-", ".")
+    return dotted_symbol.endswith(_YAHOO_GERMAN_SUFFIXES) or any(token in exchange for token in _YAHOO_GERMAN_EXCHANGES)
+
+
+def _rank_yahoo_candidate(candidate: dict, index: int, *, prefer_german: bool) -> tuple[int, int, str]:
+    symbol = str((candidate or {}).get("symbol", "") or "").strip().upper()
+    german_rank = 0 if _is_german_yahoo_candidate(candidate) else 1
+    if prefer_german:
+        return (german_rank, index, symbol)
+    return (0, index, symbol)
+
+
+def _select_yahoo_candidate(candidates: list[dict], isin: str, *, prefer_german: bool) -> str:
+    cleaned = []
+    isin = str(isin or "").strip().upper()
+    for index, row in enumerate(candidates or []):
+        symbol = str((row or {}).get("symbol", "") or "").strip().upper()
+        if not symbol or "=" in symbol or "^" in symbol:
+            continue
+        if symbol == isin or _looks_like_isin(symbol):
+            continue
+        qtype = str((row or {}).get("type", "") or "").upper()
+        if qtype and qtype not in {"EQUITY", "ETF"}:
+            continue
+        cleaned.append((index, row))
+    if not cleaned:
+        return ""
+    return _normalize_single_ticker(
+        sorted(cleaned, key=lambda item: _rank_yahoo_candidate(item[1], item[0], prefer_german=prefer_german))[0][1].get("symbol", "")
+    )
+
+
 def _suggest_yahoo_ticker(isin: str, name: str, asset_class: str) -> str:
-    mapped = _normalize_single_ticker(ISIN_TO_YAHOO.get(str(isin or "").upper(), ""))
+    isin = str(isin or "").upper().strip()
+    mapped = _normalize_single_ticker(ISIN_TO_YAHOO.get(isin, ""))
     if mapped:
         return mapped
     if str(asset_class or "").upper() not in {"STOCK", "FUND"}:
         return ""
 
     # Yahoo's search endpoint can resolve many TR ISINs directly.
-    # Prefer ISIN query over free-text names to avoid ambiguous matches.
-    for query in (str(isin or "").strip(), str(name or "").strip()):
+    # Prefer ISIN query over free-text names to avoid ambiguous matches. If that
+    # fails, German listings are preferred for German securities and funds so TR
+    # exports are more likely to stay in EUR.
+    prefer_german = isin.startswith("DE") or str(asset_class or "").upper() == "FUND"
+    for idx, query in enumerate((isin, str(name or "").strip())):
         if not query:
             continue
         try:
             candidates = search_symbol_candidates(query)
-            if candidates:
-                return _normalize_single_ticker(candidates[0].get("symbol", ""))
+            ticker = _select_yahoo_candidate(
+                candidates,
+                isin,
+                prefer_german=prefer_german if idx > 0 else isin.startswith("DE"),
+            )
+            if ticker:
+                return ticker
         except Exception:
             continue
     return ""
