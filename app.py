@@ -3121,8 +3121,12 @@ def _build_curve_from_transactions(
         return pd.DataFrame()
 
     df = tx_df.copy()
-    df["date"] = pd.to_datetime(df.get("date"), errors="coerce").dt.normalize()
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    df["_row_order"] = np.arange(len(df))
+    event_source = df.get("event_ts", df.get("datetime", df.get("date")))
+    df["event_ts"] = pd.to_datetime(event_source, errors="coerce", utc=True).dt.tz_convert(None)
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce", utc=True).dt.tz_convert(None).dt.normalize()
+    df["event_ts"] = df["event_ts"].fillna(df["date"])
+    df = df.dropna(subset=["date"]).sort_values(["event_ts", "_row_order"], kind="stable").reset_index(drop=True)
     df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
     df["type"] = df["type"].astype(str).str.upper().str.strip()
     df["asset_class"] = df["asset_class"].astype(str).str.upper().str.strip()
@@ -3167,7 +3171,7 @@ def _build_curve_from_transactions(
             continue
         shares_series = pd.Series(0.0, index=calendar)
         running = 0.0
-        for row in group.sort_values("date").itertuples():
+        for row in group.sort_values(["event_ts", "_row_order"], kind="stable").itertuples():
             typ = str(getattr(row, "type", "") or "").upper()
             if typ in NON_SHARE_EVENTS:
                 continue
