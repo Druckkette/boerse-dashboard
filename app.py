@@ -1082,6 +1082,9 @@ ISIN_TO_YAHOO: dict[str, str] = {
     "DE000A0Z1JH9": "PSAN.DE",
     "DE000RENK730": "R3NK.DE",
     "DE000A2N4H07": "WEW.DE",
+    "KYG7397A1067": "1337.HK",
+    "US20717M1036": "CFLT",
+    "US4878361082": "K",
 }
 
 _ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
@@ -2328,14 +2331,19 @@ def _symbol_variants(symbol: str) -> list[str]:
     if not base:
         return []
     variants = [base]
-    dotted = _normalize_single_ticker(base.replace("-", "."))
-    dashed = _normalize_single_ticker(base.replace(".", "-"))
+    # Keep the app's canonical display/storage form dash-normalized, but try
+    # Yahoo's exchange suffix syntax too: RHM.DE, AGI.TO, 1211.HK, GAW.L, ...
+    dotted = base.replace("-", ".")
+    dashed = base.replace(".", "-")
     for cand in (dotted, dashed):
+        cand = str(cand or "").strip().upper()
         if cand and cand not in variants:
             variants.append(cand)
     try:
         lookup = _search_yahoo_symbol_candidates(base)
         for cand in lookup.get("candidates", [])[:6]:
+            if "=" in str(cand) or "^" in str(cand):
+                continue
             cand = _normalize_single_ticker(cand)
             if cand and cand not in variants:
                 variants.append(cand)
