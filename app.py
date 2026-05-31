@@ -2313,6 +2313,112 @@ def _price_to_eur(price: float, currency: str, trade_date) -> tuple[float, float
         rate = _usd_eur_rate()
     return value * float(rate), float(rate)
 
+
+_FX_TO_EUR_FALLBACK = {
+    "USD": 0.9259,
+    "CAD": 0.68,
+    "HKD": 0.118,
+    "GBP": 1.17,
+    "JPY": 0.0061,
+    "ILS": 0.25,
+    "CHF": 1.05,
+    "AUD": 0.61,
+    "DKK": 0.134,
+    "NOK": 0.087,
+    "SEK": 0.09,
+}
+_MINOR_UNIT_CURRENCY_SCALE = {
+    "GBp": ("GBP", 0.01),
+    "GBX": ("GBP", 0.01),
+    "ILA": ("ILS", 0.01),
+}
+
+
+def _infer_ticker_currency(ticker: str) -> str:
+    symbol = str(ticker or "").upper().strip().replace(".", "-")
+    if not symbol:
+        return "USD"
+    if symbol.endswith(("-DE", "-F", "-PA", "-AS", "-MI", "-MC", "-BE", "-BR")):
+        return "EUR"
+    if symbol.endswith("-TO"):
+        return "CAD"
+    if symbol.endswith("-HK"):
+        return "HKD"
+    if symbol.endswith("-L"):
+        return "GBP"
+    if symbol.endswith("-T"):
+        return "JPY"
+    if symbol.endswith("-TA") or symbol.endswith("-IL"):
+        return "ILS"
+    return "USD"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _ticker_market_currency(ticker: str) -> str:
+    symbol = str(ticker or "").upper().strip().replace(".", "-")
+    # Most exchange suffixes are unambiguous. Avoid expensive Yahoo metadata
+    # calls for every historical holding in the TR export.
+    if not symbol.endswith("-L"):
+        return _infer_ticker_currency(symbol)
+    for variant in _symbol_variants(ticker):
+        try:
+            currency = str(getattr(yf.Ticker(variant).fast_info, "currency", "") or "").strip()
+            if currency:
+                return currency.upper() if currency.isupper() else currency
+        except Exception:
+            continue
+    return _infer_ticker_currency(ticker)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fx_to_eur_series(currency: str, start_date, end_date) -> pd.Series:
+    raw_currency = str(currency or "EUR").strip()
+    currency_key = raw_currency.upper()
+    major_currency, unit_scale = _MINOR_UNIT_CURRENCY_SCALE.get(raw_currency, (currency_key, 1.0))
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
+    if major_currency == "EUR":
+        return pd.Series(float(unit_scale), index=pd.DatetimeIndex([start_ts]))
+    pair = f"EUR{major_currency}=X"
+    fx_close = _fetch_close_history(pair, start_ts, end_ts)
+    if fx_close is not None and len(fx_close):
+        fx_close = pd.to_numeric(fx_close, errors="coerce").dropna()
+        fx_close = fx_close[fx_close > 0]
+        if len(fx_close):
+            return (1.0 / fx_close) * float(unit_scale)
+    fallback = _FX_TO_EUR_FALLBACK.get(major_currency, _usd_eur_rate())
+    return pd.Series(float(fallback) * float(unit_scale), index=pd.DatetimeIndex([start_ts]))
+
+
+def _convert_close_series_to_eur(close: pd.Series, ticker: str, calendar: pd.DatetimeIndex) -> pd.Series:
+    if close is None or len(close) == 0:
+        return pd.Series(dtype=float)
+    currency = _ticker_market_currency(ticker)
+    rates = _fx_to_eur_series(currency, calendar.min(), calendar.max())
+    rates.index = pd.to_datetime(rates.index, errors="coerce").normalize()
+    rates = rates[~rates.index.isna()].sort_index()
+    aligned_rates = rates.reindex(calendar, method="ffill").ffill().bfill().fillna(1.0)
+    close_series = pd.to_numeric(pd.Series(close).copy(), errors="coerce")
+    close_series.index = pd.to_datetime(close_series.index, errors="coerce").normalize()
+    close_series = close_series[~close_series.index.isna()].sort_index()
+    aligned_close = close_series.reindex(calendar, method="ffill").ffill().bfill()
+    return aligned_close * aligned_rates
+
+
+def _build_trade_price_close_series(group: pd.DataFrame, calendar: pd.DatetimeIndex) -> pd.Series:
+    if group is None or len(group) == 0 or len(calendar) == 0:
+        return pd.Series(dtype=float)
+    prices = group.copy()
+    prices["date"] = pd.to_datetime(prices.get("date"), errors="coerce").dt.normalize()
+    prices["price_num"] = pd.to_numeric(prices.get("price_num", prices.get("price")), errors="coerce")
+    prices = prices.dropna(subset=["date"])
+    prices = prices[prices["price_num"].notna() & (prices["price_num"] > 0)]
+    if prices.empty:
+        return pd.Series(dtype=float)
+    daily = prices.groupby("date")["price_num"].last().sort_index()
+    return daily.reindex(calendar, method="ffill").ffill().bfill().dropna()
+
+
 def _normalize_single_ticker(value: str) -> str:
     if value is None:
         return ""
@@ -3176,7 +3282,10 @@ def _build_curve_from_transactions(
     * Per-ISIN share trajectories from signed `shares` values (TR encodes
       buy/sell direction in the sign; DIVIDEND rows carry shares for reporting
       only and are skipped).
-    * Position value per day = Σ shares × Yahoo close.
+    * Position value per day = Σ shares × Yahoo close converted to EUR. If
+      Yahoo has no history for a resolved ticker (e.g. delisted closed
+      holdings) or the instrument is a derivative without Yahoo history, the
+      curve falls back to TR trade prices from the CSV.
     * Cash trajectory by default rebuilt from the CSV itself via
       ``amount + fee + tax`` cumulative — TR's export contains every cash
       event (deposits, withdrawals, tax optimisation, dividends, interest,
@@ -3218,28 +3327,31 @@ def _build_curve_from_transactions(
 
     # ---- Positions side ----
     isin_to_ticker = {str(k).upper().strip(): _normalize_single_ticker(v) for k, v in (isin_to_ticker or {}).items() if _normalize_single_ticker(v)}
-    df_pos = df[df["asset_class"].isin({"STOCK", "FUND"})]
+    df_pos = df[df["asset_class"].isin({"STOCK", "FUND", "DERIVATIVE"})]
     ticker_tuple = tuple(dict.fromkeys(t for t in isin_to_ticker.values() if t))
     close_map = _bulk_close_history_map(ticker_tuple, tx_start_ts, end_ts) if ticker_tuple else {}
 
     positions_value = pd.Series(0.0, index=calendar)
     resolved_isins: list[str] = []
     unresolved_isins: list[str] = []
+    price_fallback_isins: list[str] = []
     # Events that don't move share counts (cash-side or reporting only).
     NON_SHARE_EVENTS = {"DIVIDEND", "INTEREST_PAYMENT", "TAX_OPTIMIZATION", "SEC_ACCOUNT"}
     for isin, group in df_pos.groupby("symbol"):
         if not isin:
             continue
         ticker = isin_to_ticker.get(isin)
-        if not ticker:
-            unresolved_isins.append(isin)
-            continue
-        close = close_map.get(ticker)
-        if close is None or len(close) == 0:
+        close = close_map.get(ticker) if ticker else pd.Series(dtype=float)
+        if ticker and (close is None or len(close) == 0):
             close = _fetch_close_history(ticker, tx_start_ts, end_ts)
+        close_is_eur = False
         if close is None or len(close) == 0:
-            unresolved_isins.append(isin)
-            continue
+            close = _build_trade_price_close_series(group, calendar)
+            if close is None or len(close) == 0:
+                unresolved_isins.append(isin)
+                continue
+            close_is_eur = True
+            price_fallback_isins.append(isin)
         shares_series = pd.Series(0.0, index=calendar)
         running = 0.0
         for row in group.sort_values(["event_ts", "_row_order"], kind="stable").itertuples():
@@ -3267,6 +3379,8 @@ def _build_curve_from_transactions(
             day = pd.Timestamp(row.date).normalize()
             shares_series.loc[shares_series.index >= day] = running
         aligned = close.reindex(calendar, method="ffill").ffill().bfill().fillna(0.0)
+        if not close_is_eur:
+            aligned = _convert_close_series_to_eur(aligned, ticker, calendar).fillna(0.0)
         positions_value = positions_value.add(shares_series.values * aligned.values, fill_value=0.0)
         resolved_isins.append(isin)
 
@@ -3361,6 +3475,7 @@ def _build_curve_from_transactions(
 
     curve.attrs["resolved_isins"] = resolved_isins
     curve.attrs["unresolved_isins"] = unresolved_isins
+    curve.attrs["price_fallback_isins"] = price_fallback_isins
     return curve
 
 
@@ -4290,6 +4405,12 @@ def _render_csv_curve_section(settings: dict) -> bool:
         st.warning(
             "Diese ISINs konnten nicht aufgelöst werden und sind aus der Kurve ausgenommen: "
             + ", ".join(sorted(unresolved))
+        )
+    fallback_isins = curve.attrs.get("price_fallback_isins") or []
+    if fallback_isins:
+        st.info(
+            "Für diese ISINs hat Yahoo keine Historie geliefert; die Kurve nutzt ersatzweise "
+            "die Trade-Preise aus der CSV: " + ", ".join(sorted(fallback_isins))
         )
 
     _render_depot_curve_chart(curve, key="pf_curve_chart_csv", include_flow_cols=False)

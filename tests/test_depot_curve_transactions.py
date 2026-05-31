@@ -103,3 +103,135 @@ def test_symbol_variants_do_not_add_fx_or_index_search_candidates(monkeypatch):
 
     assert "KRW=X" not in variants
     assert "^GSPC" not in variants
+
+
+def test_transaction_curve_converts_yahoo_usd_close_to_eur(monkeypatch):
+    dates = pd.DatetimeIndex(pd.date_range("2026-01-02", "2026-01-05", freq="B"))
+
+    def fake_fetch(symbol, *args, **kwargs):
+        if symbol == "^GSPC":
+            return pd.Series([100.0, 100.0], index=dates)
+        if symbol == "EURUSD=X":
+            return pd.Series([2.0, 2.0], index=dates)
+        return pd.Series(dtype=float)
+
+    monkeypatch.setattr(app, "_fetch_close_history", fake_fetch)
+    monkeypatch.setattr(app, "_ticker_market_currency", lambda ticker: "USD")
+    monkeypatch.setattr(
+        app,
+        "_bulk_close_history_map",
+        lambda *args, **kwargs: {"TEST": pd.Series([10.0, 12.0], index=dates)},
+    )
+
+    tx_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-01-02",
+                "event_ts": "2026-01-02T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "symbol": "US0000000002",
+                "shares": 10,
+                "shares_num": 10,
+                "price": 5.0,
+                "price_num": 5.0,
+                "amount_num": -50.0,
+                "fee_num": 0.0,
+                "tax_num": 0.0,
+            },
+        ]
+    )
+
+    curve = app._build_curve_from_transactions(
+        tx_df,
+        isin_to_ticker={"US0000000002": "TEST"},
+        start_date="2026-01-02",
+        end_date="2026-01-05",
+        cash_series=pd.Series([0.0, 0.0], index=dates),
+    )
+
+    assert curve["positions_value"].tolist() == [50.0, 60.0]
+
+
+def test_transaction_curve_uses_trade_price_fallback_when_yahoo_history_missing(monkeypatch):
+    dates = pd.DatetimeIndex(pd.date_range("2026-02-02", "2026-02-03", freq="B"))
+
+    monkeypatch.setattr(
+        app,
+        "_fetch_close_history",
+        lambda symbol, *args, **kwargs: pd.Series([100.0, 100.0], index=dates) if symbol == "^GSPC" else pd.Series(dtype=float),
+    )
+    monkeypatch.setattr(app, "_bulk_close_history_map", lambda *args, **kwargs: {})
+
+    tx_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-02-02",
+                "event_ts": "2026-02-02T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "symbol": "US0000000003",
+                "shares": 10,
+                "shares_num": 10,
+                "price": 12.0,
+                "price_num": 12.0,
+                "amount_num": -120.0,
+                "fee_num": 0.0,
+                "tax_num": 0.0,
+            },
+        ]
+    )
+
+    curve = app._build_curve_from_transactions(
+        tx_df,
+        isin_to_ticker={"US0000000003": "MISSING"},
+        start_date="2026-02-02",
+        end_date="2026-02-03",
+        cash_series=pd.Series([0.0, 0.0], index=dates),
+    )
+
+    assert curve["positions_value"].tolist() == [120.0, 120.0]
+    assert curve.attrs["price_fallback_isins"] == ["US0000000003"]
+    assert curve.attrs["unresolved_isins"] == []
+
+
+def test_transaction_curve_values_derivatives_from_trade_prices_without_ticker(monkeypatch):
+    dates = pd.DatetimeIndex(pd.date_range("2026-03-02", "2026-03-03", freq="B"))
+
+    monkeypatch.setattr(
+        app,
+        "_fetch_close_history",
+        lambda symbol, *args, **kwargs: pd.Series([100.0, 100.0], index=dates) if symbol == "^GSPC" else pd.Series(dtype=float),
+    )
+    monkeypatch.setattr(app, "_bulk_close_history_map", lambda *args, **kwargs: {})
+
+    tx_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-03-02",
+                "event_ts": "2026-03-02T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "DERIVATIVE",
+                "symbol": "DE000DERIV01",
+                "shares": 5,
+                "shares_num": 5,
+                "price": 20.0,
+                "price_num": 20.0,
+                "amount_num": -100.0,
+                "fee_num": 0.0,
+                "tax_num": 0.0,
+            },
+        ]
+    )
+
+    curve = app._build_curve_from_transactions(
+        tx_df,
+        isin_to_ticker={},
+        start_date="2026-03-02",
+        end_date="2026-03-03",
+        cash_series=pd.Series([0.0, 0.0], index=dates),
+    )
+
+    assert curve["positions_value"].tolist() == [100.0, 100.0]
+    assert curve.attrs["price_fallback_isins"] == ["DE000DERIV01"]
+    assert curve.attrs["unresolved_isins"] == []
