@@ -318,3 +318,156 @@ def test_transaction_curve_reports_only_open_price_fallback_isins(monkeypatch):
 
     assert curve.attrs["price_fallback_isins"] == ["DE000CLOSED1", "DE000OPEN01"]
     assert curve.attrs["open_price_fallback_isins"] == ["DE000OPEN01"]
+
+
+def test_depot_curve_csv_import_merges_only_new_and_changed_transactions():
+    existing = pd.DataFrame(
+        [
+            {
+                "date": "2026-04-22",
+                "datetime": "2026-04-22T10:00:00Z",
+                "event_ts": "2026-04-22T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "name": "Old Holding",
+                "symbol": "US0000000101",
+                "shares": 1,
+                "shares_num": 1,
+                "price": 10.0,
+                "price_num": 10.0,
+                "amount": -10.0,
+                "amount_num": -10.0,
+                "fee": 0.0,
+                "fee_num": 0.0,
+                "tax": 0.0,
+                "tax_num": 0.0,
+                "transaction_id": "tx-old-kept",
+            },
+            {
+                "date": "2026-04-23",
+                "datetime": "2026-04-23T10:00:00Z",
+                "event_ts": "2026-04-23T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "name": "Changed Holding",
+                "symbol": "US0000000102",
+                "shares": 2,
+                "shares_num": 2,
+                "price": 20.0,
+                "price_num": 20.0,
+                "amount": -40.0,
+                "amount_num": -40.0,
+                "fee": 0.0,
+                "fee_num": 0.0,
+                "tax": 0.0,
+                "tax_num": 0.0,
+                "transaction_id": "tx-updated",
+            },
+        ]
+    )
+    uploaded = pd.DataFrame(
+        [
+            {
+                "date": "2026-04-23",
+                "datetime": "2026-04-23T10:00:00Z",
+                "event_ts": "2026-04-23T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "name": "Changed Holding",
+                "symbol": "US0000000102",
+                "shares": 2,
+                "shares_num": 2,
+                "price": 21.0,
+                "price_num": 21.0,
+                "amount": -42.0,
+                "amount_num": -42.0,
+                "fee": 0.0,
+                "fee_num": 0.0,
+                "tax": 0.0,
+                "tax_num": 0.0,
+                "transaction_id": "tx-updated",
+            },
+            {
+                "date": "2026-04-24",
+                "datetime": "2026-04-24T10:00:00Z",
+                "event_ts": "2026-04-24T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "name": "New Holding",
+                "symbol": "US0000000103",
+                "shares": 3,
+                "shares_num": 3,
+                "price": 30.0,
+                "price_num": 30.0,
+                "amount": -90.0,
+                "amount_num": -90.0,
+                "fee": 0.0,
+                "fee_num": 0.0,
+                "tax": 0.0,
+                "tax_num": 0.0,
+                "transaction_id": "tx-new",
+            },
+        ]
+    )
+
+    merged, summary = app._merge_depot_curve_csv_import(existing, uploaded)
+
+    assert summary == {
+        "added": 1,
+        "updated": 1,
+        "unchanged": 0,
+        "kept_missing": 1,
+        "total_before": 2,
+        "total_uploaded": 2,
+        "total_after": 3,
+    }
+    by_id = merged.set_index("transaction_id")
+    assert by_id.loc["tx-old-kept", "price_num"] == 10.0
+    assert by_id.loc["tx-updated", "price_num"] == 21.0
+    assert by_id.loc["tx-new", "price_num"] == 30.0
+
+
+def test_depot_curve_csv_import_state_roundtrips_records_and_overrides():
+    tx_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-05-04",
+                "datetime": "2026-05-04T09:30:00.123456Z",
+                "event_ts": "2026-05-04T09:30:00.123456Z",
+                "type": "BUY",
+                "asset_class": "STOCK",
+                "name": "Persisted Holding",
+                "symbol": "US0000000201",
+                "shares": 4,
+                "shares_num": 4,
+                "price": 25.0,
+                "price_num": 25.0,
+                "amount": -100.0,
+                "amount_num": -100.0,
+                "fee": 0.0,
+                "fee_num": 0.0,
+                "tax": 0.0,
+                "tax_num": 0.0,
+                "transaction_id": "tx-persisted",
+            }
+        ]
+    )
+
+    state = app._build_depot_curve_csv_import_state(
+        tx_df,
+        filename="Transaktionsexport.csv",
+        summary={"added": 1, "total_uploaded": 1, "total_after": 1},
+        isin_overrides={"US0000000201": " test "},
+    )
+    normalized = app._normalize_depot_curve_csv_import_state(state)
+    restored = app._depot_curve_csv_records_to_frame(normalized["records"])
+
+    assert normalized["filename"] == "Transaktionsexport.csv"
+    assert normalized["row_count"] == 1
+    assert normalized["last_import_summary"]["added"] == 1
+    assert normalized["isin_overrides"] == {"US0000000201": "TEST"}
+    assert restored.iloc[0]["transaction_id"] == "tx-persisted"
+    assert restored.iloc[0]["price_num"] == 25.0
+    _, summary = app._merge_depot_curve_csv_import(restored, tx_df)
+    assert summary["updated"] == 0
+    assert summary["unchanged"] == 1

@@ -258,6 +258,19 @@ def _default_portfolio_settings():
 SELL_DECISION_MARKET_ENVIRONMENTS = {"Bullisch", "Unsicher", "Bärisch"}
 SELL_DECISION_INDUSTRY_GROUP_STATUSES = {"Stark", "Neutral", "Schwach"}
 SELL_DECISION_STATE_KEY = "sell_decision_state"
+DEPOT_CURVE_CSV_IMPORT_KEY = "depot_curve_csv_import"
+
+
+def _default_depot_curve_csv_import_state() -> dict:
+    return {
+        "records": [],
+        "filename": "",
+        "row_count": 0,
+        "created_at": "",
+        "updated_at": "",
+        "last_import_summary": {},
+        "isin_overrides": {},
+    }
 
 
 def _default_position_manual_sell_data(ticker: str = "") -> dict:
@@ -475,6 +488,218 @@ def _normalize_post_mortem_entry(entry: dict) -> dict:
         "trade_data": entry.get("trade_data", {}) if isinstance(entry.get("trade_data", {}), dict) else {},
     }
 
+def _normalize_depot_curve_import_summary(raw) -> dict:
+    if not isinstance(raw, dict):
+        raw = {}
+    out = {}
+    for key in ("added", "updated", "unchanged", "kept_missing", "total_before", "total_uploaded", "total_after"):
+        try:
+            out[key] = int(raw.get(key, 0) or 0)
+        except Exception:
+            out[key] = 0
+    return out
+
+
+def _normalize_depot_curve_csv_import_state(raw) -> dict:
+    state = _default_depot_curve_csv_import_state()
+    if not isinstance(raw, dict):
+        return state
+    records = raw.get("records", [])
+    if isinstance(records, list):
+        state["records"] = [row for row in records if isinstance(row, dict)]
+    state["filename"] = str(raw.get("filename", "") or "")
+    try:
+        state["row_count"] = int(raw.get("row_count", len(state["records"])) or 0)
+    except Exception:
+        state["row_count"] = len(state["records"])
+    state["created_at"] = str(raw.get("created_at", "") or "")
+    state["updated_at"] = str(raw.get("updated_at", "") or "")
+    state["last_import_summary"] = _normalize_depot_curve_import_summary(raw.get("last_import_summary", {}))
+    overrides = raw.get("isin_overrides", {})
+    if isinstance(overrides, dict):
+        state["isin_overrides"] = {
+            str(k).upper().strip(): _normalize_single_ticker(str(v))
+            for k, v in overrides.items()
+            if str(k or "").strip() and _normalize_single_ticker(str(v))
+        }
+    return state
+
+
+_DEPOT_CURVE_IMPORT_KEY_COLUMNS = (
+    "datetime", "date", "type", "asset_class", "name", "symbol",
+    "shares_num", "price_num", "amount_num", "fee_num", "tax_num", "description",
+)
+_DEPOT_CURVE_IMPORT_HASH_COLUMNS = (
+    "datetime", "date", "account_type", "category", "type", "asset_class", "name",
+    "symbol", "shares", "shares_num", "price", "price_num", "amount", "amount_num",
+    "fee", "fee_num", "tax", "tax_num", "currency", "original_amount",
+    "original_currency", "fx_rate", "description", "transaction_id",
+)
+
+
+def _depot_curve_compare_value(value) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        try:
+            return f"{float(value):.12g}"
+        except Exception:
+            return str(value)
+    return str(value or "").strip()
+
+
+def _depot_curve_row_signature(row, columns: tuple[str, ...]) -> str:
+    return "|".join(f"{col}={_depot_curve_compare_value(row.get(col, ''))}" for col in columns)
+
+
+def _depot_curve_transaction_base_key(row) -> str:
+    tx_id = _depot_curve_compare_value(row.get("transaction_id", "")).strip()
+    if tx_id:
+        return f"id:{tx_id}"
+    signature = _depot_curve_row_signature(row, _DEPOT_CURVE_IMPORT_KEY_COLUMNS)
+    return "sig:" + hashlib.sha256(signature.encode("utf-8")).hexdigest()
+
+
+def _normalize_depot_curve_csv_frame(df: pd.DataFrame | None) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    out = df.copy()
+    for col in ("date", "datetime", "event_ts"):
+        if col in out.columns:
+            out[col] = pd.to_datetime(out[col], errors="coerce", utc=True).dt.tz_convert(None)
+    if "date" in out.columns:
+        out["date"] = out["date"].dt.normalize()
+    if "event_ts" not in out.columns:
+        out["event_ts"] = out["datetime"] if "datetime" in out.columns else out.get("date")
+    event_source = out.get("event_ts")
+    if event_source is None:
+        event_source = pd.Series(pd.NaT, index=out.index)
+    out["event_ts"] = pd.to_datetime(event_source, errors="coerce", utc=True).dt.tz_convert(None)
+    if "date" in out.columns:
+        out["event_ts"] = out["event_ts"].fillna(out["date"])
+    for col in ("shares", "price", "amount", "fee", "tax", "shares_num", "price_num", "amount_num", "fee_num", "tax_num"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    for raw, parsed in (("shares", "shares_num"), ("price", "price_num"), ("amount", "amount_num"), ("fee", "fee_num"), ("tax", "tax_num")):
+        if parsed not in out.columns:
+            source = out[raw] if raw in out.columns else pd.Series(0.0, index=out.index)
+            out[parsed] = pd.to_numeric(source, errors="coerce").fillna(0.0)
+        else:
+            out[parsed] = pd.to_numeric(out[parsed], errors="coerce").fillna(0.0)
+    for col in ("type", "asset_class", "symbol"):
+        if col in out.columns:
+            out[col] = out[col].astype(str).str.upper().str.strip()
+    return out.sort_values(["event_ts"], kind="stable").reset_index(drop=True)
+
+
+def _depot_curve_csv_records_to_frame(records: list[dict]) -> pd.DataFrame:
+    if not isinstance(records, list) or not records:
+        return pd.DataFrame()
+    return _normalize_depot_curve_csv_frame(pd.DataFrame(records))
+
+
+def _depot_curve_csv_frame_to_records(df: pd.DataFrame | None) -> list[dict]:
+    if df is None or len(df) == 0:
+        return []
+    clean = _normalize_depot_curve_csv_frame(df)
+    return json.loads(clean.to_json(orient="records", date_format="iso", date_unit="us"))
+
+
+def _depot_curve_keyed_rows(df: pd.DataFrame | None) -> dict[str, dict]:
+    normalized = _normalize_depot_curve_csv_frame(df)
+    keyed: dict[str, dict] = {}
+    duplicate_counts: dict[str, int] = {}
+    if normalized.empty:
+        return keyed
+    for _, row in normalized.iterrows():
+        base_key = _depot_curve_transaction_base_key(row)
+        duplicate_index = duplicate_counts.get(base_key, 0)
+        duplicate_counts[base_key] = duplicate_index + 1
+        key = base_key if duplicate_index == 0 else f"{base_key}#{duplicate_index + 1}"
+        row_hash = hashlib.sha256(
+            _depot_curve_row_signature(row, _DEPOT_CURVE_IMPORT_HASH_COLUMNS).encode("utf-8")
+        ).hexdigest()
+        keyed[key] = {"row": row.to_dict(), "hash": row_hash}
+    return keyed
+
+
+def _merge_depot_curve_csv_import(existing_df: pd.DataFrame | None, uploaded_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    existing = _depot_curve_keyed_rows(existing_df)
+    uploaded = _depot_curve_keyed_rows(uploaded_df)
+    merged = {key: dict(item["row"]) for key, item in existing.items()}
+    summary = {
+        "added": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "kept_missing": 0,
+        "total_before": len(existing),
+        "total_uploaded": len(uploaded),
+        "total_after": 0,
+    }
+    for key, item in uploaded.items():
+        if key not in existing:
+            summary["added"] += 1
+        elif item["hash"] != existing[key]["hash"]:
+            summary["updated"] += 1
+        else:
+            summary["unchanged"] += 1
+        merged[key] = dict(item["row"])
+    summary["kept_missing"] = len(set(existing) - set(uploaded))
+    merged_df = _normalize_depot_curve_csv_frame(pd.DataFrame(list(merged.values()))) if merged else pd.DataFrame()
+    summary["total_after"] = int(len(merged_df))
+    return merged_df, summary
+
+
+def _build_depot_curve_csv_import_state(
+    df: pd.DataFrame | None,
+    *,
+    filename: str = "",
+    previous: dict | None = None,
+    summary: dict | None = None,
+    isin_overrides: dict | None = None,
+) -> dict:
+    previous_state = _normalize_depot_curve_csv_import_state(previous or {})
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    records = _depot_curve_csv_frame_to_records(df)
+    return {
+        "records": records,
+        "filename": str(filename or previous_state.get("filename", "") or ""),
+        "row_count": len(records),
+        "created_at": previous_state.get("created_at") or now,
+        "updated_at": now,
+        "last_import_summary": _normalize_depot_curve_import_summary(summary or previous_state.get("last_import_summary", {})),
+        "isin_overrides": (
+            _normalize_depot_curve_csv_import_state({"isin_overrides": isin_overrides}).get("isin_overrides", {})
+            if isin_overrides is not None
+            else previous_state.get("isin_overrides", {})
+        ),
+    }
+
+
+def _set_depot_curve_csv_import_state(state: dict) -> None:
+    normalized = _normalize_depot_curve_csv_import_state(state)
+    st.session_state[DEPOT_CURVE_CSV_IMPORT_KEY] = normalized
+    st.session_state["pf_depot_curve_tx_df"] = _depot_curve_csv_records_to_frame(normalized.get("records", []))
+    st.session_state["pf_depot_curve_tx_filename"] = normalized.get("filename", "")
+    st.session_state["pf_depot_curve_isin_overrides"] = normalized.get("isin_overrides", {})
+    _sync_workspace()
+
+
+def _clear_depot_curve_csv_import_state() -> None:
+    st.session_state[DEPOT_CURVE_CSV_IMPORT_KEY] = _default_depot_curve_csv_import_state()
+    st.session_state.pop("pf_depot_curve_tx_df", None)
+    st.session_state.pop("pf_depot_curve_tx_filename", None)
+    st.session_state.pop("pf_depot_curve_isin_overrides", None)
+    _sync_workspace()
+
+
 def _workspace_payload():
     settings = dict(_default_portfolio_settings())
     raw_settings = st.session_state.get("portfolio_settings", {})
@@ -488,6 +713,7 @@ def _workspace_payload():
         "portfolio_history": st.session_state.get("portfolio_history", []),
         "portfolio_cash_flows": st.session_state.get("portfolio_cash_flows", []),
         "portfolio_settings": settings,
+        DEPOT_CURVE_CSV_IMPORT_KEY: _normalize_depot_curve_csv_import_state(st.session_state.get(DEPOT_CURVE_CSV_IMPORT_KEY, {})),
         SELL_DECISION_STATE_KEY: _normalize_sell_decision_state(st.session_state.get(SELL_DECISION_STATE_KEY, {})),
     }
 
@@ -503,6 +729,7 @@ def _load_workspace_from_store():
         "portfolio_history": [],
         "portfolio_cash_flows": [],
         "portfolio_settings": _default_portfolio_settings(),
+        DEPOT_CURVE_CSV_IMPORT_KEY: _default_depot_curve_csv_import_state(),
         SELL_DECISION_STATE_KEY: _default_sell_decision_state(),
     }
     meta_keys = {field: _workspace_meta_key(field) for field in defaults}
@@ -527,6 +754,7 @@ def _load_workspace_from_store():
         payload["portfolio_history"] = []
     if not isinstance(payload.get("portfolio_cash_flows"), list):
         payload["portfolio_cash_flows"] = []
+    payload[DEPOT_CURVE_CSV_IMPORT_KEY] = _normalize_depot_curve_csv_import_state(payload.get(DEPOT_CURVE_CSV_IMPORT_KEY, {}))
     payload[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(payload.get(SELL_DECISION_STATE_KEY, {}))
     return payload
 
@@ -544,6 +772,7 @@ def _sync_workspace() -> None:
             _workspace_meta_key("portfolio_history"): json.dumps(payload["portfolio_history"], ensure_ascii=False),
             _workspace_meta_key("portfolio_cash_flows"): json.dumps(payload["portfolio_cash_flows"], ensure_ascii=False),
             _workspace_meta_key("portfolio_settings"): json.dumps(payload["portfolio_settings"], ensure_ascii=False),
+            _workspace_meta_key(DEPOT_CURVE_CSV_IMPORT_KEY): json.dumps(payload[DEPOT_CURVE_CSV_IMPORT_KEY], ensure_ascii=False),
             _workspace_meta_key(SELL_DECISION_STATE_KEY): json.dumps(payload[SELL_DECISION_STATE_KEY], ensure_ascii=False),
             _workspace_meta_key("updated_at"): datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -559,7 +788,10 @@ def _init_workspace_state():
         stored = _load_workspace_from_store()
     except Exception as exc:
         logger.debug("workspace store load failed: %s", exc)
-    workspace_fields = ["watchlist", "recent_tickers", "positions", "todos", "portfolio_history", "portfolio_cash_flows", SELL_DECISION_STATE_KEY]
+    workspace_fields = [
+        "watchlist", "recent_tickers", "positions", "todos", "portfolio_history",
+        "portfolio_cash_flows", DEPOT_CURVE_CSV_IMPORT_KEY, SELL_DECISION_STATE_KEY,
+    ]
     if not any(stored.get(k) for k in workspace_fields):
         local_stored = _safe_json_load(Path(WORKSPACE_FILE), {})
         if isinstance(local_stored, dict) and local_stored:
@@ -571,6 +803,7 @@ def _init_workspace_state():
                 st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", []))
                 st.session_state["portfolio_history"] = stored.get("portfolio_history", [])
                 st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", [])
+                st.session_state[DEPOT_CURVE_CSV_IMPORT_KEY] = _normalize_depot_curve_csv_import_state(stored.get(DEPOT_CURVE_CSV_IMPORT_KEY, {}))
                 st.session_state[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(stored.get(SELL_DECISION_STATE_KEY, {}))
                 migrated_settings = dict(_default_portfolio_settings())
                 if isinstance(stored.get("portfolio_settings"), dict):
@@ -585,6 +818,11 @@ def _init_workspace_state():
     st.session_state["todos"] = _normalize_workspace_todos(stored.get("todos", [])) if isinstance(stored, dict) else []
     st.session_state["portfolio_history"] = stored.get("portfolio_history", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_history", []), list) else []
     st.session_state["portfolio_cash_flows"] = stored.get("portfolio_cash_flows", []) if isinstance(stored, dict) and isinstance(stored.get("portfolio_cash_flows", []), list) else []
+    st.session_state[DEPOT_CURVE_CSV_IMPORT_KEY] = _normalize_depot_curve_csv_import_state(stored.get(DEPOT_CURVE_CSV_IMPORT_KEY, {}) if isinstance(stored, dict) else {})
+    depot_curve_import_state = st.session_state[DEPOT_CURVE_CSV_IMPORT_KEY]
+    st.session_state["pf_depot_curve_tx_df"] = _depot_curve_csv_records_to_frame(depot_curve_import_state.get("records", []))
+    st.session_state["pf_depot_curve_tx_filename"] = depot_curve_import_state.get("filename", "")
+    st.session_state["pf_depot_curve_isin_overrides"] = depot_curve_import_state.get("isin_overrides", {})
     st.session_state[SELL_DECISION_STATE_KEY] = _normalize_sell_decision_state(stored.get(SELL_DECISION_STATE_KEY, {}) if isinstance(stored, dict) else {})
     base_settings = dict(_default_portfolio_settings())
     if isinstance(stored, dict) and isinstance(stored.get("portfolio_settings"), dict):
@@ -4295,22 +4533,45 @@ def _render_csv_curve_section(settings: dict) -> bool:
         "(Yahoo-Close × Stückzahl + Cash aus CSV)."
     )
 
+    saved_import = _normalize_depot_curve_csv_import_state(st.session_state.get(DEPOT_CURVE_CSV_IMPORT_KEY, {}))
+    existing_tx_df = _depot_curve_csv_records_to_frame(saved_import.get("records", []))
+
     uploaded_csv = st.file_uploader(
-        "Trade-Republic-Transaktionsexport (CSV)",
+        "Trade-Republic-Transaktionsexport importieren / aktualisieren",
         type=["csv"], key="pf_depot_curve_csv_upload",
-        help="Wird nur für die Kurve verwendet, keine Positionen werden überschrieben.",
+        help=(
+            "Der Import wird dauerhaft für die Kurve gespeichert. Beim Aktualisieren werden "
+            "neue oder geänderte Buchungen übernommen; ältere gespeicherte Buchungen werden "
+            "nicht still gelöscht."
+        ),
     )
     if uploaded_csv is not None:
         try:
-            parsed = _parse_transaction_export_csv(uploaded_csv)
-            st.session_state["pf_depot_curve_tx_df"] = parsed
-            st.session_state["pf_depot_curve_tx_filename"] = uploaded_csv.name
+            parsed_upload = _parse_transaction_export_csv(uploaded_csv)
+            preview_df, preview_summary = _merge_depot_curve_csv_import(existing_tx_df, parsed_upload)
+            st.caption(
+                "CSV geprüft: "
+                f"{preview_summary['added']} neu · {preview_summary['updated']} geändert · "
+                f"{preview_summary['unchanged']} unverändert · "
+                f"{preview_summary['kept_missing']} gespeicherte ältere Buchungen bleiben erhalten."
+            )
+            if st.button("CSV-Import speichern / Kurve aktualisieren", key="pf_depot_curve_csv_apply", type="primary", width="stretch"):
+                next_state = _build_depot_curve_csv_import_state(
+                    preview_df,
+                    filename=uploaded_csv.name,
+                    previous=saved_import,
+                    summary=preview_summary,
+                )
+                _set_depot_curve_csv_import_state(next_state)
+                st.success("CSV-Import gespeichert. Die Depotkurve wurde aktualisiert.")
+                st.rerun()
         except ValueError as exc:
             st.error(str(exc))
 
-    tx_df = st.session_state.get("pf_depot_curve_tx_df")
+    saved_import = _normalize_depot_curve_csv_import_state(st.session_state.get(DEPOT_CURVE_CSV_IMPORT_KEY, {}))
+    tx_df = _depot_curve_csv_records_to_frame(saved_import.get("records", []))
     if not isinstance(tx_df, pd.DataFrame) or tx_df.empty:
-        st.info("Noch keine Trade-Republic-CSV geladen — die Depotkurve unten fällt auf die manuell gepflegten Positionen zurück.")
+        st.info("Noch keine gespeicherte Trade-Republic-CSV vorhanden — die Depotkurve unten fällt auf die manuell gepflegten Positionen zurück.")
         return False
 
     # Cash-Endsaldo aus CSV — gleicher Wert wie auf dem offiziellen TR-Kontoauszug.
@@ -4321,7 +4582,7 @@ def _render_csv_curve_section(settings: dict) -> bool:
     csv_first_date = pd.to_datetime(tx_df["date"], errors="coerce").min()
     csv_last_date = pd.to_datetime(tx_df["date"], errors="coerce").max()
 
-    filename = st.session_state.get("pf_depot_curve_tx_filename", "")
+    filename = saved_import.get("filename", "")
     info_cols = st.columns([3, 1])
     with info_cols[0]:
         st.caption(
@@ -4329,11 +4590,17 @@ def _render_csv_curve_section(settings: dict) -> bool:
             f"{csv_first_date:%Y-%m-%d} → {csv_last_date:%Y-%m-%d} · "
             f"Cash-Endsaldo (rekonstruiert): **{_format_eur(csv_end_cash)}**"
         )
+        if saved_import.get("updated_at"):
+            last_summary = _normalize_depot_curve_import_summary(saved_import.get("last_import_summary", {}))
+            st.caption(
+                f"Gespeichert seit {saved_import.get('created_at') or 'unbekannt'} · "
+                f"zuletzt aktualisiert {saved_import.get('updated_at')} · "
+                f"letzter Import: +{last_summary['added']} / geändert {last_summary['updated']} / "
+                f"unverändert {last_summary['unchanged']}."
+            )
     with info_cols[1]:
-        if st.button("Datei verwerfen", key="pf_depot_curve_csv_reset", width="stretch"):
-            st.session_state.pop("pf_depot_curve_tx_df", None)
-            st.session_state.pop("pf_depot_curve_tx_filename", None)
-            st.session_state.pop("pf_depot_curve_isin_overrides", None)
+        if st.button("Kurve löschen", key="pf_depot_curve_csv_reset", width="stretch"):
+            _clear_depot_curve_csv_import_state()
             st.rerun()
 
     # Date controls.
@@ -4371,7 +4638,7 @@ def _render_csv_curve_section(settings: dict) -> bool:
             help="Letzter Tag der Kurve. Standard: heute.",
         )
 
-    overrides = st.session_state.get("pf_depot_curve_isin_overrides", {}) or {}
+    overrides = saved_import.get("isin_overrides") or st.session_state.get("pf_depot_curve_isin_overrides", {}) or {}
     ticker_map, diagnostics = _resolve_isin_ticker_map(tx_df, overrides=overrides)
 
     with st.expander("Ticker-Zuordnung prüfen / anpassen", expanded=False):
@@ -4403,7 +4670,13 @@ def _render_csv_curve_section(settings: dict) -> bool:
                     ticker = _normalize_single_ticker(str(row.get("Yahoo-Ticker", "")))
                     if isin and ticker:
                         new_overrides[isin] = ticker
-                st.session_state["pf_depot_curve_isin_overrides"] = new_overrides
+                next_state = _build_depot_curve_csv_import_state(
+                    tx_df,
+                    filename=filename,
+                    previous=saved_import,
+                    isin_overrides=new_overrides,
+                )
+                _set_depot_curve_csv_import_state(next_state)
                 st.success("Ticker-Zuordnung gespeichert. Kurve wird neu berechnet.")
                 st.rerun()
 
