@@ -70,6 +70,18 @@ def test_suggest_yahoo_ticker_uses_local_non_german_isin_mapping():
     assert app._suggest_yahoo_ticker("US20717M1036", "Confluent", "STOCK") == "CFLT"
     assert app._suggest_yahoo_ticker("US4878361082", "Kellanova", "STOCK") == "K"
     assert app._suggest_yahoo_ticker("KYG7397A1067", "Razer", "STOCK") == "1337-HK"
+    assert app._suggest_yahoo_ticker("US8740391003", "TSMC (ADR)", "STOCK") == "TSM"
+
+
+def test_suggest_yahoo_ticker_rejects_non_us_listing_for_us_isin(monkeypatch):
+    def fake_search(query):
+        if query == "US0000000041":
+            return [{"symbol": "TEST.MX", "name": "Test Corp", "exchange": "MEX", "type": "EQUITY"}]
+        return [{"symbol": "TST", "name": "Test Corp", "exchange": "NYQ", "type": "EQUITY"}]
+
+    monkeypatch.setattr(app, "search_symbol_candidates", fake_search)
+
+    assert app._suggest_yahoo_ticker("US0000000041", "Test Corp", "STOCK") == "TST"
 
 
 def test_suggest_yahoo_ticker_prefers_german_fallback_and_ignores_raw_isin(monkeypatch):
@@ -192,6 +204,7 @@ def test_transaction_curve_uses_trade_price_fallback_when_yahoo_history_missing(
 
     assert curve["positions_value"].tolist() == [120.0, 120.0]
     assert curve.attrs["price_fallback_isins"] == ["US0000000003"]
+    assert curve.attrs["open_price_fallback_isins"] == ["US0000000003"]
     assert curve.attrs["unresolved_isins"] == []
 
 
@@ -234,4 +247,74 @@ def test_transaction_curve_values_derivatives_from_trade_prices_without_ticker(m
 
     assert curve["positions_value"].tolist() == [100.0, 100.0]
     assert curve.attrs["price_fallback_isins"] == ["DE000DERIV01"]
+    assert curve.attrs["open_price_fallback_isins"] == ["DE000DERIV01"]
     assert curve.attrs["unresolved_isins"] == []
+
+
+def test_transaction_curve_reports_only_open_price_fallback_isins(monkeypatch):
+    dates = pd.DatetimeIndex(pd.date_range("2026-03-02", "2026-03-04", freq="B"))
+
+    monkeypatch.setattr(
+        app,
+        "_fetch_close_history",
+        lambda symbol, *args, **kwargs: pd.Series([100.0, 100.0, 100.0], index=dates) if symbol == "^GSPC" else pd.Series(dtype=float),
+    )
+    monkeypatch.setattr(app, "_bulk_close_history_map", lambda *args, **kwargs: {})
+
+    tx_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-03-02",
+                "event_ts": "2026-03-02T10:00:00Z",
+                "type": "BUY",
+                "asset_class": "DERIVATIVE",
+                "symbol": "DE000CLOSED1",
+                "shares": 5,
+                "shares_num": 5,
+                "price": 10.0,
+                "price_num": 10.0,
+                "amount_num": -50.0,
+                "fee_num": 0.0,
+                "tax_num": 0.0,
+            },
+            {
+                "date": "2026-03-03",
+                "event_ts": "2026-03-03T10:00:00Z",
+                "type": "SELL",
+                "asset_class": "DERIVATIVE",
+                "symbol": "DE000CLOSED1",
+                "shares": -5,
+                "shares_num": -5,
+                "price": 11.0,
+                "price_num": 11.0,
+                "amount_num": 55.0,
+                "fee_num": 0.0,
+                "tax_num": 0.0,
+            },
+            {
+                "date": "2026-03-03",
+                "event_ts": "2026-03-03T11:00:00Z",
+                "type": "BUY",
+                "asset_class": "DERIVATIVE",
+                "symbol": "DE000OPEN01",
+                "shares": 3,
+                "shares_num": 3,
+                "price": 20.0,
+                "price_num": 20.0,
+                "amount_num": -60.0,
+                "fee_num": 0.0,
+                "tax_num": 0.0,
+            },
+        ]
+    )
+
+    curve = app._build_curve_from_transactions(
+        tx_df,
+        isin_to_ticker={},
+        start_date="2026-03-02",
+        end_date="2026-03-04",
+        cash_series=pd.Series([0.0, 0.0, 0.0], index=dates),
+    )
+
+    assert curve.attrs["price_fallback_isins"] == ["DE000CLOSED1", "DE000OPEN01"]
+    assert curve.attrs["open_price_fallback_isins"] == ["DE000OPEN01"]
