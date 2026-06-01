@@ -1071,6 +1071,7 @@ ISIN_TO_YAHOO: dict[str, str] = {
     "US30303M1027": "META",
     "US88160R1014": "TSLA",
     "US1912161007": "KO",
+    "US8740391003": "TSM",
     "DE0007236101": "SIE.DE",
     "DE0007164600": "SAP.DE",
     "DE000BAY0017": "BAYN.DE",
@@ -1092,6 +1093,10 @@ _YAHOO_GERMAN_SUFFIXES = (".DE", ".F", ".SG", ".DU", ".MU", ".BE", ".HM", ".HA")
 _YAHOO_GERMAN_EXCHANGES = {
     "GER", "XETRA", "FRANKFURT", "STUTTGART", "DUSSELDORF",
     "DÜSSELDORF", "MUNICH", "BERLIN", "HAMBURG", "HANOVER",
+}
+_YAHOO_US_EXCHANGES = {
+    "NMS", "NGM", "NCM", "NYQ", "NYSE", "NASDAQ", "NAS", "ASE",
+    "AMEX", "PCX", "BATS", "PNK", "OTC",
 }
 
 
@@ -1494,6 +1499,16 @@ def _is_german_yahoo_candidate(candidate: dict) -> bool:
     return dotted_symbol.endswith(_YAHOO_GERMAN_SUFFIXES) or any(token in exchange for token in _YAHOO_GERMAN_EXCHANGES)
 
 
+def _is_us_yahoo_candidate(candidate: dict) -> bool:
+    symbol = str((candidate or {}).get("symbol", "") or "").strip().upper()
+    exchange = str((candidate or {}).get("exchange", "") or "").strip().upper()
+    if any(token in exchange for token in _YAHOO_US_EXCHANGES):
+        return True
+    # Unsuffixed Yahoo symbols are normally US listings. Foreign listings almost
+    # always carry suffixes such as .MX/.TO/.VI and can have incompatible prices.
+    return "." not in symbol and "-" not in symbol
+
+
 def _rank_yahoo_candidate(candidate: dict, index: int, *, prefer_german: bool) -> tuple[int, int, str]:
     symbol = str((candidate or {}).get("symbol", "") or "").strip().upper()
     german_rank = 0 if _is_german_yahoo_candidate(candidate) else 1
@@ -1515,6 +1530,8 @@ def _select_yahoo_candidate(candidates: list[dict], isin: str, *, prefer_german:
         if qtype and qtype not in {"EQUITY", "ETF"}:
             continue
         cleaned.append((index, row))
+    if isin.startswith("US"):
+        cleaned = [(index, row) for index, row in cleaned if _is_us_yahoo_candidate(row)]
     if not cleaned:
         return ""
     return _normalize_single_ticker(
@@ -3335,6 +3352,7 @@ def _build_curve_from_transactions(
     resolved_isins: list[str] = []
     unresolved_isins: list[str] = []
     price_fallback_isins: list[str] = []
+    open_price_fallback_isins: list[str] = []
     # Events that don't move share counts (cash-side or reporting only).
     NON_SHARE_EVENTS = {"DIVIDEND", "INTEREST_PAYMENT", "TAX_OPTIMIZATION", "SEC_ACCOUNT"}
     for isin, group in df_pos.groupby("symbol"):
@@ -3381,6 +3399,8 @@ def _build_curve_from_transactions(
         aligned = close.reindex(calendar, method="ffill").ffill().bfill().fillna(0.0)
         if not close_is_eur:
             aligned = _convert_close_series_to_eur(aligned, ticker, calendar).fillna(0.0)
+        if close_is_eur and len(shares_series) and float(shares_series.iloc[-1]) > 1e-9:
+            open_price_fallback_isins.append(isin)
         positions_value = positions_value.add(shares_series.values * aligned.values, fill_value=0.0)
         resolved_isins.append(isin)
 
@@ -3476,6 +3496,7 @@ def _build_curve_from_transactions(
     curve.attrs["resolved_isins"] = resolved_isins
     curve.attrs["unresolved_isins"] = unresolved_isins
     curve.attrs["price_fallback_isins"] = price_fallback_isins
+    curve.attrs["open_price_fallback_isins"] = open_price_fallback_isins
     return curve
 
 
@@ -4408,10 +4429,24 @@ def _render_csv_curve_section(settings: dict) -> bool:
         )
     fallback_isins = curve.attrs.get("price_fallback_isins") or []
     if fallback_isins:
-        st.info(
-            "Für diese ISINs hat Yahoo keine Historie geliefert; die Kurve nutzt ersatzweise "
-            "die Trade-Preise aus der CSV: " + ", ".join(sorted(fallback_isins))
-        )
+        open_fallback_isins = curve.attrs.get("open_price_fallback_isins") or []
+        historical_count = max(len(fallback_isins) - len(open_fallback_isins), 0)
+        if open_fallback_isins:
+            st.info(
+                "Für diese offenen ISINs hat Yahoo keine Historie geliefert; die Kurve nutzt "
+                "ersatzweise die Trade-Preise aus der CSV: "
+                + ", ".join(sorted(open_fallback_isins))
+            )
+            if historical_count:
+                st.caption(
+                    f"Zusätzlich wurden {historical_count} geschlossene/historische ISINs "
+                    "über Trade-Preise bewertet."
+                )
+        else:
+            st.caption(
+                f"Für {len(fallback_isins)} geschlossene/historische ISINs wurden bei fehlender "
+                "Yahoo-Historie Trade-Preise aus der CSV verwendet."
+            )
 
     _render_depot_curve_chart(curve, key="pf_curve_chart_csv", include_flow_cols=False)
     return True
