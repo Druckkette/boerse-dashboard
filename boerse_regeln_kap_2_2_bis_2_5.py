@@ -321,9 +321,49 @@ def is_distribution_day(
     return negative_close & higher_volume
 
 
+def _count_active_distribution_days(
+    distribution_mask: pd.Series,
+    close: pd.Series,
+    recovery_level: pd.Series,
+    window_days: int,
+    recovery_gain_pct: Optional[float],
+) -> pd.Series:
+    mask = distribution_mask.fillna(False).astype(bool).to_numpy()
+    close_values = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    recovery_values = pd.to_numeric(recovery_level, errors="coerce").to_numpy(dtype=float)
+    recovery_factor = None
+    if recovery_gain_pct is not None:
+        recovery_factor = 1.0 + max(float(recovery_gain_pct), 0.0) / 100.0
+
+    counts: list[int] = []
+    for i in range(len(mask)):
+        start = max(0, i - int(window_days) + 1)
+        count = 0
+        for j in range(start, i + 1):
+            if not mask[j]:
+                continue
+            recovered = False
+            ref_close = close_values[j]
+            if (
+                recovery_factor is not None
+                and recovery_factor > 1.0
+                and np.isfinite(ref_close)
+                and ref_close > 0
+                and i > j
+            ):
+                later = recovery_values[j + 1:i + 1]
+                later = later[np.isfinite(later)]
+                recovered = bool(len(later) and later.max() >= ref_close * recovery_factor)
+            if not recovered:
+                count += 1
+        counts.append(count)
+    return pd.Series(counts, index=distribution_mask.index, dtype="int64")
+
+
 def count_distribution_days(
     df: pd.DataFrame,
     window_days: int = 25,
+    recovery_gain_pct: Optional[float] = 6.0,
     **kwargs,
 ) -> pd.Series:
     """
@@ -333,9 +373,14 @@ def count_distribution_days(
         Häufung mehrerer Distributionstage innerhalb weniger Wochen ist
         ein ernstes Warnsignal. Ein gängiges Fenster sind etwa 4 bis 5
         Handelswochen, hier als 25 Tage parametrisiert.
+
+    Zusätzlich fällt ein Distributionstag aus der laufenden Zählung, sobald
+    der Index später mindestens recovery_gain_pct Prozent über dem Schlusskurs
+    dieses Distributionstages notiert. Default: 6%.
     """
     dd = is_distribution_day(df, **kwargs)
-    return dd.rolling(window=window_days, min_periods=1).sum()
+    recovery_level = df["high"] if "high" in df else df["close"]
+    return _count_active_distribution_days(dd, df["close"], recovery_level, window_days, recovery_gain_pct)
 
 
 def is_stalling_day(

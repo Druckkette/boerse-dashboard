@@ -8774,12 +8774,42 @@ def add_indicators(df):
     df["Up_Vol_Declining"]=(df["Close"]>df["Close"].shift(5))&(df["Volume"].diff().rolling(5, min_periods=5).mean()<0)
     return df
 
+def _count_active_distribution_days(distribution_mask, close, recovery_level=None, window_days=25, recovery_gain_pct=6.0, return_latest_mask=False):
+    mask = distribution_mask.fillna(False).astype(bool).to_numpy()
+    close_values = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    recovery_values = pd.to_numeric(recovery_level if recovery_level is not None else close, errors="coerce").to_numpy(dtype=float)
+    recovery_factor = 1.0 + max(float(recovery_gain_pct), 0.0) / 100.0
+    counts = []
+    latest_active = np.zeros(len(mask), dtype=bool)
+    latest_i = len(mask) - 1
+    for i in range(len(mask)):
+        start = max(0, i - int(window_days) + 1)
+        count = 0
+        for j in range(start, i + 1):
+            if not mask[j]:
+                continue
+            ref_close = close_values[j]
+            recovered = False
+            if np.isfinite(ref_close) and ref_close > 0 and recovery_factor > 1.0 and i > j:
+                later = recovery_values[j + 1:i + 1]
+                later = later[np.isfinite(later)]
+                recovered = bool(len(later) and later.max() >= ref_close * recovery_factor)
+            if not recovered:
+                count += 1
+                if return_latest_mask and i == latest_i:
+                    latest_active[j] = True
+        counts.append(count)
+    count_series = pd.Series(counts, index=distribution_mask.index, dtype="int64")
+    if return_latest_mask:
+        return count_series, pd.Series(latest_active, index=distribution_mask.index, dtype=bool)
+    return count_series
+
 def detect_distribution_days(df):
     df=df.copy();pc=df["Close"].shift(1);pv=df["Volume"].shift(1)
     is_down=df["Close"]<pc;high_vol=(df["Volume"]>pv)|(df["Volume"]>df["Vol_SMA50"])
     df["Is_Distribution"]=is_down&high_vol
     df["Is_Stall"]=(~is_down)&(df["Pct_Change"]<0.5)&(df["Volume"]>=pv*0.95)&(df["Closing_Range"]<0.5)
-    df["Dist_Count_25"]=df["Is_Distribution"].rolling(25,min_periods=1).sum().astype(int)
+    df["Dist_Count_25"], df["Is_Distribution_Active"]=_count_active_distribution_days(df["Is_Distribution"], df["Close"], df["High"], 25, 6.0, True)
     return df
 
 def compute_ampel(df):
@@ -9234,7 +9264,8 @@ def plot_price(df,sd=90):
     fig.add_trace(go.Scatter(x=x,y=_y(dv["SMA200"]),name="200-SMA",line=dict(color="#a855f7",width=1,dash="dash")))
     fl=dv["Floor_Mark"].dropna()
     if len(fl)>0: fig.add_hline(y=float(fl.iloc[-1]),line_dash="dash",line_color="#ef4444",line_width=1,annotation_text="Bodenmarke",annotation_font_color="#ef4444")
-    for col,nm,clr,sym,sz in [("Is_Distribution","Dist.","#ef4444","triangle-down",7),("Is_Stall","Stau","#f59e0b","diamond",6),("Intraday_Reversal_Down","Umkehr↓","#f97316","x",8),("Intraday_Reversal_Up","Umkehr↑","#22c55e","x",8)]:
+    dist_col = "Is_Distribution_Active" if "Is_Distribution_Active" in dv.columns else "Is_Distribution"
+    for col,nm,clr,sym,sz in [(dist_col,"Dist.","#ef4444","triangle-down",7),("Is_Stall","Stau","#f59e0b","diamond",6),("Intraday_Reversal_Down","Umkehr↓","#f97316","x",8),("Intraday_Reversal_Up","Umkehr↑","#22c55e","x",8)]:
         m=dv[dv[col]==True]
         if len(m)>0: fig.add_trace(go.Scatter(x=_x(m.index),y=_y(m["Close"] if "Stall" not in nm else m["High"]),name=nm,mode="markers",marker=dict(color=clr,size=sz,symbol=sym)))
     fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(248,250,252,0)",margin=dict(l=0,r=0,t=30,b=0),height=380,legend=dict(orientation="h",yanchor="top",y=1.12,font=dict(size=9,color="#64748b")),xaxis=dict(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=9,color="#64748b")),yaxis=dict(gridcolor="rgba(100,116,139,0.12)",tickfont=dict(size=9,color="#64748b")),hovermode="x unified")
@@ -9256,7 +9287,8 @@ def plot_price_with_volume(df, sd=90):
     fl = dv["Floor_Mark"].dropna()
     if len(fl) > 0:
         fig.add_hline(y=float(fl.iloc[-1]), line_dash="dash", line_color="#ef4444", line_width=1, annotation_text="Bodenmarke", annotation_font_color="#ef4444", row=1, col=1)
-    for col, nm, clr, sym, sz in [("Is_Distribution", "Dist.", "#ef4444", "triangle-down", 7), ("Is_Stall", "Stau", "#f59e0b", "diamond", 6), ("Intraday_Reversal_Down", "Umkehr↓", "#f97316", "x", 8), ("Intraday_Reversal_Up", "Umkehr↑", "#22c55e", "x", 8)]:
+    dist_col = "Is_Distribution_Active" if "Is_Distribution_Active" in dv.columns else "Is_Distribution"
+    for col, nm, clr, sym, sz in [(dist_col, "Dist.", "#ef4444", "triangle-down", 7), ("Is_Stall", "Stau", "#f59e0b", "diamond", 6), ("Intraday_Reversal_Down", "Umkehr↓", "#f97316", "x", 8), ("Intraday_Reversal_Up", "Umkehr↑", "#22c55e", "x", 8)]:
         m = dv[dv[col] == True]
         if len(m) > 0:
             fig.add_trace(go.Scatter(x=_x(m.index), y=_y(m["Close"] if "Stall" not in nm else m["High"]), name=nm, mode="markers", marker=dict(color=clr, size=sz, symbol=sym)), row=1, col=1)
