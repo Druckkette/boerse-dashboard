@@ -1,16 +1,18 @@
 import pandas as pd
 
+from app import add_indicators, detect_distribution_days
 from boerse_regeln_kap_2_2_bis_2_5 import count_distribution_days
 
 
 def test_distribution_day_drops_after_six_percent_recovery():
     dates = pd.date_range("2026-01-01", periods=58, freq="B")
-    closes = [100.0 + i * 0.05 for i in range(55)] + [100.0, 105.9, 106.0]
+    closes = [100.0 + i * 0.05 for i in range(55)] + [100.0, 105.8, 105.8]
+    highs = [c + 1.0 for c in closes[:-3]] + [101.0, 105.9, 106.0]
     volumes = [1_000_000.0] * 55 + [1_500_000.0, 900_000.0, 900_000.0]
     frame = pd.DataFrame(
         {
             "open": closes,
-            "high": [c + 1.0 for c in closes],
+            "high": highs,
             "low": [c - 1.0 for c in closes],
             "close": closes,
             "volume": volumes,
@@ -23,6 +25,29 @@ def test_distribution_day_drops_after_six_percent_recovery():
     assert counts.iloc[-3] == 1
     assert counts.iloc[-2] == 1
     assert counts.iloc[-1] == 0
+
+
+def test_index_dashboard_hides_recovered_distribution_marker():
+    dates = pd.date_range("2026-01-01", periods=58, freq="B")
+    closes = [100.0 + i * 0.05 for i in range(55)] + [100.0, 105.8, 105.8]
+    highs = [c + 1.0 for c in closes[:-3]] + [101.0, 105.9, 106.0]
+    volumes = [1_000_000.0] * 55 + [1_500_000.0, 900_000.0, 900_000.0]
+    frame = pd.DataFrame(
+        {
+            "Open": closes,
+            "High": highs,
+            "Low": [c - 1.0 for c in closes],
+            "Close": closes,
+            "Volume": volumes,
+        },
+        index=dates,
+    )
+
+    result = detect_distribution_days(add_indicators(frame))
+
+    assert bool(result["Is_Distribution"].iloc[-3])
+    assert not bool(result["Is_Distribution_Active"].iloc[-3])
+    assert result["Dist_Count_25"].iloc[-1] == 0
 
 
 def test_distribution_day_still_expires_after_rolling_window():

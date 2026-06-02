@@ -324,11 +324,13 @@ def is_distribution_day(
 def _count_active_distribution_days(
     distribution_mask: pd.Series,
     close: pd.Series,
+    recovery_level: pd.Series,
     window_days: int,
     recovery_gain_pct: Optional[float],
 ) -> pd.Series:
     mask = distribution_mask.fillna(False).astype(bool).to_numpy()
     close_values = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    recovery_values = pd.to_numeric(recovery_level, errors="coerce").to_numpy(dtype=float)
     recovery_factor = None
     if recovery_gain_pct is not None:
         recovery_factor = 1.0 + max(float(recovery_gain_pct), 0.0) / 100.0
@@ -349,7 +351,7 @@ def _count_active_distribution_days(
                 and ref_close > 0
                 and i > j
             ):
-                later = close_values[j + 1:i + 1]
+                later = recovery_values[j + 1:i + 1]
                 later = later[np.isfinite(later)]
                 recovered = bool(len(later) and later.max() >= ref_close * recovery_factor)
             if not recovered:
@@ -377,7 +379,8 @@ def count_distribution_days(
     dieses Distributionstages notiert. Default: 6%.
     """
     dd = is_distribution_day(df, **kwargs)
-    return _count_active_distribution_days(dd, df["close"], window_days, recovery_gain_pct)
+    recovery_level = df["high"] if "high" in df else df["close"]
+    return _count_active_distribution_days(dd, df["close"], recovery_level, window_days, recovery_gain_pct)
 
 
 def is_stalling_day(
