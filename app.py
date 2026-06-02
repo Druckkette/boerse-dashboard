@@ -8774,12 +8774,34 @@ def add_indicators(df):
     df["Up_Vol_Declining"]=(df["Close"]>df["Close"].shift(5))&(df["Volume"].diff().rolling(5, min_periods=5).mean()<0)
     return df
 
+def _count_active_distribution_days(distribution_mask, close, window_days=25, recovery_gain_pct=6.0):
+    mask = distribution_mask.fillna(False).astype(bool).to_numpy()
+    close_values = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    recovery_factor = 1.0 + max(float(recovery_gain_pct), 0.0) / 100.0
+    counts = []
+    for i in range(len(mask)):
+        start = max(0, i - int(window_days) + 1)
+        count = 0
+        for j in range(start, i + 1):
+            if not mask[j]:
+                continue
+            ref_close = close_values[j]
+            recovered = False
+            if np.isfinite(ref_close) and ref_close > 0 and recovery_factor > 1.0 and i > j:
+                later = close_values[j + 1:i + 1]
+                later = later[np.isfinite(later)]
+                recovered = bool(len(later) and later.max() >= ref_close * recovery_factor)
+            if not recovered:
+                count += 1
+        counts.append(count)
+    return pd.Series(counts, index=distribution_mask.index, dtype="int64")
+
 def detect_distribution_days(df):
     df=df.copy();pc=df["Close"].shift(1);pv=df["Volume"].shift(1)
     is_down=df["Close"]<pc;high_vol=(df["Volume"]>pv)|(df["Volume"]>df["Vol_SMA50"])
     df["Is_Distribution"]=is_down&high_vol
     df["Is_Stall"]=(~is_down)&(df["Pct_Change"]<0.5)&(df["Volume"]>=pv*0.95)&(df["Closing_Range"]<0.5)
-    df["Dist_Count_25"]=df["Is_Distribution"].rolling(25,min_periods=1).sum().astype(int)
+    df["Dist_Count_25"]=_count_active_distribution_days(df["Is_Distribution"], df["Close"], 25, 6.0)
     return df
 
 def compute_ampel(df):
