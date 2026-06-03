@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -41,6 +42,36 @@ class _FakeStreamlit:
 
 
 class DeepAnalysisTest(unittest.TestCase):
+    def test_old_refresh_after_old_breadth_date_is_stale(self):
+        self.assertEqual(
+            app._deep_analysis_cache_state(
+                breadth_last=date(2026, 5, 1),
+                benchmark_last=date(2026, 6, 2),
+                refresh_date=date(2026, 5, 3),
+            ),
+            "stale",
+        )
+
+    def test_recent_refresh_after_benchmark_means_last_available(self):
+        self.assertEqual(
+            app._deep_analysis_cache_state(
+                breadth_last=date(2026, 5, 1),
+                benchmark_last=date(2026, 6, 2),
+                refresh_date=date(2026, 6, 2),
+            ),
+            "last_available",
+        )
+
+    def test_matching_breadth_and_benchmark_is_current(self):
+        self.assertEqual(
+            app._deep_analysis_cache_state(
+                breadth_last=date(2026, 6, 2),
+                benchmark_last=date(2026, 6, 2),
+                refresh_date=date(2026, 5, 3),
+            ),
+            "current",
+        )
+
     def test_missing_pct_above_50sma_renders_as_unavailable(self):
         idx = pd.date_range("2026-04-01", periods=30, freq="B")
         ad_line = pd.Series(np.arange(30), index=idx, dtype=float)
