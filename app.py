@@ -7431,6 +7431,36 @@ def _request_external_refresh_job(job_type, requested_by="streamlit", payload=No
     return {"ok": False, "job": job, "dispatch": dispatch, "error": job.get("message")}
 
 
+def _maybe_request_external_refresh_job(store, job_type="refresh_universe", *, reason="auto", payload=None, cooldown_minutes=30):
+    if not isinstance(store, dict) or store.get("backend") == "sqlite":
+        return {"triggered": False, "reason": "not_external"}
+
+    active = _get_active_refresh_job(store)
+    if active:
+        return {"triggered": False, "reason": "already_running", "job": active}
+
+    clean_reason = re.sub(r"[^a-zA-Z0-9_]+", "_", str(reason or "auto")).strip("_") or "auto"
+    last_run_key = f"external_auto_refresh_last_{clean_reason}"
+    now_utc = datetime.now(timezone.utc)
+    last_run = st.session_state.get(last_run_key)
+    if isinstance(last_run, datetime) and (now_utc - last_run) < timedelta(minutes=cooldown_minutes):
+        return {"triggered": False, "reason": "cooldown"}
+
+    st.session_state[last_run_key] = now_utc
+    result = _request_external_refresh_job(
+        job_type,
+        requested_by=f"streamlit_{clean_reason}",
+        payload=payload or {"trigger": clean_reason},
+    )
+    return {
+        "triggered": True,
+        "ok": bool(result.get("ok")),
+        "result": result,
+        "job": result.get("job"),
+        "error": result.get("error"),
+    }
+
+
 def _job_status_badge(status):
     s = str(status or "").lower()
     if s == "done":
@@ -14785,6 +14815,33 @@ def _render_market_dashboard_header(available):
     st.markdown('<div class="dashboard-header-line"></div>', unsafe_allow_html=True)
     return label_to_key.get(selected_label, selected_label), period_options[period_label]
 
+def _parse_refresh_date(value):
+    if not value:
+        return None
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _deep_analysis_cache_state(breadth_last, benchmark_last, refresh_date=None) -> str:
+    try:
+        breadth_date = pd.Timestamp(breadth_last).date()
+        benchmark_date = pd.Timestamp(benchmark_last).date()
+    except Exception:
+        return "unknown"
+    if breadth_date >= benchmark_date:
+        return "current"
+    if refresh_date is not None:
+        try:
+            refresh_dt = pd.Timestamp(refresh_date).date()
+        except Exception:
+            refresh_dt = None
+        if refresh_dt is not None and refresh_dt >= benchmark_date:
+            return "last_available"
+    return "stale"
+
+
 def _tab_marktanalyse(compact: bool = False):
     """Marktanalyse mit optional kompakter Dashboard-Ansicht."""
     _init_workspace_state()
@@ -15062,11 +15119,7 @@ def _tab_marktanalyse(compact: bool = False):
                 component_bundle = load_nyse_breadth_data()
             benchmark_last = pd.Timestamp(data["S&P 500"].index[-1]).date() if "S&P 500" in data and len(data["S&P 500"]) else pd.Timestamp(df.index[-1]).date()
             refresh_at_raw = _get_cache_metadata(store, "last_refresh_at", "")
-            refresh_date = None
-            if refresh_at_raw:
-                parsed = pd.to_datetime(refresh_at_raw, errors="coerce")
-                if pd.notna(parsed):
-                    refresh_date = parsed.date()
+            refresh_date = _parse_refresh_date(refresh_at_raw)
             if component_bundle is None:
                 benchmark_str = benchmark_last.strftime("%d.%m.%Y")
                 active_job = _get_active_refresh_job(store)
@@ -15076,20 +15129,36 @@ def _tab_marktanalyse(compact: bool = False):
                         "Bitte komm in ca. 10 Minuten erneut auf die Seite."
                     )
                 else:
-                    neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
-                    if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
-                        neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
-                    st.info(
-                        f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
-                        f"{neon_auto_text} "
-                        "Prüfe den Worker-Status in den App-Logs und starte bei Bedarf den Aktualisierungs-Workflow manuell."
+                    auto_job = _maybe_request_external_refresh_job(
+                        store,
+                        reason="deep_analysis",
+                        payload={"trigger": "deep_analysis", "required_date": benchmark_last.isoformat(), "cache_state": "missing"},
                     )
+                    if auto_job.get("triggered") and auto_job.get("ok"):
+                        st.warning(
+                            f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
+                            "Die Aktualisierung wurde gestartet. Bitte komm in ca. 10 Minuten erneut auf die Seite."
+                        )
+                    elif auto_job.get("triggered"):
+                        st.warning(
+                            f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
+                            f"Die Aktualisierung konnte nicht gestartet werden: {auto_job.get('error') or 'Unbekannter Fehler'}"
+                        )
+                    else:
+                        neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
+                        if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
+                            neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
+                        st.info(
+                            f"Für die Tiefenanalyse fehlen aktuell Kursdaten (benötigter Stand: {benchmark_str}). "
+                            f"{neon_auto_text} "
+                            "Prüfe den Worker-Status in den App-Logs und starte bei Bedarf den Aktualisierungs-Workflow manuell."
+                        )
             else:
                 br = _render_deep_analysis_content(component_bundle, sd, data)
                 if br is not None and len(br):
                     breadth_last = pd.Timestamp(br.index[-1]).date()
-                    refresh_matches_cache = refresh_date is not None and refresh_date >= breadth_last
-                    if breadth_last < benchmark_last and not refresh_matches_cache:
+                    cache_state = _deep_analysis_cache_state(breadth_last, benchmark_last, refresh_date)
+                    if cache_state == "stale":
                         benchmark_str = benchmark_last.strftime("%d.%m.%Y")
                         breadth_str = breadth_last.strftime("%d.%m.%Y")
                         active_job = _get_active_refresh_job(store)
@@ -15099,15 +15168,37 @@ def _tab_marktanalyse(compact: bool = False):
                                 "Die Aktualisierung läuft bereits. Bitte komm in ca. 10 Minuten erneut auf die Seite."
                             )
                         else:
-                            neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
-                            if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
-                                neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
-                            st.info(
-                                f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
-                                f"{neon_auto_text} "
-                                "Prüfe den Worker-Status in den App-Logs und starte bei Bedarf den Aktualisierungs-Workflow manuell."
+                            auto_job = _maybe_request_external_refresh_job(
+                                store,
+                                reason="deep_analysis",
+                                payload={
+                                    "trigger": "deep_analysis",
+                                    "required_date": benchmark_last.isoformat(),
+                                    "cache_date": breadth_last.isoformat(),
+                                    "last_refresh_at": refresh_at_raw,
+                                    "cache_state": cache_state,
+                                },
                             )
-                    elif breadth_last < benchmark_last and refresh_matches_cache:
+                            if auto_job.get("triggered") and auto_job.get("ok"):
+                                st.warning(
+                                    f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                                    "Die Aktualisierung wurde gestartet. Bitte komm in ca. 10 Minuten erneut auf die Seite."
+                                )
+                            elif auto_job.get("triggered"):
+                                st.warning(
+                                    f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                                    f"Die Aktualisierung konnte nicht gestartet werden: {auto_job.get('error') or 'Unbekannter Fehler'}"
+                                )
+                            else:
+                                neon_auto_text = "Die automatische Aktualisierung läuft Mo–Fr um 22:30 Uhr Berliner Zeit über GitHub Actions."
+                                if store.get("backend") == "neon" and not _is_neon_auto_update_enabled(store):
+                                    neon_auto_text = "Die automatische Neon-Aktualisierung ist aktuell deaktiviert."
+                                st.info(
+                                    f"Kurse sind veraltet (Cache: {breadth_str}, benötigt: {benchmark_str}). "
+                                    f"{neon_auto_text} "
+                                    "Prüfe den Worker-Status in den App-Logs und starte bei Bedarf den Aktualisierungs-Workflow manuell."
+                                )
+                    elif cache_state == "last_available":
                         st.info(
                             f"Refresh wurde am {refresh_at_raw} UTC abgeschlossen. "
                             f"Die Tiefenanalyse zeigt aktuell den letzten verfügbaren Handelstag ({breadth_last.strftime('%d.%m.%Y')})."
