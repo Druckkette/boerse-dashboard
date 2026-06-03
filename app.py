@@ -9190,13 +9190,19 @@ def _render_deep_analysis_content(component_bundle, sd, data):
     kb1, kb2, kb3, kb4, kb5 = st.columns(5)
     mc = bL["McClellan"]; nhr = bL["NH_NL_Ratio"]; nh_val = int(bL["New_Highs"]) if not np.isnan(bL["New_Highs"]) else 0; nl_val = int(bL["New_Lows"]) if not np.isnan(bL["New_Lows"]) else 0
     p50 = bL["Pct_Above_50SMA"]; p200 = bL["Pct_Above_200SMA"]; dr = bL["Deemer_Ratio"]
+    try:
+        p50_value = float(p50)
+    except (TypeError, ValueError):
+        p50_value = np.nan
+    p50_available = np.isfinite(p50_value)
+    p50_text = f"{p50_value:.0f}%" if p50_available else "Nicht verfügbar"
     with kb1:
         _mc_lbl = ("Extrem ↑" if mc > 125 else "Überdehnt ↑" if mc > 80 else "Impuls ↑" if mc > 50 else "Konstruktiv" if mc > 0 else "Schwach" if mc > -50 else "Impuls ↓" if mc > -80 else "Überdehnt ↓" if mc > -125 else "Extrem ↓") if not np.isnan(mc) else ""
         st.metric("McClellan Osc.", f"{mc:.1f}" if not np.isnan(mc) else "—", _mc_lbl)
     with kb2:
         st.metric("NH/NL Ratio", f"{nhr:.2f}" if not np.isnan(nhr) else f"{nh_val}/{nl_val}", f"{nh_val} Hochs / {nl_val} Tiefs")
     with kb3:
-        st.metric("% > 50-SMA", f"{p50:.0f}%" if not np.isnan(p50) else "—", "Überhitzt" if p50 > 70 else "Schwach" if p50 < 30 else "")
+        st.metric("% > 50-SMA", p50_text if p50_available else "—", "Überhitzt" if p50_available and p50_value > 70 else "Schwach" if p50_available and p50_value < 30 else "")
     with kb4:
         st.metric("% > 200-SMA", f"{p200:.0f}%" if not np.isnan(p200) else "—")
     with kb5:
@@ -9229,12 +9235,16 @@ def _render_deep_analysis_content(component_bundle, sd, data):
         elif spx_at_high and ad_at_high:
             st.success("✓ S&P 500 und A/D-Linie bestätigen sich — breite Beteiligung")
         render_check("Keine Divergenz Index vs. A/D-Linie", not (spx_at_high and not ad_at_high), "A/D-Linie bestätigt" if ad_at_high else "Divergenz aktiv")
-        p50_divergence = spx_at_high and not np.isnan(p50) and p50 < 70
+        p50_divergence = spx_at_high and p50_available and p50_value < 70
         if p50_divergence:
             st.warning("⚠ Divergenz: Index nahe 20T-Hoch, aber % über 50-SMA unter 70% — nachlassende Marktbreite")
-        render_check("Keine % > 50-SMA Divergenz", not p50_divergence, f"{'Divergenz: ' + str(round(p50)) + '% < 70%' if p50_divergence else str(round(p50)) + '% ≥ 70% — OK'}")
+        if p50_available:
+            p50_divergence_detail = f"Divergenz: {p50_value:.0f}% < 70%" if p50_divergence else f"{p50_value:.0f}% ≥ 70% — OK"
+            render_check("Keine % > 50-SMA Divergenz", not p50_divergence, p50_divergence_detail)
+        else:
+            render_check("Keine % > 50-SMA Divergenz", False, p50_text, warn=True)
     render_check("McClellan > 0", mc > 0, f"McClellan: {mc:.1f}")
-    render_check("% über 50-SMA > 70%", p50 > 70, f"{p50:.0f}%")
+    render_check("% über 50-SMA > 70%", p50_available and p50_value > 70, p50_text)
     render_check("NH/NL Ratio > 1", nhr > 1 if not np.isnan(nhr) else False, f"Ratio: {nhr:.1f}" if not np.isnan(nhr) else "—")
     if not np.isnan(dr):
         dr_status = "Sehr gut" if dr >= 1.97 else "Gut" if dr >= 1.50 else "Neutral" if dr >= 1.00 else "Schlecht"
