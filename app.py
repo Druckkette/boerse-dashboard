@@ -15541,26 +15541,30 @@ def _render_technical_setup_area():
                 help="API Token deiner Pushover-App. Alternativ GitHub Secret PUSHOVER_APP_TOKEN.",
             )
 
+    def _current_position_monitor_settings() -> dict:
+        next_settings = _get_portfolio_settings()
+        next_settings.update({
+            "position_monitor_enabled": bool(monitor_enabled),
+            "position_monitor_threshold_atr": float(monitor_threshold),
+            "position_monitor_reference": str(monitor_reference),
+            "position_monitor_atr_period": int(monitor_atr_period),
+            "position_monitor_lookback_days": int(monitor_lookback),
+            "position_monitor_interval_minutes": int(monitor_interval),
+            "position_monitor_cooldown_hours": float(monitor_cooldown),
+            "position_monitor_pushover_user_key": str(monitor_user_key or "").strip(),
+            "position_monitor_pushover_app_token": str(monitor_app_token or "").strip(),
+        })
+        return next_settings
+
     save_monitor_col, test_push_col, trigger_monitor_col = st.columns([1, 1, 1])
     with save_monitor_col:
         if st.button("Positionsmonitor speichern", key="tech_position_monitor_save", use_container_width=True):
-            next_settings = _get_portfolio_settings()
-            next_settings.update({
-                "position_monitor_enabled": bool(monitor_enabled),
-                "position_monitor_threshold_atr": float(monitor_threshold),
-                "position_monitor_reference": str(monitor_reference),
-                "position_monitor_atr_period": int(monitor_atr_period),
-                "position_monitor_lookback_days": int(monitor_lookback),
-                "position_monitor_interval_minutes": int(monitor_interval),
-                "position_monitor_cooldown_hours": float(monitor_cooldown),
-                "position_monitor_pushover_user_key": str(monitor_user_key or "").strip(),
-                "position_monitor_pushover_app_token": str(monitor_app_token or "").strip(),
-            })
-            _save_portfolio_settings(next_settings)
+            _save_portfolio_settings(_current_position_monitor_settings())
             st.success("Positionsmonitor gespeichert.")
             st.rerun()
     with test_push_col:
         if st.button("Pushover-Test senden", key="tech_position_monitor_pushover_test", use_container_width=True, disabled=bool(active_job)):
+            _save_portfolio_settings(_current_position_monitor_settings())
             result = _request_external_refresh_job(
                 "pushover_test",
                 requested_by="streamlit_pushover_test",
@@ -15572,6 +15576,7 @@ def _render_technical_setup_area():
                 st.error(result.get("error") or "Der Pushover-Test konnte nicht gestartet werden.")
     with trigger_monitor_col:
         if st.button("ATR-Monitor jetzt prüfen", key="tech_position_monitor_trigger", use_container_width=True, disabled=bool(active_job)):
+            _save_portfolio_settings(_current_position_monitor_settings())
             result = _request_external_refresh_job(
                 "position_atr_monitor",
                 requested_by="streamlit_position_monitor",
