@@ -22,6 +22,10 @@ on:
         description: Optionaler Auslöser
         required: false
         type: string
+      neon_auto_update_enabled:
+        description: Von Streamlit gesetzter Neon-Auto-Update-Status
+        required: false
+        type: string
 
 jobs:
   run-refresh-worker:
