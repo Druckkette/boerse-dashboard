@@ -255,6 +255,7 @@ def _default_portfolio_settings():
         "neon_auto_update_preference": "on",
         "position_monitor_enabled": False,
         "position_monitor_threshold_atr": 1.5,
+        "position_monitor_threshold_pct": 3.0,
         "position_monitor_reference": "high_since_buy",
         "position_monitor_atr_period": 14,
         "position_monitor_lookback_days": 420,
@@ -269,6 +270,7 @@ POSITION_MONITOR_REFERENCE_LABELS = {
     "high_since_buy": "Vom Hoch seit Kauf",
     "entry": "Vom Einstand",
     "both": "Beides",
+    "previous_close": "Vom Vortagesschluss",
 }
 
 SELL_DECISION_MARKET_ENVIRONMENTS = {"Bullisch", "Unsicher", "Bärisch"}
@@ -2460,6 +2462,7 @@ def _get_portfolio_settings() -> dict:
         "max_depot_loss_low",
         "max_depot_loss_high",
         "position_monitor_threshold_atr",
+        "position_monitor_threshold_pct",
         "position_monitor_atr_period",
         "position_monitor_lookback_days",
         "position_monitor_interval_minutes",
@@ -15446,7 +15449,7 @@ def _render_technical_setup_area():
         alert_details = last_summary.get("alerts_detail", [])
         if isinstance(alert_details, list) and alert_details:
             alert_df = pd.DataFrame(alert_details)
-            alert_cols = [col for col in ("ticker", "drop_atr", "close", "atr", "reference_label", "trade_date") if col in alert_df.columns]
+            alert_cols = [col for col in ("ticker", "name", "drop_pct", "drop_atr", "close", "atr", "reference_label", "trade_date") if col in alert_df.columns]
             if alert_cols:
                 st.dataframe(alert_df[alert_cols], width="stretch", hide_index=True)
     if last_pushover_test_at:
@@ -15456,7 +15459,7 @@ def _render_technical_setup_area():
         test_label = "erfolgreich" if test_ok else "fehlgeschlagen"
         st.caption(f"Letzter Pushover-Test: {last_pushover_test_at} · {test_label}.")
 
-    monitor_cols = st.columns([1, 1, 1, 1])
+    monitor_cols = st.columns([1, 1, 1, 1, 1])
     with monitor_cols[0]:
         monitor_enabled = st.toggle(
             "Monitor aktiv",
@@ -15482,8 +15485,19 @@ def _render_technical_setup_area():
             index=reference_options.index(current_reference) if current_reference in reference_options else 0,
             format_func=lambda key: POSITION_MONITOR_REFERENCE_LABELS.get(key, key),
             key="tech_position_monitor_reference",
+            help="Bei Vortagesschluss wird nur ein Tagesverlust unter dem vorherigen Handelstagesschluss bewertet.",
         )
     with monitor_cols[3]:
+        monitor_threshold_pct = st.number_input(
+            "Tagesverlust %",
+            min_value=0.1,
+            max_value=50.0,
+            value=float(monitor_settings.get("position_monitor_threshold_pct", 3.0)),
+            step=0.1,
+            key="tech_position_monitor_threshold_pct",
+            help="Nur für Referenz Vortagesschluss: Push wird ausgelöst, wenn der Kurs mindestens so viel Prozent unter dem vorherigen Schluss liegt.",
+        )
+    with monitor_cols[4]:
         monitor_cooldown = st.number_input(
             "Cooldown Stunden",
             min_value=0.0,
@@ -15545,6 +15559,7 @@ def _render_technical_setup_area():
             next_settings.update({
                 "position_monitor_enabled": bool(monitor_enabled),
                 "position_monitor_threshold_atr": float(monitor_threshold),
+                "position_monitor_threshold_pct": float(monitor_threshold_pct),
                 "position_monitor_reference": str(monitor_reference),
                 "position_monitor_atr_period": int(monitor_atr_period),
                 "position_monitor_lookback_days": int(monitor_lookback),

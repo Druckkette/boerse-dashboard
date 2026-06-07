@@ -32,10 +32,12 @@ MONITOR_STATE_FIELD = "position_monitor_state"
 REFERENCE_HIGH_SINCE_BUY = "high_since_buy"
 REFERENCE_ENTRY = "entry"
 REFERENCE_BOTH = "both"
+REFERENCE_PREVIOUS_CLOSE = "previous_close"
 REFERENCE_LABELS = {
     REFERENCE_HIGH_SINCE_BUY: "vom Hoch seit Kauf",
     REFERENCE_ENTRY: "vom Einstand",
     REFERENCE_BOTH: "vom Hoch seit Kauf oder Einstand",
+    REFERENCE_PREVIOUS_CLOSE: "vom Vortagesschluss",
 }
 
 
@@ -61,6 +63,7 @@ class MonitorConfig:
     cooldown_hours: float
     pushover_user_keys: list[str]
     pushover_app_token: str
+    threshold_pct: float = 3.0
     dry_run: bool = False
 
     @classmethod
@@ -82,6 +85,7 @@ class MonitorConfig:
             cooldown_hours=_coerce_float(settings.get("position_monitor_cooldown_hours"), 18, minimum=0),
             pushover_user_keys=user_keys,
             pushover_app_token=app_token,
+            threshold_pct=_coerce_float(settings.get("position_monitor_threshold_pct"), 3.0, minimum=0.1),
             dry_run=dry_run,
         )
 
@@ -94,21 +98,24 @@ class ATRAlert:
     close: float
     atr: float
     drop_atr: float
+    drop_pct: float
     drop_abs: float
     reference_price: float
     threshold_atr: float
+    threshold_pct: float
     trade_date: str
     source: str
     isin: str = ""
 
     @property
     def title(self) -> str:
-        return f"ATR-Alarm: {self.ticker}"
+        return f"ATR-Alarm: {self.ticker} gefallen"
 
     @property
     def body(self) -> str:
+        label = f"{self.name} ({self.ticker})" if self.name and self.name != self.ticker else self.ticker
         return (
-            f"{self.ticker}: {self.drop_atr:.1f} ATR {self.reference_label}. "
+            f"{label} ist gefallen: -{self.drop_pct:.2f}% / {self.drop_atr:.1f} ATR {self.reference_label}. "
             f"Schluss {self.close:.2f}, Referenz {self.reference_price:.2f}, ATR {self.atr:.2f}."
         )
 
@@ -162,8 +169,13 @@ def _normalize_reference(value: Any) -> str:
         "buy": REFERENCE_ENTRY,
         "beides": REFERENCE_BOTH,
         "both": REFERENCE_BOTH,
+        "vortagesschluss": REFERENCE_PREVIOUS_CLOSE,
+        "vortages close": REFERENCE_PREVIOUS_CLOSE,
+        "previous close": REFERENCE_PREVIOUS_CLOSE,
+        "previous_close": REFERENCE_PREVIOUS_CLOSE,
+        "prev_close": REFERENCE_PREVIOUS_CLOSE,
     }
-    if raw in {REFERENCE_HIGH_SINCE_BUY, REFERENCE_ENTRY, REFERENCE_BOTH}:
+    if raw in {REFERENCE_HIGH_SINCE_BUY, REFERENCE_ENTRY, REFERENCE_BOTH, REFERENCE_PREVIOUS_CLOSE}:
         return raw
     return aliases.get(raw, REFERENCE_HIGH_SINCE_BUY)
 
@@ -361,12 +373,23 @@ def evaluate_position(position: PositionCandidate, frame: pd.DataFrame, config: 
     if config.reference in {REFERENCE_ENTRY, REFERENCE_BOTH} and position.entry_price:
         candidates.append((REFERENCE_LABELS[REFERENCE_ENTRY], float(position.entry_price), float(position.entry_price) - close))
 
+    if config.reference == REFERENCE_PREVIOUS_CLOSE and len(frame) >= 2:
+        previous_close = _safe_float(frame["Close"].iloc[-2])
+        if previous_close is not None and previous_close > 0:
+            candidates.append((REFERENCE_LABELS[REFERENCE_PREVIOUS_CLOSE], previous_close, previous_close - close))
+
     if not candidates:
         return None
 
     reference_label, reference_price, drop_abs = max(candidates, key=lambda item: item[2] / atr)
+    if drop_abs <= 0:
+        return None
+    drop_pct = (drop_abs / reference_price * 100.0) if reference_price > 0 else 0.0
     drop_atr = drop_abs / atr
-    if drop_atr < config.threshold_atr:
+    if config.reference == REFERENCE_PREVIOUS_CLOSE:
+        if drop_pct < config.threshold_pct:
+            return None
+    elif drop_atr < config.threshold_atr:
         return None
 
     last_date = pd.Timestamp(frame.index[-1]).strftime("%Y-%m-%d")
@@ -377,9 +400,11 @@ def evaluate_position(position: PositionCandidate, frame: pd.DataFrame, config: 
         close=float(close),
         atr=float(atr),
         drop_atr=float(drop_atr),
+        drop_pct=float(drop_pct),
         drop_abs=float(drop_abs),
         reference_price=float(reference_price),
         threshold_atr=float(config.threshold_atr),
+        threshold_pct=float(config.threshold_pct),
         trade_date=last_date,
         source=position.source,
         isin=position.isin,
@@ -420,6 +445,7 @@ def mark_alerted(alert: ATRAlert, state: dict[str, Any], now: datetime) -> None:
         "last_alerted_at": now.astimezone(timezone.utc).isoformat(),
         "last_trade_date": alert.trade_date,
         "last_drop_atr": round(alert.drop_atr, 4),
+        "last_drop_pct": round(alert.drop_pct, 4),
         "last_close": round(alert.close, 4),
         "reference_label": alert.reference_label,
     }
@@ -594,6 +620,7 @@ def run_monitor(*, dry_run: bool = False, force: bool = False) -> dict[str, Any]
         "sent": len(sent_tickers) if not config.dry_run else len(alerts),
         "dry_run": config.dry_run,
         "threshold_atr": config.threshold_atr,
+        "threshold_pct": config.threshold_pct,
         "interval_minutes": config.interval_minutes,
         "reference": config.reference,
         "diagnostics": diagnostics[:12],
