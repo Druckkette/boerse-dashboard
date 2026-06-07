@@ -15525,20 +15525,21 @@ def _render_technical_setup_area():
             help="Die GitHub Action startet alle 5 Minuten. Dieser Wert steuert, wie oft wirklich geprüft wird.",
         )
     with monitor_more_cols[3]:
-        monitor_user_key = st.text_area(
-            "Pushover Benutzerschlüssel",
-            value=str(monitor_settings.get("position_monitor_pushover_user_key", "") or ""),
-            key="tech_position_monitor_pushover_user_key",
-            height=70,
-            help="Einen oder mehrere User Keys, getrennt durch Zeilenumbruch oder Komma. Alternativ GitHub Secret PUSHOVER_USER_KEY.",
-        )
-        monitor_app_token = st.text_input(
-            "Pushover App Token",
-            value=str(monitor_settings.get("position_monitor_pushover_app_token", "") or ""),
-            key="tech_position_monitor_pushover_app_token",
-            type="password",
-            help="API Token deiner Pushover-App. Alternativ GitHub Secret PUSHOVER_APP_TOKEN.",
-        )
+        with st.expander("erweitert", expanded=False):
+            monitor_user_key = st.text_area(
+                "Pushover Benutzerschlüssel",
+                value=str(monitor_settings.get("position_monitor_pushover_user_key", "") or ""),
+                key="tech_position_monitor_pushover_user_key",
+                height=70,
+                help="Einen oder mehrere User Keys, getrennt durch Zeilenumbruch oder Komma. Alternativ GitHub Secret PUSHOVER_USER_KEY.",
+            )
+            monitor_app_token = st.text_input(
+                "Pushover App Token",
+                value=str(monitor_settings.get("position_monitor_pushover_app_token", "") or ""),
+                key="tech_position_monitor_pushover_app_token",
+                type="password",
+                help="API Token deiner Pushover-App. Alternativ GitHub Secret PUSHOVER_APP_TOKEN.",
+            )
 
     save_monitor_col, test_push_col, trigger_monitor_col = st.columns([1, 1, 1])
     with save_monitor_col:
