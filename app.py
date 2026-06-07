@@ -15493,6 +15493,7 @@ def _render_technical_setup_area():
             value=float(monitor_settings.get("position_monitor_cooldown_hours", 18)),
             step=1.0,
             key="tech_position_monitor_cooldown",
+            help="Verhindert Wiederholungen am selben Handelstag. Am nächsten Handelstag wird wieder geprüft; bei 2x ATR-Schwelle wird am selben Tag erneut alarmiert.",
         )
 
     monitor_more_cols = st.columns([1, 1, 1, 2])

@@ -432,13 +432,27 @@ def should_alert(alert: ATRAlert, state: dict[str, Any], config: MonitorConfig, 
     raw_last = prior.get("last_alerted_at") if isinstance(prior, dict) else ""
     if not raw_last or config.cooldown_hours <= 0:
         return True
-    try:
-        last = pd.Timestamp(raw_last).to_pydatetime()
-        if last.tzinfo is None:
-            last = last.replace(tzinfo=timezone.utc)
-    except Exception:
+
+    prior_trade_date = str(prior.get("last_trade_date", "") or "") if isinstance(prior, dict) else ""
+    if prior_trade_date and prior_trade_date != alert.trade_date:
         return True
-    return now - last >= timedelta(hours=config.cooldown_hours)
+
+    if not prior_trade_date:
+        try:
+            last = pd.Timestamp(raw_last).to_pydatetime()
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+        except Exception:
+            return True
+        if now.date() != last.date():
+            return True
+
+    double_threshold = float(config.threshold_atr) * 2.0
+    prior_drop_atr = _safe_float(prior.get("last_drop_atr")) if isinstance(prior, dict) else None
+    if alert.drop_atr >= double_threshold and (prior_drop_atr is None or prior_drop_atr < double_threshold):
+        return True
+
+    return False
 
 
 def should_run_for_interval(state: dict[str, Any], config: MonitorConfig, now: datetime) -> bool:

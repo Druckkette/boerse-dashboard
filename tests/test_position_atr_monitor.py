@@ -155,7 +155,7 @@ class PositionATRMonitorTest(unittest.TestCase):
 
         self.assertIsNone(alert)
 
-    def test_cooldown_blocks_recent_duplicate_alert(self):
+    def test_cooldown_blocks_same_trade_date_duplicate_alert(self):
         config = MonitorConfig(
             enabled=True,
             threshold_atr=1.0,
@@ -170,12 +170,75 @@ class PositionATRMonitorTest(unittest.TestCase):
         position = PositionCandidate(ticker="TEST", name="Test", shares=10, buy_date="2026-01-01")
         alert = evaluate_position(position, _sample_frame(), config)
         now = datetime(2026, 2, 15, tzinfo=timezone.utc)
-        state = {"alerts": {"TEST": {"last_alerted_at": (now - timedelta(hours=2)).isoformat()}}}
+        state = {
+            "alerts": {
+                "TEST": {
+                    "last_alerted_at": (now - timedelta(hours=24)).isoformat(),
+                    "last_trade_date": alert.trade_date,
+                    "last_drop_atr": alert.drop_atr,
+                }
+            }
+        }
 
         self.assertFalse(should_alert(alert, state, config, now))
 
-        state["alerts"]["TEST"]["last_alerted_at"] = (now - timedelta(hours=24)).isoformat()
+    def test_cooldown_resets_on_new_trade_date(self):
+        config = MonitorConfig(
+            enabled=True,
+            threshold_atr=1.0,
+            reference=REFERENCE_HIGH_SINCE_BUY,
+            atr_period=14,
+            lookback_days=420,
+            interval_minutes=5,
+            cooldown_hours=18,
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
+        )
+        position = PositionCandidate(ticker="TEST", name="Test", shares=10, buy_date="2026-01-01")
+        alert = evaluate_position(position, _sample_frame(), config)
+        now = datetime(2026, 2, 15, tzinfo=timezone.utc)
+        state = {
+            "alerts": {
+                "TEST": {
+                    "last_alerted_at": (now - timedelta(hours=2)).isoformat(),
+                    "last_trade_date": "2026-01-01",
+                    "last_drop_atr": alert.drop_atr,
+                }
+            }
+        }
+
         self.assertTrue(should_alert(alert, state, config, now))
+
+    def test_double_atr_threshold_breaks_same_day_cooldown_once(self):
+        config = MonitorConfig(
+            enabled=True,
+            threshold_atr=1.0,
+            reference=REFERENCE_HIGH_SINCE_BUY,
+            atr_period=14,
+            lookback_days=420,
+            interval_minutes=5,
+            cooldown_hours=18,
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
+        )
+        position = PositionCandidate(ticker="TEST", name="Test", shares=10, buy_date="2026-01-01")
+        alert = evaluate_position(position, _sample_frame(), config)
+        alert.drop_atr = 2.1
+        now = datetime(2026, 2, 15, tzinfo=timezone.utc)
+        state = {
+            "alerts": {
+                "TEST": {
+                    "last_alerted_at": (now - timedelta(hours=1)).isoformat(),
+                    "last_trade_date": alert.trade_date,
+                    "last_drop_atr": 1.2,
+                }
+            }
+        }
+
+        self.assertTrue(should_alert(alert, state, config, now))
+
+        state["alerts"]["TEST"]["last_drop_atr"] = 2.1
+        self.assertFalse(should_alert(alert, state, config, now))
 
     def test_split_tokens_accepts_common_separators(self):
         self.assertEqual(_split_tokens(" aaa,bbb\nccc ; aaa "), ["aaa", "bbb", "ccc"])
