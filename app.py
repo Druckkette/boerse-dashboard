@@ -15567,6 +15567,51 @@ def _render_technical_setup_area():
             "position_monitor_cooldown_hours": float(settings.get("position_monitor_cooldown_hours", 18)),
         }
 
+    def _current_position_monitor_positions() -> list[dict]:
+        workspace = _workspace_payload()
+        csv_state = _normalize_depot_curve_csv_import_state(workspace.get(DEPOT_CURVE_CSV_IMPORT_KEY, {}))
+        tx_df = _depot_curve_csv_records_to_frame(csv_state.get("records", []))
+        positions_payload: list[dict] = []
+        if isinstance(tx_df, pd.DataFrame) and not tx_df.empty:
+            ticker_map, _diagnostics = _resolve_isin_ticker_map(tx_df, overrides=csv_state.get("isin_overrides", {}) or {})
+            open_df, _derivative_df = _reconstruct_open_positions_from_transactions(tx_df)
+            if isinstance(open_df, pd.DataFrame) and not open_df.empty:
+                for _, row in open_df.iterrows():
+                    isin = str(row.get("isin", "") or "").upper().strip()
+                    ticker = _normalize_single_ticker(ticker_map.get(isin, ""))
+                    shares = float(_safe_float(row.get("shares"), 0.0) or 0.0)
+                    if not ticker or shares <= 0:
+                        continue
+                    positions_payload.append({
+                        "ticker": ticker,
+                        "name": str(row.get("name", "") or ticker),
+                        "shares": shares,
+                        "entry_price": _safe_optional_float(row.get("avg_buy_price")),
+                        "buy_date": str(row.get("first_buy_date", "") or ""),
+                        "isin": isin,
+                        "source": "streamlit_current_depot",
+                    })
+        if positions_payload:
+            return positions_payload
+
+        for raw in workspace.get("positions", []) or []:
+            if not isinstance(raw, dict):
+                continue
+            ticker = _normalize_single_ticker(raw.get("ticker", ""))
+            shares = float(_safe_float(raw.get("shares"), 0.0) or 0.0)
+            if not ticker or shares <= 0:
+                continue
+            positions_payload.append({
+                "ticker": ticker,
+                "name": str(raw.get("name", "") or ticker),
+                "shares": shares,
+                "entry_price": _safe_optional_float(raw.get("buy_price")) or _safe_optional_float(raw.get("entry")) or _safe_optional_float(raw.get("avg_buy_price")),
+                "buy_date": str(raw.get("buy_date") or raw.get("pivot_tag") or ""),
+                "isin": str(raw.get("isin", "") or "").upper().strip(),
+                "source": "streamlit_current_positions",
+            })
+        return positions_payload
+
     save_monitor_col, test_push_col, trigger_monitor_col = st.columns([1, 1, 1])
     with save_monitor_col:
         if st.button("Positionsmonitor speichern", key="tech_position_monitor_save", use_container_width=True):
@@ -15595,6 +15640,7 @@ def _render_technical_setup_area():
                 payload={
                     "trigger": "streamlit_position_monitor",
                     "monitor_settings": _position_monitor_job_settings(current_monitor_settings),
+                    "positions": _current_position_monitor_positions(),
                 },
             )
             if result.get("ok"):

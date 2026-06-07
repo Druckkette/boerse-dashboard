@@ -12,6 +12,7 @@ from scripts.position_atr_monitor import (
     PositionCandidate,
     _split_tokens,
     evaluate_position,
+    positions_from_payload,
     send_pushover_test,
     should_alert,
     should_run_for_interval,
@@ -178,6 +179,25 @@ class PositionATRMonitorTest(unittest.TestCase):
 
     def test_split_tokens_accepts_common_separators(self):
         self.assertEqual(_split_tokens(" aaa,bbb\nccc ; aaa "), ["aaa", "bbb", "ccc"])
+
+    def test_positions_from_payload_builds_candidates(self):
+        positions = positions_from_payload([
+            {
+                "ticker": " test ",
+                "name": "Example AG",
+                "shares": "3.5",
+                "entry_price": "42.1",
+                "buy_date": "2026-01-02",
+                "isin": "de000test01",
+                "source": "streamlit_current_depot",
+            },
+            {"ticker": "", "shares": 10},
+        ])
+
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0].ticker, "TEST")
+        self.assertEqual(positions[0].shares, 3.5)
+        self.assertEqual(positions[0].isin, "DE000TEST01")
 
     def test_pushover_test_dry_run_is_safe(self):
         result = send_pushover_test(dry_run=True)

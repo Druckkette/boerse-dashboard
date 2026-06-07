@@ -152,9 +152,11 @@ def main():
 
             payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
             settings_override = payload.get("monitor_settings") if isinstance(payload, dict) else None
+            positions_override = payload.get("positions") if isinstance(payload, dict) else None
             stats = run_monitor(
                 force=not scheduled_request,
                 settings_override=settings_override if isinstance(settings_override, dict) else None,
+                positions_override=positions_override if isinstance(positions_override, list) else None,
             )
         elif job_type == "pushover_test":
             from scripts.position_atr_monitor import send_pushover_test

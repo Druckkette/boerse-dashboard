@@ -234,6 +234,31 @@ def load_positions_from_workspace(workspace: dict[str, Any]) -> tuple[list[Posit
     return _positions_from_manual_workspace(workspace), diagnostics
 
 
+def positions_from_payload(raw_positions: Any) -> list[PositionCandidate]:
+    if not isinstance(raw_positions, list):
+        return []
+    positions: list[PositionCandidate] = []
+    for raw in raw_positions:
+        if not isinstance(raw, dict):
+            continue
+        ticker = app._normalize_single_ticker(raw.get("ticker", ""))
+        shares = _safe_float(raw.get("shares")) or 0.0
+        if not ticker or shares <= 0:
+            continue
+        positions.append(
+            PositionCandidate(
+                ticker=ticker,
+                name=str(raw.get("name", "") or ticker),
+                shares=shares,
+                entry_price=_safe_float(raw.get("entry_price")) or _safe_float(raw.get("buy_price")) or _safe_float(raw.get("avg_buy_price")),
+                buy_date=str(raw.get("buy_date") or raw.get("first_buy_date") or ""),
+                isin=str(raw.get("isin", "") or "").upper().strip(),
+                source=str(raw.get("source", "") or "job_payload"),
+            )
+        )
+    return positions
+
+
 def _positions_from_saved_csv(workspace: dict[str, Any]) -> tuple[list[PositionCandidate], list[dict[str, Any]]]:
     csv_state = app._normalize_depot_curve_csv_import_state(workspace.get(app.DEPOT_CURVE_CSV_IMPORT_KEY, {}))
     tx_df = app._depot_curve_csv_records_to_frame(csv_state.get("records", []))
@@ -543,7 +568,13 @@ def send_pushover_test(*, dry_run: bool = False) -> dict[str, Any]:
     }
 
 
-def run_monitor(*, dry_run: bool = False, force: bool = False, settings_override: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_monitor(
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    settings_override: dict[str, Any] | None = None,
+    positions_override: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     workspace, store = load_workspace()
     settings = workspace.get("portfolio_settings", {}) if isinstance(workspace.get("portfolio_settings"), dict) else {}
     if isinstance(settings_override, dict):
@@ -573,7 +604,12 @@ def run_monitor(*, dry_run: bool = False, force: bool = False, settings_override
         save_monitor_state(store, state)
         return state["last_summary"]
 
-    positions, diagnostics = load_positions_from_workspace(workspace)
+    positions = positions_from_payload(positions_override)
+    diagnostics: list[dict[str, Any]] = []
+    if positions:
+        diagnostics.append({"info": f"{len(positions)} Positionen aus Streamlit-Job-Payload verwendet."})
+    else:
+        positions, diagnostics = load_positions_from_workspace(workspace)
     state["last_evaluated_at"] = now.isoformat()
     end = pd.Timestamp(now.date()).normalize()
     alerts: list[ATRAlert] = []
