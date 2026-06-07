@@ -103,7 +103,6 @@ class PositionATRMonitorTest(unittest.TestCase):
             cooldown_hours=18,
             pushover_user_keys=["abc"],
             pushover_app_token="app-token",
-            threshold_pct=1.0,
         )
         position = PositionCandidate(ticker="TEST", name="Example AG", shares=10, buy_date="2026-01-01")
 
@@ -112,7 +111,7 @@ class PositionATRMonitorTest(unittest.TestCase):
         self.assertIsNotNone(alert)
         self.assertIn("Vortagesschluss", alert.reference_label)
         self.assertAlmostEqual(alert.reference_price, 102.0)
-        self.assertGreater(alert.drop_pct, 0.0)
+        self.assertGreaterEqual(alert.drop_atr, 0.5)
         self.assertIn("Example AG (TEST) ist gefallen", alert.body)
 
     def test_previous_close_reference_ignores_intraday_gain(self):
@@ -137,10 +136,10 @@ class PositionATRMonitorTest(unittest.TestCase):
 
         self.assertIsNone(alert)
 
-    def test_previous_close_reference_respects_percent_threshold(self):
+    def test_previous_close_reference_respects_atr_threshold(self):
         config = MonitorConfig(
             enabled=True,
-            threshold_atr=0.1,
+            threshold_atr=5.0,
             reference=REFERENCE_PREVIOUS_CLOSE,
             atr_period=14,
             lookback_days=420,
@@ -148,7 +147,6 @@ class PositionATRMonitorTest(unittest.TestCase):
             cooldown_hours=18,
             pushover_user_keys=["abc"],
             pushover_app_token="app-token",
-            threshold_pct=5.0,
         )
         position = PositionCandidate(ticker="TEST", name="Example AG", shares=10, buy_date="2026-01-01")
 
