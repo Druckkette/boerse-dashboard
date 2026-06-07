@@ -475,6 +475,59 @@ def send_pushover_alerts(
     return results
 
 
+def send_pushover_test(*, dry_run: bool = False) -> dict[str, Any]:
+    workspace, store = load_workspace()
+    settings = workspace.get("portfolio_settings", {}) if isinstance(workspace.get("portfolio_settings"), dict) else {}
+    config = MonitorConfig.from_settings(settings, dry_run=dry_run)
+    now = datetime.now(timezone.utc)
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "message": "Pushover-Test nicht gesendet, Dry Run aktiv.",
+            "users": len(config.pushover_user_keys),
+        }
+    if not config.pushover_user_keys:
+        raise RuntimeError("Pushover User Key fehlt. Trage ihn in Streamlit oder PUSHOVER_USER_KEY ein.")
+    if not config.pushover_app_token:
+        raise RuntimeError("Pushover App Token fehlt. Trage ihn in Streamlit oder PUSHOVER_APP_TOKEN ein.")
+
+    results: list[dict[str, Any]] = []
+    for user_key in config.pushover_user_keys:
+        response = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={
+                "token": config.pushover_app_token,
+                "user": user_key,
+                "title": "Boerse ATR Monitor Test",
+                "message": f"Pushover funktioniert. Test vom {now.strftime('%Y-%m-%d %H:%M:%S')} UTC.",
+                "priority": 0,
+                "sound": "pushover",
+                "timestamp": int(now.timestamp()),
+            },
+            timeout=20,
+        )
+        body = response.text[:500]
+        try:
+            payload = response.json()
+            ok = response.status_code == 200 and int(payload.get("status", 0)) == 1
+        except Exception:
+            ok = response.status_code == 200
+        results.append({"ok": ok, "status_code": response.status_code, "reason": body})
+
+    state = load_monitor_state(store)
+    state["last_pushover_test_at"] = now.isoformat()
+    state["last_pushover_test_result"] = results
+    save_monitor_state(store, state)
+    return {
+        "ok": all(item.get("ok") for item in results),
+        "message": "Pushover-Test gesendet." if all(item.get("ok") for item in results) else "Pushover-Test teilweise fehlgeschlagen.",
+        "results": results,
+        "users": len(config.pushover_user_keys),
+    }
+
+
 def run_monitor(*, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
     workspace, store = load_workspace()
     settings = workspace.get("portfolio_settings", {}) if isinstance(workspace.get("portfolio_settings"), dict) else {}

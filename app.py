@@ -7399,6 +7399,7 @@ def _job_type_label(job_type):
         "auto_remap": "Automatisch remappen",
         "export_rs_csv": "RS-CSV in GitHub erzeugen",
         "position_atr_monitor": "ATR-Positionsmonitor",
+        "pushover_test": "Pushover-Test",
     }.get(str(job_type or ""), str(job_type or "Unbekannt"))
 
 
@@ -15432,6 +15433,8 @@ def _render_technical_setup_area():
     monitor_settings = _get_portfolio_settings()
     monitor_state = _get_position_monitor_state(store)
     last_summary = monitor_state.get("last_summary", {}) if isinstance(monitor_state.get("last_summary"), dict) else {}
+    last_pushover_test_at = str(monitor_state.get("last_pushover_test_at", "") or "")
+    last_pushover_test_result = monitor_state.get("last_pushover_test_result", [])
     if last_summary:
         checked = int(last_summary.get("checked", 0) or 0)
         alerts = int(last_summary.get("alerts", 0) or 0)
@@ -15446,6 +15449,12 @@ def _render_technical_setup_area():
             alert_cols = [col for col in ("ticker", "drop_atr", "close", "atr", "reference_label", "trade_date") if col in alert_df.columns]
             if alert_cols:
                 st.dataframe(alert_df[alert_cols], width="stretch", hide_index=True)
+    if last_pushover_test_at:
+        test_ok = False
+        if isinstance(last_pushover_test_result, list) and last_pushover_test_result:
+            test_ok = all(bool(item.get("ok")) for item in last_pushover_test_result if isinstance(item, dict))
+        test_label = "erfolgreich" if test_ok else "fehlgeschlagen"
+        st.caption(f"Letzter Pushover-Test: {last_pushover_test_at} · {test_label}.")
 
     monitor_cols = st.columns([1, 1, 1, 1])
     with monitor_cols[0]:
@@ -15529,7 +15538,7 @@ def _render_technical_setup_area():
             help="API Token deiner Pushover-App. Alternativ GitHub Secret PUSHOVER_APP_TOKEN.",
         )
 
-    save_monitor_col, trigger_monitor_col = st.columns([1, 1])
+    save_monitor_col, test_push_col, trigger_monitor_col = st.columns([1, 1, 1])
     with save_monitor_col:
         if st.button("Positionsmonitor speichern", key="tech_position_monitor_save", use_container_width=True):
             next_settings = _get_portfolio_settings()
@@ -15547,6 +15556,17 @@ def _render_technical_setup_area():
             _save_portfolio_settings(next_settings)
             st.success("Positionsmonitor gespeichert.")
             st.rerun()
+    with test_push_col:
+        if st.button("Pushover-Test senden", key="tech_position_monitor_pushover_test", use_container_width=True, disabled=bool(active_job)):
+            result = _request_external_refresh_job(
+                "pushover_test",
+                requested_by="streamlit_pushover_test",
+                payload={"trigger": "streamlit_pushover_test"},
+            )
+            if result.get("ok"):
+                st.success(f"✓ Pushover-Test angelegt: {result['job']['job_id']}.")
+            else:
+                st.error(result.get("error") or "Der Pushover-Test konnte nicht gestartet werden.")
     with trigger_monitor_col:
         if st.button("ATR-Monitor jetzt prüfen", key="tech_position_monitor_trigger", use_container_width=True, disabled=bool(active_job)):
             result = _request_external_refresh_job(

@@ -14,7 +14,7 @@ on:
         required: false
         type: string
       job_type:
-        description: export_rs_csv | refresh_universe | rescue_missing | auto_remap | position_atr_monitor
+        description: export_rs_csv | refresh_universe | rescue_missing | auto_remap | position_atr_monitor | pushover_test
         required: false
         default: refresh_universe
         type: string

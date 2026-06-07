@@ -11,6 +11,7 @@ from scripts.position_atr_monitor import (
     PositionCandidate,
     _split_tokens,
     evaluate_position,
+    send_pushover_test,
     should_alert,
     should_run_for_interval,
 )
@@ -114,6 +115,12 @@ class PositionATRMonitorTest(unittest.TestCase):
 
     def test_split_tokens_accepts_common_separators(self):
         self.assertEqual(_split_tokens(" aaa,bbb\nccc ; aaa "), ["aaa", "bbb", "ccc"])
+
+    def test_pushover_test_dry_run_is_safe(self):
+        result = send_pushover_test(dry_run=True)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["dry_run"])
 
     def test_configured_interval_blocks_too_frequent_scheduled_checks(self):
         config = MonitorConfig(

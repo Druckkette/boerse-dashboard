@@ -151,6 +151,10 @@ def main():
             from scripts.position_atr_monitor import run_monitor
 
             stats = run_monitor(force=not scheduled_request)
+        elif job_type == "pushover_test":
+            from scripts.position_atr_monitor import send_pushover_test
+
+            stats = send_pushover_test()
         else:
             raise ValueError(f"Unbekannter Job-Typ: {job_type}")
 
