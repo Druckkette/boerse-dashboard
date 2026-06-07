@@ -14,7 +14,7 @@ on:
         required: false
         type: string
       job_type:
-        description: export_rs_csv | refresh_universe | rescue_missing | auto_remap
+        description: export_rs_csv | refresh_universe | rescue_missing | auto_remap | position_atr_monitor
         required: false
         default: refresh_universe
         type: string
@@ -33,6 +33,12 @@ jobs:
 
     env:
       NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      APNS_KEY_ID: ${{ secrets.APNS_KEY_ID }}
+      APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
+      APNS_AUTH_KEY: ${{ secrets.APNS_AUTH_KEY }}
+      APNS_BUNDLE_ID: ${{ secrets.APNS_BUNDLE_ID }}
+      APNS_USE_SANDBOX: ${{ secrets.APNS_USE_SANDBOX }}
+      APNS_DEVICE_TOKENS: ${{ secrets.APNS_DEVICE_TOKENS }}
 
     steps:
       - name: Checkout repository

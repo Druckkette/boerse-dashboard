@@ -253,7 +253,22 @@ def _default_portfolio_settings():
         "rs_rating_source": RS_SOURCE_CSV_LATEST,
         "db_backend_preference": "sqlite",
         "neon_auto_update_preference": "on",
+        "position_monitor_enabled": False,
+        "position_monitor_threshold_atr": 1.5,
+        "position_monitor_reference": "high_since_buy",
+        "position_monitor_atr_period": 14,
+        "position_monitor_lookback_days": 420,
+        "position_monitor_interval_minutes": 5,
+        "position_monitor_cooldown_hours": 18,
+        "position_monitor_device_tokens": "",
     }
+
+POSITION_MONITOR_STATE_FIELD = "position_monitor_state"
+POSITION_MONITOR_REFERENCE_LABELS = {
+    "high_since_buy": "Vom Hoch seit Kauf",
+    "entry": "Vom Einstand",
+    "both": "Beides",
+}
 
 SELL_DECISION_MARKET_ENVIRONMENTS = {"Bullisch", "Unsicher", "Bärisch"}
 SELL_DECISION_INDUSTRY_GROUP_STATUSES = {"Stark", "Neutral", "Schwach"}
@@ -2443,6 +2458,11 @@ def _get_portfolio_settings() -> dict:
         "target_risk_contribution",
         "max_depot_loss_low",
         "max_depot_loss_high",
+        "position_monitor_threshold_atr",
+        "position_monitor_atr_period",
+        "position_monitor_lookback_days",
+        "position_monitor_interval_minutes",
+        "position_monitor_cooldown_hours",
     }
     for key in numeric_fields:
         fallback = _default_portfolio_settings().get(key, 0.0)
@@ -2451,6 +2471,10 @@ def _get_portfolio_settings() -> dict:
         except Exception:
             settings[key] = fallback
     settings["curve_start_date"] = str(settings.get("curve_start_date", "") or "").strip()
+    settings["position_monitor_enabled"] = _safe_bool(settings.get("position_monitor_enabled", False))
+    ref = str(settings.get("position_monitor_reference", "high_since_buy") or "high_since_buy").strip().lower()
+    settings["position_monitor_reference"] = ref if ref in POSITION_MONITOR_REFERENCE_LABELS else "high_since_buy"
+    settings["position_monitor_device_tokens"] = str(settings.get("position_monitor_device_tokens", "") or "").strip()
     rs_source = str(settings.get("rs_rating_source", RS_SOURCE_CSV_LATEST) or RS_SOURCE_CSV_LATEST).strip().lower()
     if rs_source == RS_SOURCE_FRED_CSV:
         settings["rs_rating_source"] = RS_SOURCE_FRED_CSV
@@ -2472,10 +2496,24 @@ def _get_rs_rating_source_setting() -> str:
 
 def _save_portfolio_settings(settings: dict) -> None:
     merged = dict(_default_portfolio_settings())
+    current = st.session_state.get("portfolio_settings", {})
+    if isinstance(current, dict):
+        merged.update(current)
     if isinstance(settings, dict):
         merged.update(settings)
     st.session_state["portfolio_settings"] = merged
     _sync_workspace()
+
+
+def _get_position_monitor_state(store=None) -> dict:
+    try:
+        store = store or _get_price_store()
+        _init_price_cache_db(store)
+        raw = _get_cache_metadata(store, _workspace_meta_key(POSITION_MONITOR_STATE_FIELD), "{}")
+        payload = json.loads(raw) if raw else {}
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
 
 def _adjust_cash_balance(delta_usd: float) -> float:
     _init_workspace_state()
@@ -7358,6 +7396,7 @@ def _job_type_label(job_type):
         "rescue_missing": "Fehlende nachladen",
         "auto_remap": "Automatisch remappen",
         "export_rs_csv": "RS-CSV in GitHub erzeugen",
+        "position_atr_monitor": "ATR-Positionsmonitor",
     }.get(str(job_type or ""), str(job_type or "Unbekannt"))
 
 
@@ -15382,6 +15421,137 @@ def _render_technical_setup_area():
             if store.get("backend") == "neon":
                 _set_neon_auto_update_enabled(store, neon_auto_choice == "on")
             st.rerun()
+
+    st.markdown("#### 🔔 Positionsmonitor · ATR-Push")
+    st.caption(
+        "GitHub Actions prüft die offenen Positionen aus der gespeicherten TR-CSV "
+        "und sendet bei ATR-Verlusten einen APNs Push an die iOS-App."
+    )
+    monitor_settings = _get_portfolio_settings()
+    monitor_state = _get_position_monitor_state(store)
+    last_summary = monitor_state.get("last_summary", {}) if isinstance(monitor_state.get("last_summary"), dict) else {}
+    if last_summary:
+        checked = int(last_summary.get("checked", 0) or 0)
+        alerts = int(last_summary.get("alerts", 0) or 0)
+        sent = int(last_summary.get("sent", 0) or 0)
+        finished_at = str(monitor_state.get("last_finished_at", "") or "")
+        reason = str(last_summary.get("reason", "") or "")
+        skip_text = f" · übersprungen: {reason}" if last_summary.get("skipped") and reason else ""
+        st.caption(f"Letzter Lauf: {finished_at or 'unbekannt'} · geprüft {checked} · Alarme {alerts} · gesendet {sent}{skip_text}.")
+        alert_details = last_summary.get("alerts_detail", [])
+        if isinstance(alert_details, list) and alert_details:
+            alert_df = pd.DataFrame(alert_details)
+            alert_cols = [col for col in ("ticker", "drop_atr", "close", "atr", "reference_label", "trade_date") if col in alert_df.columns]
+            if alert_cols:
+                st.dataframe(alert_df[alert_cols], width="stretch", hide_index=True)
+
+    monitor_cols = st.columns([1, 1, 1, 1])
+    with monitor_cols[0]:
+        monitor_enabled = st.toggle(
+            "Monitor aktiv",
+            value=bool(monitor_settings.get("position_monitor_enabled", False)),
+            key="tech_position_monitor_enabled",
+        )
+    with monitor_cols[1]:
+        monitor_threshold = st.number_input(
+            "ATR-Schwelle",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(monitor_settings.get("position_monitor_threshold_atr", 1.5)),
+            step=0.1,
+            key="tech_position_monitor_threshold",
+            help="Push wird ausgelöst, wenn der Verlust mindestens diese Anzahl ATR erreicht.",
+        )
+    with monitor_cols[2]:
+        reference_options = list(POSITION_MONITOR_REFERENCE_LABELS.keys())
+        current_reference = str(monitor_settings.get("position_monitor_reference", "high_since_buy"))
+        monitor_reference = st.selectbox(
+            "Referenz",
+            options=reference_options,
+            index=reference_options.index(current_reference) if current_reference in reference_options else 0,
+            format_func=lambda key: POSITION_MONITOR_REFERENCE_LABELS.get(key, key),
+            key="tech_position_monitor_reference",
+        )
+    with monitor_cols[3]:
+        monitor_cooldown = st.number_input(
+            "Cooldown Stunden",
+            min_value=0.0,
+            max_value=168.0,
+            value=float(monitor_settings.get("position_monitor_cooldown_hours", 18)),
+            step=1.0,
+            key="tech_position_monitor_cooldown",
+        )
+
+    monitor_more_cols = st.columns([1, 1, 1, 2])
+    with monitor_more_cols[0]:
+        monitor_atr_period = st.number_input(
+            "ATR-Periode",
+            min_value=2,
+            max_value=50,
+            value=int(float(monitor_settings.get("position_monitor_atr_period", 14))),
+            step=1,
+            key="tech_position_monitor_atr_period",
+        )
+    with monitor_more_cols[1]:
+        monitor_lookback = st.number_input(
+            "Lookback Tage",
+            min_value=60,
+            max_value=1000,
+            value=int(float(monitor_settings.get("position_monitor_lookback_days", 420))),
+            step=30,
+            key="tech_position_monitor_lookback",
+        )
+    with monitor_more_cols[2]:
+        monitor_interval = st.number_input(
+            "Intervall Minuten",
+            min_value=5,
+            max_value=1440,
+            value=int(float(monitor_settings.get("position_monitor_interval_minutes", 5))),
+            step=5,
+            key="tech_position_monitor_interval",
+            help="Die GitHub Action startet alle 5 Minuten. Dieser Wert steuert, wie oft wirklich geprüft wird.",
+        )
+    with monitor_more_cols[3]:
+        monitor_tokens = st.text_area(
+            "APNs Device Tokens",
+            value=str(monitor_settings.get("position_monitor_device_tokens", "") or ""),
+            key="tech_position_monitor_tokens",
+            height=92,
+            help="Einen oder mehrere Tokens aus der iOS-App eintragen, getrennt durch Zeilenumbruch oder Komma.",
+        )
+
+    save_monitor_col, trigger_monitor_col = st.columns([1, 1])
+    with save_monitor_col:
+        if st.button("Positionsmonitor speichern", key="tech_position_monitor_save", use_container_width=True):
+            next_settings = _get_portfolio_settings()
+            next_settings.update({
+                "position_monitor_enabled": bool(monitor_enabled),
+                "position_monitor_threshold_atr": float(monitor_threshold),
+                "position_monitor_reference": str(monitor_reference),
+                "position_monitor_atr_period": int(monitor_atr_period),
+                "position_monitor_lookback_days": int(monitor_lookback),
+                "position_monitor_interval_minutes": int(monitor_interval),
+                "position_monitor_cooldown_hours": float(monitor_cooldown),
+                "position_monitor_device_tokens": str(monitor_tokens or "").strip(),
+            })
+            _save_portfolio_settings(next_settings)
+            st.success("Positionsmonitor gespeichert.")
+            st.rerun()
+    with trigger_monitor_col:
+        if st.button("ATR-Monitor jetzt prüfen", key="tech_position_monitor_trigger", use_container_width=True, disabled=bool(active_job)):
+            result = _request_external_refresh_job(
+                "position_atr_monitor",
+                requested_by="streamlit_position_monitor",
+                payload={"trigger": "streamlit_position_monitor"},
+            )
+            if result.get("ok"):
+                st.success(f"✓ ATR-Monitor angelegt: {result['job']['job_id']}.")
+            else:
+                st.error(result.get("error") or "Der ATR-Monitor konnte nicht gestartet werden.")
+    st.caption(
+        "GitHub Secrets für APNs: APNS_KEY_ID, APNS_TEAM_ID, APNS_AUTH_KEY, "
+        "APNS_BUNDLE_ID und für Entwicklungs-Builds APNS_USE_SANDBOX=true."
+    )
 
     current_rs_source = _get_rs_rating_source_setting()
     rs_source_options = list(RS_SOURCE_LABELS.keys())

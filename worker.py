@@ -96,7 +96,8 @@ def main():
     job_id = (args.job_id or "").strip()
     requested_by = (args.requested_by or "").strip() or "github-actions"
     scheduled_request = _is_scheduled_request(requested_by)
-    if scheduled_request and not _is_neon_auto_update_allowed(store):
+    requested_job_type = (args.job_type or "").strip()
+    if scheduled_request and requested_job_type != "position_atr_monitor" and not _is_neon_auto_update_allowed(store):
         print("Neon Auto-Update deaktiviert: geplanter GitHub-Lauf wird übersprungen.")
         # Falls bereits ein konkreter Job übergeben wurde, status sauber auf
         # „skipped" setzen, damit er nicht ewig in „queued" hängt.
@@ -146,6 +147,10 @@ def main():
             stats = app.auto_remap_missing_nyse_yahoo()
         elif job_type == "export_rs_csv":
             stats = app.export_relative_strength_csv_for_github()
+        elif job_type == "position_atr_monitor":
+            from scripts.position_atr_monitor import run_monitor
+
+            stats = run_monitor(force=not scheduled_request)
         else:
             raise ValueError(f"Unbekannter Job-Typ: {job_type}")
 

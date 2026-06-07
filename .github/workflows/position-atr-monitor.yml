@@ -1,0 +1,73 @@
+name: position-atr-monitor
+
+on:
+  schedule:
+    # GitHub Actions erlaubt als kleinsten Takt 5 Minuten.
+    # Das effektive Pruefintervall wird in Streamlit gespeichert.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Optionale refresh_jobs.job_id aus Streamlit
+        required: false
+        type: string
+      requested_by:
+        description: Optionaler Ausloeser
+        required: false
+        default: github_manual_position_monitor
+        type: string
+
+jobs:
+  run-position-atr-monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+      APNS_KEY_ID: ${{ secrets.APNS_KEY_ID }}
+      APNS_TEAM_ID: ${{ secrets.APNS_TEAM_ID }}
+      APNS_AUTH_KEY: ${{ secrets.APNS_AUTH_KEY }}
+      APNS_BUNDLE_ID: ${{ secrets.APNS_BUNDLE_ID }}
+      APNS_USE_SANDBOX: ${{ secrets.APNS_USE_SANDBOX }}
+      APNS_DEVICE_TOKENS: ${{ secrets.APNS_DEVICE_TOKENS }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scheduled ATR monitor
+        if: github.event_name == 'schedule'
+        run: |
+          python worker.py \
+            --job-type "position_atr_monitor" \
+            --requested-by "github_schedule_position_monitor" \
+            --create-job-if-missing
+
+      - name: Run manual ATR monitor
+        if: github.event_name != 'schedule'
+        env:
+          INPUT_JOB_ID: ${{ inputs.job_id }}
+          INPUT_REQUESTED_BY: ${{ inputs.requested_by }}
+        run: |
+          if [[ -n "${INPUT_JOB_ID}" ]]; then
+            python worker.py \
+              --job-id "${INPUT_JOB_ID}" \
+              --job-type "position_atr_monitor" \
+              --requested-by "${INPUT_REQUESTED_BY:-github_manual_position_monitor}"
+          else
+            python worker.py \
+              --job-type "position_atr_monitor" \
+              --requested-by "${INPUT_REQUESTED_BY:-github_manual_position_monitor}" \
+              --create-job-if-missing
+          fi
