@@ -260,7 +260,8 @@ def _default_portfolio_settings():
         "position_monitor_lookback_days": 420,
         "position_monitor_interval_minutes": 5,
         "position_monitor_cooldown_hours": 18,
-        "position_monitor_device_tokens": "",
+        "position_monitor_pushover_user_key": "",
+        "position_monitor_pushover_app_token": "",
     }
 
 POSITION_MONITOR_STATE_FIELD = "position_monitor_state"
@@ -2474,7 +2475,8 @@ def _get_portfolio_settings() -> dict:
     settings["position_monitor_enabled"] = _safe_bool(settings.get("position_monitor_enabled", False))
     ref = str(settings.get("position_monitor_reference", "high_since_buy") or "high_since_buy").strip().lower()
     settings["position_monitor_reference"] = ref if ref in POSITION_MONITOR_REFERENCE_LABELS else "high_since_buy"
-    settings["position_monitor_device_tokens"] = str(settings.get("position_monitor_device_tokens", "") or "").strip()
+    settings["position_monitor_pushover_user_key"] = str(settings.get("position_monitor_pushover_user_key", "") or "").strip()
+    settings["position_monitor_pushover_app_token"] = str(settings.get("position_monitor_pushover_app_token", "") or "").strip()
     rs_source = str(settings.get("rs_rating_source", RS_SOURCE_CSV_LATEST) or RS_SOURCE_CSV_LATEST).strip().lower()
     if rs_source == RS_SOURCE_FRED_CSV:
         settings["rs_rating_source"] = RS_SOURCE_FRED_CSV
@@ -15425,7 +15427,7 @@ def _render_technical_setup_area():
     st.markdown("#### 🔔 Positionsmonitor · ATR-Push")
     st.caption(
         "GitHub Actions prüft die offenen Positionen aus der gespeicherten TR-CSV "
-        "und sendet bei ATR-Verlusten einen APNs Push an die iOS-App."
+        "und sendet bei ATR-Verlusten eine Pushover-Nachricht an dein iPhone."
     )
     monitor_settings = _get_portfolio_settings()
     monitor_state = _get_position_monitor_state(store)
@@ -15512,12 +15514,19 @@ def _render_technical_setup_area():
             help="Die GitHub Action startet alle 5 Minuten. Dieser Wert steuert, wie oft wirklich geprüft wird.",
         )
     with monitor_more_cols[3]:
-        monitor_tokens = st.text_area(
-            "APNs Device Tokens",
-            value=str(monitor_settings.get("position_monitor_device_tokens", "") or ""),
-            key="tech_position_monitor_tokens",
-            height=92,
-            help="Einen oder mehrere Tokens aus der iOS-App eintragen, getrennt durch Zeilenumbruch oder Komma.",
+        monitor_user_key = st.text_area(
+            "Pushover Benutzerschlüssel",
+            value=str(monitor_settings.get("position_monitor_pushover_user_key", "") or ""),
+            key="tech_position_monitor_pushover_user_key",
+            height=70,
+            help="Einen oder mehrere User Keys, getrennt durch Zeilenumbruch oder Komma. Alternativ GitHub Secret PUSHOVER_USER_KEY.",
+        )
+        monitor_app_token = st.text_input(
+            "Pushover App Token",
+            value=str(monitor_settings.get("position_monitor_pushover_app_token", "") or ""),
+            key="tech_position_monitor_pushover_app_token",
+            type="password",
+            help="API Token deiner Pushover-App. Alternativ GitHub Secret PUSHOVER_APP_TOKEN.",
         )
 
     save_monitor_col, trigger_monitor_col = st.columns([1, 1])
@@ -15532,7 +15541,8 @@ def _render_technical_setup_area():
                 "position_monitor_lookback_days": int(monitor_lookback),
                 "position_monitor_interval_minutes": int(monitor_interval),
                 "position_monitor_cooldown_hours": float(monitor_cooldown),
-                "position_monitor_device_tokens": str(monitor_tokens or "").strip(),
+                "position_monitor_pushover_user_key": str(monitor_user_key or "").strip(),
+                "position_monitor_pushover_app_token": str(monitor_app_token or "").strip(),
             })
             _save_portfolio_settings(next_settings)
             st.success("Positionsmonitor gespeichert.")
@@ -15549,8 +15559,8 @@ def _render_technical_setup_area():
             else:
                 st.error(result.get("error") or "Der ATR-Monitor konnte nicht gestartet werden.")
     st.caption(
-        "GitHub Secrets für APNs: APNS_KEY_ID, APNS_TEAM_ID, APNS_AUTH_KEY, "
-        "APNS_BUNDLE_ID und für Entwicklungs-Builds APNS_USE_SANDBOX=true."
+        "GitHub Secrets für Pushover: PUSHOVER_USER_KEY und PUSHOVER_APP_TOKEN. "
+        "Den App Token erstellst du bei Pushover über eine eigene Application/API Token."
     )
 
     current_rs_source = _get_rs_rating_source_setting()

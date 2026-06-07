@@ -39,7 +39,8 @@ class PositionATRMonitorTest(unittest.TestCase):
             lookback_days=420,
             interval_minutes=5,
             cooldown_hours=18,
-            device_tokens=["abc"],
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
         )
         position = PositionCandidate(ticker="TEST", name="Test", shares=10, buy_date="2026-01-01")
 
@@ -59,7 +60,8 @@ class PositionATRMonitorTest(unittest.TestCase):
             lookback_days=420,
             interval_minutes=5,
             cooldown_hours=18,
-            device_tokens=["abc"],
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
         )
         position = PositionCandidate(ticker="TEST", name="Test", shares=10, entry_price=110.0)
 
@@ -78,7 +80,8 @@ class PositionATRMonitorTest(unittest.TestCase):
             lookback_days=420,
             interval_minutes=5,
             cooldown_hours=18,
-            device_tokens=["abc"],
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
         )
         position = PositionCandidate(ticker="TEST", name="Test", shares=10, entry_price=101.0, buy_date="2026-01-01")
 
@@ -96,7 +99,8 @@ class PositionATRMonitorTest(unittest.TestCase):
             lookback_days=420,
             interval_minutes=5,
             cooldown_hours=18,
-            device_tokens=["abc"],
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
         )
         position = PositionCandidate(ticker="TEST", name="Test", shares=10, buy_date="2026-01-01")
         alert = evaluate_position(position, _sample_frame(), config)
@@ -120,7 +124,8 @@ class PositionATRMonitorTest(unittest.TestCase):
             lookback_days=420,
             interval_minutes=15,
             cooldown_hours=18,
-            device_tokens=["abc"],
+            pushover_user_keys=["abc"],
+            pushover_app_token="app-token",
         )
         now = datetime(2026, 2, 15, tzinfo=timezone.utc)
         state = {"last_evaluated_at": (now - timedelta(minutes=10)).isoformat()}

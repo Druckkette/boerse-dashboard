@@ -3,7 +3,7 @@
 The monitor is intentionally UI-independent so it can run from GitHub Actions.
 It reads the persisted Streamlit workspace, reconstructs open positions from the
 saved Trade Republic CSV where available, evaluates ATR loss thresholds and sends
-APNs alerts to registered iOS devices.
+Pushover alerts.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -58,14 +59,18 @@ class MonitorConfig:
     lookback_days: int
     interval_minutes: float
     cooldown_hours: float
-    device_tokens: list[str]
+    pushover_user_keys: list[str]
+    pushover_app_token: str
     dry_run: bool = False
 
     @classmethod
     def from_settings(cls, settings: dict[str, Any], *, dry_run: bool = False) -> "MonitorConfig":
-        tokens = _split_tokens(settings.get("position_monitor_device_tokens"))
-        if not tokens:
-            tokens = _split_tokens(os.environ.get("APNS_DEVICE_TOKENS", ""))
+        user_keys = _split_tokens(settings.get("position_monitor_pushover_user_key"))
+        if not user_keys:
+            user_keys = _split_tokens(os.environ.get("PUSHOVER_USER_KEY", ""))
+        app_token = str(settings.get("position_monitor_pushover_app_token") or "").strip()
+        if not app_token:
+            app_token = os.environ.get("PUSHOVER_APP_TOKEN", "").strip()
 
         return cls(
             enabled=_truthy(settings.get("position_monitor_enabled", False)),
@@ -75,7 +80,8 @@ class MonitorConfig:
             lookback_days=int(_coerce_float(settings.get("position_monitor_lookback_days"), 420, minimum=60)),
             interval_minutes=_coerce_float(settings.get("position_monitor_interval_minutes"), 5, minimum=5),
             cooldown_hours=_coerce_float(settings.get("position_monitor_cooldown_hours"), 18, minimum=0),
-            device_tokens=tokens,
+            pushover_user_keys=user_keys,
+            pushover_app_token=app_token,
             dry_run=dry_run,
         )
 
@@ -419,75 +425,53 @@ def mark_alerted(alert: ATRAlert, state: dict[str, Any], now: datetime) -> None:
     }
 
 
-def send_apns_alerts(alerts: list[ATRAlert], tokens: list[str], *, dry_run: bool = False) -> list[dict[str, Any]]:
+def send_pushover_alerts(
+    alerts: list[ATRAlert],
+    user_keys: list[str],
+    app_token: str,
+    *,
+    dry_run: bool = False,
+) -> list[dict[str, Any]]:
     if not alerts:
         return []
     if dry_run:
-        return [{"ok": True, "dry_run": True, "ticker": alert.ticker, "tokens": len(tokens)} for alert in alerts]
-    if not tokens:
-        raise RuntimeError("APNs Device Token fehlt. Trage den iOS-Token in Streamlit oder APNS_DEVICE_TOKENS ein.")
+        return [{"ok": True, "dry_run": True, "ticker": alert.ticker, "users": len(user_keys)} for alert in alerts]
+    if not user_keys:
+        raise RuntimeError("Pushover User Key fehlt. Trage ihn in Streamlit oder PUSHOVER_USER_KEY ein.")
+    if not app_token:
+        raise RuntimeError("Pushover App Token fehlt. Erstelle eine Pushover-App und setze PUSHOVER_APP_TOKEN.")
 
-    key_id = os.environ.get("APNS_KEY_ID", "").strip()
-    team_id = os.environ.get("APNS_TEAM_ID", "").strip()
-    bundle_id = os.environ.get("APNS_BUNDLE_ID", "de.aljoscha.Boerse").strip()
-    auth_key = os.environ.get("APNS_AUTH_KEY", "").replace("\\n", "\n").strip()
-    use_sandbox = _truthy(os.environ.get("APNS_USE_SANDBOX", "false"))
-
-    missing = [name for name, value in (
-        ("APNS_KEY_ID", key_id),
-        ("APNS_TEAM_ID", team_id),
-        ("APNS_BUNDLE_ID", bundle_id),
-        ("APNS_AUTH_KEY", auth_key),
-    ) if not value]
-    if missing:
-        raise RuntimeError("APNs-Konfiguration fehlt: " + ", ".join(missing))
-
-    try:
-        import httpx
-        import jwt
-    except Exception as exc:
-        raise RuntimeError("APNs-Abhaengigkeiten fehlen. Installiere httpx[http2] und PyJWT[crypto].") from exc
-
-    token_jwt = jwt.encode(
-        {"iss": team_id, "iat": int(datetime.now(timezone.utc).timestamp())},
-        auth_key,
-        algorithm="ES256",
-        headers={"alg": "ES256", "kid": key_id},
-    )
-    host = "https://api.sandbox.push.apple.com" if use_sandbox else "https://api.push.apple.com"
-    headers = {
-        "authorization": f"bearer {token_jwt}",
-        "apns-topic": bundle_id,
-        "apns-push-type": "alert",
-        "apns-priority": "10",
-    }
     results: list[dict[str, Any]] = []
-    with httpx.Client(http2=True, timeout=20.0) as client:
-        for alert in alerts:
-            payload = {
-                "aps": {
-                    "alert": {"title": alert.title, "body": alert.body},
-                    "sound": "default",
+    for alert in alerts:
+        for user_key in user_keys:
+            response = requests.post(
+                "https://api.pushover.net/1/messages.json",
+                data={
+                    "token": app_token,
+                    "user": user_key,
+                    "title": alert.title,
+                    "message": alert.body,
+                    "priority": 0,
+                    "sound": "pushover",
+                    "timestamp": int(datetime.now(timezone.utc).timestamp()),
                 },
-                "ticker": alert.ticker,
-                "drop_atr": round(alert.drop_atr, 3),
-                "trade_date": alert.trade_date,
-                "source": "position_atr_monitor",
-            }
-            for device_token in tokens:
-                response = client.post(
-                    f"{host}/3/device/{device_token}",
-                    headers={**headers, "apns-collapse-id": f"atr-{alert.ticker}"},
-                    json=payload,
-                )
-                results.append(
-                    {
-                        "ok": 200 <= response.status_code < 300,
-                        "ticker": alert.ticker,
-                        "status_code": response.status_code,
-                        "reason": response.text[:300],
-                    }
-                )
+                timeout=20,
+            )
+            body = response.text[:500]
+            ok = False
+            try:
+                payload = response.json()
+                ok = response.status_code == 200 and int(payload.get("status", 0)) == 1
+            except Exception:
+                ok = response.status_code == 200
+            results.append(
+                {
+                    "ok": ok,
+                    "ticker": alert.ticker,
+                    "status_code": response.status_code,
+                    "reason": body,
+                }
+            )
     return results
 
 
@@ -538,7 +522,12 @@ def run_monitor(*, dry_run: bool = False, force: bool = False) -> dict[str, Any]
         else:
             skipped.append({"ticker": position.ticker, "reason": "cooldown", "drop_atr": round(alert.drop_atr, 3)})
 
-    send_results = send_apns_alerts(alerts, config.device_tokens, dry_run=config.dry_run) if alerts else []
+    send_results = send_pushover_alerts(
+        alerts,
+        config.pushover_user_keys,
+        config.pushover_app_token,
+        dry_run=config.dry_run,
+    ) if alerts else []
     sent_tickers = {row["ticker"] for row in send_results if row.get("ok")}
     for alert in alerts:
         if config.dry_run or alert.ticker in sent_tickers:
@@ -566,8 +555,8 @@ def run_monitor(*, dry_run: bool = False, force: bool = False) -> dict[str, Any]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Check open positions for ATR loss and send APNs alerts.")
-    parser.add_argument("--dry-run", action="store_true", help="Evaluate alerts without sending APNs pushes.")
+    parser = argparse.ArgumentParser(description="Check open positions for ATR loss and send Pushover alerts.")
+    parser.add_argument("--dry-run", action="store_true", help="Evaluate alerts without sending Pushover messages.")
     parser.add_argument("--force", action="store_true", help="Ignore the configured monitor interval.")
     args = parser.parse_args()
     print(json.dumps(run_monitor(dry_run=args.dry_run, force=args.force), ensure_ascii=False, indent=2))
