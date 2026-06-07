@@ -150,7 +150,12 @@ def main():
         elif job_type == "position_atr_monitor":
             from scripts.position_atr_monitor import run_monitor
 
-            stats = run_monitor(force=not scheduled_request)
+            payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+            settings_override = payload.get("monitor_settings") if isinstance(payload, dict) else None
+            stats = run_monitor(
+                force=not scheduled_request,
+                settings_override=settings_override if isinstance(settings_override, dict) else None,
+            )
         elif job_type == "pushover_test":
             from scripts.position_atr_monitor import send_pushover_test
 

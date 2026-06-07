@@ -543,9 +543,13 @@ def send_pushover_test(*, dry_run: bool = False) -> dict[str, Any]:
     }
 
 
-def run_monitor(*, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
+def run_monitor(*, dry_run: bool = False, force: bool = False, settings_override: dict[str, Any] | None = None) -> dict[str, Any]:
     workspace, store = load_workspace()
     settings = workspace.get("portfolio_settings", {}) if isinstance(workspace.get("portfolio_settings"), dict) else {}
+    if isinstance(settings_override, dict):
+        merged_settings = dict(settings)
+        merged_settings.update(settings_override)
+        settings = merged_settings
     config = MonitorConfig.from_settings(settings, dry_run=dry_run)
     now = datetime.now(timezone.utc)
     state = load_monitor_state(store)

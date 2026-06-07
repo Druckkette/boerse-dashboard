@@ -15556,6 +15556,17 @@ def _render_technical_setup_area():
         })
         return next_settings
 
+    def _position_monitor_job_settings(settings: dict) -> dict:
+        return {
+            "position_monitor_enabled": bool(settings.get("position_monitor_enabled", False)),
+            "position_monitor_threshold_atr": float(settings.get("position_monitor_threshold_atr", 1.5)),
+            "position_monitor_reference": str(settings.get("position_monitor_reference", "high_since_buy")),
+            "position_monitor_atr_period": int(float(settings.get("position_monitor_atr_period", 14))),
+            "position_monitor_lookback_days": int(float(settings.get("position_monitor_lookback_days", 420))),
+            "position_monitor_interval_minutes": int(float(settings.get("position_monitor_interval_minutes", 5))),
+            "position_monitor_cooldown_hours": float(settings.get("position_monitor_cooldown_hours", 18)),
+        }
+
     save_monitor_col, test_push_col, trigger_monitor_col = st.columns([1, 1, 1])
     with save_monitor_col:
         if st.button("Positionsmonitor speichern", key="tech_position_monitor_save", use_container_width=True):
@@ -15576,11 +15587,15 @@ def _render_technical_setup_area():
                 st.error(result.get("error") or "Der Pushover-Test konnte nicht gestartet werden.")
     with trigger_monitor_col:
         if st.button("ATR-Monitor jetzt prüfen", key="tech_position_monitor_trigger", use_container_width=True, disabled=bool(active_job)):
-            _save_portfolio_settings(_current_position_monitor_settings())
+            current_monitor_settings = _current_position_monitor_settings()
+            _save_portfolio_settings(current_monitor_settings)
             result = _request_external_refresh_job(
                 "position_atr_monitor",
                 requested_by="streamlit_position_monitor",
-                payload={"trigger": "streamlit_position_monitor"},
+                payload={
+                    "trigger": "streamlit_position_monitor",
+                    "monitor_settings": _position_monitor_job_settings(current_monitor_settings),
+                },
             )
             if result.get("ok"):
                 st.success(f"✓ ATR-Monitor angelegt: {result['job']['job_id']}.")
