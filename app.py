@@ -5888,6 +5888,18 @@ def _fetch_quarterly_sec_companyfacts(ticker):
         return None, f"SEC Fehler: {type(e).__name__}: {str(e)[:60]}"
 
 
+FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+
+
+def _fmp_endpoint(path):
+    return f"{FMP_BASE_URL}/{str(path).strip('/')}"
+
+
+def _fmp_response_excerpt(response, limit=500):
+    text = str(getattr(response, "text", "") or "").strip()
+    return text[:limit]
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_quarterly_fmp(ticker, fmp_key):
     """Fetch quarterly EPS and Revenue from Financial Modeling Prep (up to 12 quarters)."""
@@ -5898,30 +5910,29 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
         attempts = [
             (
                 "stable",
-                "https://financialmodelingprep.com/stable/income-statement",
+                _fmp_endpoint("income-statement"),
                 {"symbol": str(ticker or "").upper().strip(), "period": "quarter", "limit": 12, "apikey": fmp_key},
-            ),
-            (
-                "legacy",
-                f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}",
-                {"period": "quarter", "limit": 12, "apikey": fmp_key},
-            ),
+            )
         ]
         errors = []
 
         for label, url, params in attempts:
             r = requests.get(url, params=params, timeout=15)
             if r.status_code == 429:
-                errors.append(f"{label}: Rate Limited (429)")
+                body = _fmp_response_excerpt(r)
+                errors.append(f"{label}: Rate Limited (429)" + (f" - {body}" if body else ""))
                 continue
             if r.status_code == 403:
-                errors.append(f"{label}: Zugriff verweigert (403)")
+                body = _fmp_response_excerpt(r)
+                errors.append(f"{label}: Zugriff verweigert (403)" + (f" - {body}" if body else ""))
                 continue
             if r.status_code == 401:
-                errors.append(f"{label}: API-Key ungültig (401)")
+                body = _fmp_response_excerpt(r)
+                errors.append(f"{label}: API-Key ungültig (401)" + (f" - {body}" if body else ""))
                 continue
             if r.status_code != 200:
-                errors.append(f"{label}: HTTP {r.status_code}")
+                body = _fmp_response_excerpt(r)
+                errors.append(f"{label}: HTTP {r.status_code}" + (f" - {body}" if body else ""))
                 continue
 
             data = json.loads(r.text)
@@ -5963,12 +5974,11 @@ def _fetch_quarterly_fmp(ticker, fmp_key):
             if ni_vals:
                 out["NetIncome"] = pd.Series(ni_vals).sort_index(ascending=False)
             if out:
-                endpoint_label = "FMP stable" if label == "stable" else "FMP legacy"
+                endpoint_label = "FMP stable"
                 # Fetch TTM ratios for ROE and profit margin (lightweight call)
                 try:
                     ratios_urls = [
-                        ("stable", f"https://financialmodelingprep.com/stable/ratios-ttm", {"symbol": str(ticker).upper(), "apikey": fmp_key}),
-                        ("legacy", f"https://financialmodelingprep.com/api/v3/ratios-ttm/{ticker}", {"apikey": fmp_key}),
+                        ("stable", _fmp_endpoint("ratios-ttm"), {"symbol": str(ticker).upper(), "apikey": fmp_key}),
                     ]
                     for _rlabel, _rurl, _rparams in ratios_urls:
                         _rr = requests.get(_rurl, params=_rparams, timeout=10)
@@ -6113,12 +6123,11 @@ def _fetch_fmp_institutional_holders(ticker, fmp_key):
     if not symbol:
         return None
     attempts = [
-        f"https://financialmodelingprep.com/stable/institutional-ownership/list?symbol={symbol}&apikey={fmp_key}",
-        f"https://financialmodelingprep.com/api/v3/institutional-holder/{symbol}?apikey={fmp_key}",
+        (_fmp_endpoint("institutional-ownership/list"), {"symbol": symbol, "apikey": fmp_key}),
     ]
-    for url in attempts:
+    for url, params in attempts:
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, params=params, timeout=10)
             if r.status_code != 200:
                 continue
             data = r.json()
