@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "current_cusip_mapping_coverage": 0.22454960365121307,
+    "current_cusip_mapping_coverage": 0.22430939226519336,
     "current_cusips": 20815,
     "current_period": "2026-03-31",
     "datasets": [
@@ -13,11 +13,11 @@
         "url": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/01dec2025-28feb2026_form13f.zip"
       }
     ],
-    "generated_at_utc": "2026-07-20 09:35:21",
+    "generated_at_utc": "2026-07-27 10:10:44",
     "large_holder_min_value_usd": 10000000.0,
     "manager_names_included": false,
-    "matched_cusips": 4990,
-    "matched_tickers": 3320,
+    "matched_cusips": 4984,
+    "matched_tickers": 3316,
     "previous_period": "2025-12-31",
     "source": "SEC Form 13F Data Sets",
     "source_url": "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets",
@@ -4261,25 +4261,6 @@
       "total_shares_delta_pct": -0.004437020860945662,
       "total_value_delta_pct": -0.15896074104584412,
       "total_value_usd": 5964404.0,
-      "trend": "neutral"
-    },
-    "APM": {
-      "cusip": "G6096M122",
-      "holder_count": 8,
-      "holder_count_delta": 1,
-      "holder_count_delta_pct": 0.1428571428571428,
-      "large_holder_count": 0,
-      "large_holder_delta": 0,
-      "period": "2026-03-31",
-      "previous_holder_count": 7,
-      "previous_large_holder_count": 0,
-      "previous_period": "2025-12-31",
-      "previous_total_shares": 167750.0,
-      "previous_total_value_usd": 177815.0,
-      "total_shares": 156494.0,
-      "total_shares_delta_pct": -0.06709985096870341,
-      "total_value_delta_pct": -0.29940106290245483,
-      "total_value_usd": 124577.0,
       "trend": "neutral"
     },
     "APO": {
@@ -21922,25 +21903,6 @@
       "total_shares_delta_pct": -0.9865522385193057,
       "total_value_delta_pct": -0.7742056591843187,
       "total_value_usd": 11427.0,
-      "trend": "neutral"
-    },
-    "FGMC": {
-      "cusip": "30334J102",
-      "holder_count": 32,
-      "holder_count_delta": 1,
-      "holder_count_delta_pct": 0.032258064516129004,
-      "large_holder_count": 0,
-      "large_holder_delta": 0,
-      "period": "2026-03-31",
-      "previous_holder_count": 31,
-      "previous_large_holder_count": 0,
-      "previous_period": "2025-12-31",
-      "previous_total_shares": 6812519.0,
-      "previous_total_value_usd": 65341569.0,
-      "total_shares": 7545101.0,
-      "total_shares_delta_pct": 0.10753467256384908,
-      "total_value_delta_pct": 0.09156895207092441,
-      "total_value_usd": 71324828.0,
       "trend": "neutral"
     },
     "FGNX": {
@@ -56639,26 +56601,6 @@
       "total_value_usd": 814416875.0,
       "trend": "negative"
     },
-    "TBRG": {
-      "cusip": "205306103",
-      "holder_count": 94,
-      "holder_count_delta": 7,
-      "holder_count_delta_pct": 0.08045977011494254,
-      "large_holder_count": 3,
-      "large_holder_delta": -1,
-      "large_holder_delta_pct": -0.25,
-      "period": "2026-03-31",
-      "previous_holder_count": 87,
-      "previous_large_holder_count": 4,
-      "previous_period": "2025-12-31",
-      "previous_total_shares": 7097682.0,
-      "previous_total_value_usd": 153983572.0,
-      "total_shares": 7031189.0,
-      "total_shares_delta_pct": -0.009368269809777341,
-      "total_value_delta_pct": -0.3332560631857533,
-      "total_value_usd": 102667613.0,
-      "trend": "negative"
-    },
     "TCBK": {
       "cusip": "896095106",
       "holder_count": 194,
@@ -59552,25 +59494,6 @@
       "total_value_delta_pct": -0.18515126133083548,
       "total_value_usd": 47889540352.0,
       "trend": "positive"
-    },
-    "UBXG": {
-      "cusip": "G9161K112",
-      "holder_count": 7,
-      "holder_count_delta": 0,
-      "holder_count_delta_pct": 0.0,
-      "large_holder_count": 0,
-      "large_holder_delta": 0,
-      "period": "2026-03-31",
-      "previous_holder_count": 7,
-      "previous_large_holder_count": 0,
-      "previous_period": "2025-12-31",
-      "previous_total_shares": 132312.0,
-      "previous_total_value_usd": 262349.0,
-      "total_shares": 97544.0,
-      "total_shares_delta_pct": -0.262772839954048,
-      "total_value_delta_pct": 0.24184578557570258,
-      "total_value_usd": 325797.0,
-      "trend": "neutral"
     },
     "UCAR": {
       "cusip": "G9520U116",
