@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "current_cusip_mapping_coverage": 0.2226279125630555,
+    "current_cusip_mapping_coverage": 0.22243574345423972,
     "current_cusips": 20815,
     "current_period": "2026-03-31",
     "datasets": [
@@ -13,11 +13,11 @@
         "url": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/01dec2025-28feb2026_form13f.zip"
       }
     ],
-    "generated_at_utc": "2026-08-24 07:22:01",
+    "generated_at_utc": "2026-08-31 13:51:52",
     "large_holder_min_value_usd": 10000000.0,
     "manager_names_included": false,
-    "matched_cusips": 4948,
-    "matched_tickers": 3289,
+    "matched_cusips": 4944,
+    "matched_tickers": 3287,
     "previous_period": "2025-12-31",
     "source": "SEC Form 13F Data Sets",
     "source_url": "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets",
@@ -8872,25 +8872,6 @@
       "total_value_delta_pct": -0.1016353957391114,
       "total_value_usd": 385761315.0,
       "trend": "negative"
-    },
-    "BNZI": {
-      "cusip": "06682J407",
-      "holder_count": 36,
-      "holder_count_delta": 0,
-      "holder_count_delta_pct": 0.0,
-      "large_holder_count": 0,
-      "large_holder_delta": 0,
-      "period": "2026-03-31",
-      "previous_holder_count": 36,
-      "previous_large_holder_count": 0,
-      "previous_period": "2025-12-31",
-      "previous_total_shares": 3583869.0,
-      "previous_total_value_usd": 215068.0,
-      "total_shares": 4300826.0,
-      "total_shares_delta_pct": 0.20005111793985764,
-      "total_value_delta_pct": 3.3805540573214055,
-      "total_value_usd": 942117.0,
-      "trend": "neutral"
     },
     "BOC": {
       "cusip": "101044105",
@@ -36806,25 +36787,6 @@
       "total_value_delta_pct": -0.0330128861392619,
       "total_value_usd": 100481988658.0,
       "trend": "negative"
-    },
-    "MDV": {
-      "cusip": "60784B101",
-      "holder_count": 86,
-      "holder_count_delta": 8,
-      "holder_count_delta_pct": 0.10256410256410264,
-      "large_holder_count": 1,
-      "large_holder_delta": 1,
-      "period": "2026-03-31",
-      "previous_holder_count": 78,
-      "previous_large_holder_count": 0,
-      "previous_period": "2025-12-31",
-      "previous_total_shares": 2527496.0,
-      "previous_total_value_usd": 34886036.0,
-      "total_shares": 3138567.0,
-      "total_shares_delta_pct": 0.24176932426401465,
-      "total_value_delta_pct": 0.2533776551741218,
-      "total_value_usd": 43725378.0,
-      "trend": "positive"
     },
     "MDWD": {
       "cusip": "M68830112",
