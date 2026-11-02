@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "current_cusip_mapping_coverage": 0.18964147150937222,
+    "current_cusip_mapping_coverage": 0.1893610059365213,
     "current_cusips": 21393,
     "current_period": "2026-06-30",
     "datasets": [
@@ -13,11 +13,11 @@
         "url": "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/01mar2026-31may2026_form13f.zip"
       }
     ],
-    "generated_at_utc": "2026-10-26 13:04:15",
+    "generated_at_utc": "2026-11-02 15:52:45",
     "large_holder_min_value_usd": 10000000.0,
     "manager_names_included": false,
-    "matched_cusips": 4421,
-    "matched_tickers": 3235,
+    "matched_cusips": 4413,
+    "matched_tickers": 3230,
     "previous_period": "2026-03-31",
     "source": "SEC Form 13F Data Sets",
     "source_url": "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets",
@@ -1073,26 +1073,6 @@
       "total_value_delta_pct": -0.47271999406037746,
       "total_value_usd": 20638021.0,
       "trend": "neutral"
-    },
-    "ACVA": {
-      "cusip": "00091G104",
-      "holder_count": 259,
-      "holder_count_delta": -8,
-      "holder_count_delta_pct": -0.029962546816479363,
-      "large_holder_count": 35,
-      "large_holder_delta": 11,
-      "large_holder_delta_pct": 0.45833333333333326,
-      "period": "2026-06-30",
-      "previous_holder_count": 267,
-      "previous_large_holder_count": 24,
-      "previous_period": "2026-03-31",
-      "previous_total_shares": 173750578.0,
-      "previous_total_value_usd": 730549265.0,
-      "total_shares": 168203124.0,
-      "total_shares_delta_pct": -0.03192768659451595,
-      "total_value_delta_pct": 0.6296802091779532,
-      "total_value_usd": 1190561679.0,
-      "trend": "positive"
     },
     "ACXP": {
       "cusip": "00510M203",
@@ -5515,26 +5495,6 @@
       "total_shares_delta_pct": 0.18945278196635318,
       "total_value_delta_pct": 0.2802685792091675,
       "total_value_usd": 24748918751.0,
-      "trend": "positive"
-    },
-    "ATKR": {
-      "cusip": "047649108",
-      "holder_count": 331,
-      "holder_count_delta": 26,
-      "holder_count_delta_pct": 0.08524590163934431,
-      "large_holder_count": 47,
-      "large_holder_delta": 8,
-      "large_holder_delta_pct": 0.20512820512820507,
-      "period": "2026-06-30",
-      "previous_holder_count": 305,
-      "previous_large_holder_count": 39,
-      "previous_period": "2026-03-31",
-      "previous_total_shares": 34515716.0,
-      "previous_total_value_usd": 1953329726.0,
-      "total_shares": 37087973.0,
-      "total_shares_delta_pct": 0.07452422542820791,
-      "total_value_delta_pct": 0.2529338746161076,
-      "total_value_usd": 2447392982.0,
       "trend": "positive"
     },
     "ATLC": {
@@ -10229,26 +10189,6 @@
       "total_shares_delta_pct": -0.13252750854536854,
       "total_value_delta_pct": 0.8440460274123609,
       "total_value_usd": 4817786.0,
-      "trend": "neutral"
-    },
-    "BZH": {
-      "cusip": "07556Q881",
-      "holder_count": 189,
-      "holder_count_delta": 12,
-      "holder_count_delta_pct": 0.06779661016949157,
-      "large_holder_count": 15,
-      "large_holder_delta": 0,
-      "large_holder_delta_pct": 0.0,
-      "period": "2026-06-30",
-      "previous_holder_count": 177,
-      "previous_large_holder_count": 15,
-      "previous_period": "2026-03-31",
-      "previous_total_shares": 28276287.0,
-      "previous_total_value_usd": 524425597.0,
-      "total_shares": 26962509.0,
-      "total_shares_delta_pct": -0.046462182251863604,
-      "total_value_delta_pct": 0.2718609328293333,
-      "total_value_usd": 666996429.0,
       "trend": "neutral"
     },
     "C": {
@@ -34123,25 +34063,6 @@
       "total_value_usd": 447792950387.0,
       "trend": "positive"
     },
-    "LRHC": {
-      "cusip": "",
-      "holder_count": 0,
-      "holder_count_delta": -8,
-      "holder_count_delta_pct": -1.0,
-      "large_holder_count": 0,
-      "large_holder_delta": 0,
-      "period": "2026-06-30",
-      "previous_holder_count": 8,
-      "previous_large_holder_count": 0,
-      "previous_period": "2026-03-31",
-      "previous_total_shares": 72389.0,
-      "previous_total_value_usd": 27075.0,
-      "total_shares": 0.0,
-      "total_shares_delta_pct": -1.0,
-      "total_value_delta_pct": -1.0,
-      "total_value_usd": 0.0,
-      "trend": "neutral"
-    },
     "LRMR": {
       "cusip": "517125100",
       "holder_count": 164,
@@ -52039,25 +51960,6 @@
       "total_value_delta_pct": 0.17171066135364255,
       "total_value_usd": 5067267017.0,
       "trend": "positive"
-    },
-    "SLMT": {
-      "cusip": "G13311132",
-      "holder_count": 20,
-      "holder_count_delta": -9,
-      "holder_count_delta_pct": -0.31034482758620685,
-      "large_holder_count": 0,
-      "large_holder_delta": 0,
-      "period": "2026-06-30",
-      "previous_holder_count": 29,
-      "previous_large_holder_count": 0,
-      "previous_period": "2026-03-31",
-      "previous_total_shares": 31261211.0,
-      "previous_total_value_usd": 24205166.0,
-      "total_shares": 2318821.0,
-      "total_shares_delta_pct": -0.9258243386668545,
-      "total_value_delta_pct": -0.5175424122272081,
-      "total_value_usd": 11677966.0,
-      "trend": "neutral"
     },
     "SLN": {
       "cusip": "82686Q101",
